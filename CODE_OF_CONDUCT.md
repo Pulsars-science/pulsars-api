@@ -59,8 +59,8 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-**[CONTACT TO BE DEFINED BY THE MAINTAINERS BEFORE PUBLICATION]**.
+reported to the community leaders responsible for enforcement through the
+contact listed on the [Pulsars legal notice](https://pulsars.science/mentions-legales).
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
