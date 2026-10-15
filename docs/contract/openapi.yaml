@@ -1,0 +1,1436 @@
+openapi: 3.1.0
+info:
+  title: Pulsars public API
+  version: 1.0.0
+  summary: Read-only access to published Pulsars content.
+  description: |
+    Read-only API over the published content of https://pulsars.science:
+    courses, lessons, exercises, exams and free resources.
+
+    Conventions (pagination, errors, languages, caching, rate limits) are
+    described in `README.md` next to this file and apply to every endpoint.
+
+    What is never returned, by design:
+    - unpublished content (drafts, archived, awaiting review): it answers 404;
+    - solutions and expected answers: exercise `solution_md`, QCM `correctes`,
+      short-answer `acceptees`, exam `corrige_md` and the correction PDF.
+      The game may reuse this content, so an exposed answer is a cheat;
+    - personal data beyond the public profile (no e-mail, IP, school level,
+      locale, social logins).
+
+    All examples are real values from the Laravel seeders
+    (`database/seeders/CoursMathsSeeder.php`, `data/cours/*.json`,
+    `data/examens/*.php`, `ConcoursCentraleSeeder.php`, `RessourceSeeder.php`).
+    Numeric ids are those of a fresh local seed and differ in production.
+  license:
+    name: AGPL-3.0-or-later
+    identifier: AGPL-3.0-or-later
+  contact:
+    url: https://pulsars.science
+servers:
+  - url: https://api.pulsars.science
+    description: Production
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: health
+  - name: catalog
+  - name: courses
+  - name: exercises
+  - name: exams
+  - name: resources
+  - name: account
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness and readiness probe
+      description: |
+        No authentication, no rate limit, `Cache-Control: no-store`.
+        `200` when PostgreSQL answers (Redis down only degrades the service:
+        content stays readable, the game does not). `503` when PostgreSQL is
+        down. Errors carry only a short code, never a DSN or a message.
+      responses:
+        '200':
+          description: Service operational or degraded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              examples:
+                ok:
+                  value:
+                    status: ok
+                    version: 1.0.0
+                    checked_at: '2026-10-13T10:12:31Z'
+                    checks:
+                      - { name: postgres, ok: true, duration_ms: 0.8, error: null }
+                      - { name: redis, ok: true, duration_ms: 0.2, error: null }
+                degraded:
+                  value:
+                    status: degraded
+                    version: 1.0.0
+                    checked_at: '2026-10-13T10:12:31Z'
+                    checks:
+                      - { name: postgres, ok: true, duration_ms: 0.9, error: null }
+                      - { name: redis, ok: false, duration_ms: 1000.0, error: timeout }
+        '503':
+          description: PostgreSQL unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                status: down
+                version: 1.0.0
+                checked_at: '2026-10-13T10:12:31Z'
+                checks:
+                  - { name: postgres, ok: false, duration_ms: 1000.0, error: connection_refused }
+                  - { name: redis, ok: true, duration_ms: 0.2, error: null }
+
+  /v1/catalog:
+    get:
+      tags: [catalog]
+      operationId: getCatalog
+      summary: Subjects and topics of the published courses
+      description: |
+        **Transitional shape.** The target taxonomy is domain → subject →
+        topic, but it does not exist in the code: a course has a single
+        free-text `theme`. The API derives the tree from it:
+
+        - `"Mathématiques – Analyse"` → subject `Mathématiques`, topic `Analyse`
+          (split on the first `" – "`, an en dash surrounded by spaces);
+        - `"Mathématiques"` (four hand-written courses) → subject
+          `Mathématiques`, no topic: those courses are counted in the
+          subject's `course_count` but in no topic.
+
+        `taxonomy` is `"theme"` while this derivation is in use; it becomes
+        `"domain-subject-topic"` once Laravel stores the real taxonomy, and
+        `domains` is then added (additive change).
+
+        Subject names are translated when `lang=en` (from Laravel's
+        `lang/en.json`: Mathématiques → Mathematics). **Topic names are never
+        translated**: no translation exists for them today.
+
+        Sorted by subject name, then topic name. Not paginated (about 60 topics).
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The catalogue
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Catalog' }
+              example:
+                data:
+                  taxonomy: theme
+                  lang: fr
+                  subjects:
+                    - slug: chimie
+                      name: Chimie
+                      course_count: 17
+                      topics:
+                        - { slug: la-matiere, name: La matière, course_count: 4 }
+                        - { slug: transformations, name: Transformations, course_count: 7 }
+                    - slug: mathematiques
+                      name: Mathématiques
+                      course_count: 109
+                      topics:
+                        - { slug: algebre, name: Algèbre, course_count: 13 }
+                        - { slug: analyse, name: Analyse, course_count: 31 }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/courses:
+    get:
+      tags: [courses]
+      operationId: listCourses
+      summary: Published courses
+      description: |
+        Only courses with `statut = publie` and a `published_at` in the past.
+        Sorted by `title` (original French title), then `id`.
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: subject
+          in: query
+          description: Subject slug from `/v1/catalog` (e.g. `mathematiques`).
+          schema: { type: string, maxLength: 100, example: mathematiques }
+        - name: topic
+          in: query
+          description: Topic slug from `/v1/catalog`. Requires `subject`.
+          schema: { type: string, maxLength: 100, example: analyse }
+        - name: difficulty
+          in: query
+          schema: { $ref: '#/components/schemas/Difficulty' }
+        - name: level
+          in: query
+          description: |
+            School level. **Derived from free tags**, not from a column: a
+            course has the level if its tags contain one of the spellings
+            Laravel uses (`collège`/`college`, `lycée`/`lycee`, `supérieur`).
+            Courses without such a tag match no level.
+          schema: { $ref: '#/components/schemas/Level' }
+        - name: tag
+          in: query
+          description: Exact free tag (e.g. `calcul`).
+          schema: { type: string, maxLength: 50 }
+        - name: available_in
+          in: query
+          description: |
+            Only courses that have a translation in this language. `fr`
+            matches every course (French is the source language).
+          schema: { $ref: '#/components/schemas/LangCode' }
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200':
+          description: A page of courses
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+            RateLimit-Limit: { $ref: '#/components/headers/RateLimitLimit' }
+            RateLimit-Remaining: { $ref: '#/components/headers/RateLimitRemaining' }
+            RateLimit-Reset: { $ref: '#/components/headers/RateLimitReset' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CourseSummary' }
+                  next_cursor: { $ref: '#/components/schemas/NextCursor' }
+              examples:
+                page:
+                  $ref: '#/components/examples/CoursesPage'
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/courses/{slug}:
+    get:
+      tags: [courses]
+      operationId: getCourse
+      summary: A published course with its outline
+      description: |
+        The outline lists chapters, their lessons (title and slug, **without**
+        content: fetch each lesson separately) and their exercises (title and
+        type, without question: fetch each exercise separately).
+      parameters:
+        - $ref: '#/components/parameters/CourseSlug'
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The course
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/CourseDetail' }
+              example:
+                data:
+                  id: 1
+                  slug: les-bases-du-calcul
+                  lang: fr
+                  title: Les bases du calcul
+                  description: Priorités opératoires, fractions, puissances et pourcentages. De quoi calculer juste, sans calculatrice. Aucun prérequis.
+                  theme: Mathématiques
+                  subject: { slug: mathematiques, name: Mathématiques }
+                  topic: null
+                  difficulty: debutant
+                  levels: []
+                  duration_minutes: 60
+                  tags: [maths, calcul]
+                  author: jikuji
+                  chapter_count: 2
+                  lesson_count: 4
+                  exercise_count: 5
+                  available_langs: [fr, en]
+                  published_at: '2026-08-17T09:27:34Z'
+                  updated_at: '2026-08-17T09:27:34Z'
+                  web_url: https://pulsars.science/cours/les-bases-du-calcul
+                  chapters:
+                    - position: 1
+                      title: L'ordre des opérations
+                      lang: fr
+                      lessons:
+                        - { slug: priorites-operatoires, position: 1, title: Les priorités opératoires, lang: fr }
+                        - { slug: les-fractions, position: 2, title: Les fractions, lang: fr }
+                      exercises:
+                        - { id: 1, position: 1, type: qcm, title: Appliquer les priorités, lang: fr }
+                        - { id: 2, position: 2, type: reponse_courte, title: Simplifier une fraction, lang: fr }
+                    - position: 2
+                      title: Puissances et pourcentages
+                      lang: fr
+                      lessons:
+                        - { slug: les-puissances, position: 1, title: Les puissances, lang: fr }
+                        - { slug: les-pourcentages, position: 2, title: Les pourcentages, lang: fr }
+                      exercises:
+                        - { id: 3, position: 1, type: qcm, title: Vrai ou faux sur les puissances, lang: fr }
+                        - { id: 4, position: 2, type: reponse_courte, title: Calculer un pourcentage, lang: fr }
+                        - { id: 5, position: 3, type: reponse_libre, title: Le piège des pourcentages, lang: fr }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/courses/{slug}/lessons/{lesson}:
+    get:
+      tags: [courses]
+      operationId: getLesson
+      summary: One lesson of a published course
+      description: |
+        `lesson` is the lesson slug. Laravel only guarantees its uniqueness
+        **within a chapter** (`unique(chapter_id, slug)`); no course currently
+        has two lessons with the same slug. If that ever happens the API
+        returns the one with the lowest (chapter position, lesson position).
+      parameters:
+        - $ref: '#/components/parameters/CourseSlug'
+        - name: lesson
+          in: path
+          required: true
+          schema: { type: string, example: les-fractions }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The lesson
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Lesson' }
+              examples:
+                fr:
+                  value:
+                    data:
+                      slug: priorites-operatoires
+                      lang: fr
+                      title: Les priorités opératoires
+                      position: 1
+                      content_md: "Combien vaut `2 + 3 x 4` ?\n\nCertains répondent 20, d'autres 14. Un seul des deux à raison — et ce n'est pas\nune question d'opinion : il existe une règle, et tout le monde l'applique, des\ncalculatrices aux ordinateurs.\n\n## La règle\n\nOn calcule dans cet ordre :\n\n1. Ce qui est entre **parenthèses**\n2. Les **puissances**\n3. Les **multiplications et divisions**\n4. Les **additions et soustractions**\n\n…"
+                      chapter: { position: 1, title: L'ordre des opérations, lang: fr }
+                      course: { slug: les-bases-du-calcul, title: Les bases du calcul, lang: fr }
+                      previous: null
+                      next: { slug: les-fractions, title: Les fractions }
+                      updated_at: '2026-08-13T18:59:10Z'
+                      web_url: https://pulsars.science/cours/les-bases-du-calcul/lecon/priorites-operatoires
+                en:
+                  value:
+                    data:
+                      slug: priorites-operatoires
+                      lang: en
+                      title: Operational priorities
+                      position: 1
+                      content_md: "What is `2 + 3 x 4` equal to?\n\nSome say 20, others 14. Only one of the two is correct — and it’s not\na matter of opinion: there is a rule, and everyone follows it, from\ncalculators to computers.\n\n## The rule\n\n…"
+                      chapter: { position: 1, title: The order of operations, lang: en }
+                      course: { slug: les-bases-du-calcul, title: The basics of the calculation, lang: en }
+                      previous: null
+                      next: { slug: les-fractions, title: Fractions }
+                      updated_at: '2026-08-13T18:59:10Z'
+                      web_url: https://pulsars.science/cours/les-bases-du-calcul/lecon/priorites-operatoires
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/exercises:
+    get:
+      tags: [exercises]
+      operationId: listExercises
+      summary: Exercises of published courses, without answers
+      description: Sorted by `id`.
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: course
+          in: query
+          description: Course slug.
+          schema: { type: string, example: les-bases-du-calcul }
+        - name: subject
+          in: query
+          schema: { type: string, example: mathematiques }
+        - name: topic
+          in: query
+          description: Requires `subject`.
+          schema: { type: string, example: analyse }
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/ExerciseType' }
+        - name: difficulty
+          in: query
+          description: Difficulty of the parent course (exercises have none of their own).
+          schema: { $ref: '#/components/schemas/Difficulty' }
+      responses:
+        '200':
+          description: A page of exercises
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Exercise' }
+                  next_cursor: { $ref: '#/components/schemas/NextCursor' }
+              examples:
+                page:
+                  $ref: '#/components/examples/ExercisesPage'
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/exercises/{id}:
+    get:
+      tags: [exercises]
+      operationId: getExercise
+      summary: One exercise, without its answer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1, example: 1 }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The exercise
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Exercise' }
+              examples:
+                qcm:
+                  $ref: '#/components/examples/ExerciseQcmResponse'
+                qcmMultiple:
+                  value:
+                    data:
+                      id: 3
+                      lang: fr
+                      type: qcm
+                      title: Vrai ou faux sur les puissances
+                      question_md: Parmi ces égalités, lesquelles sont **vraies** ?
+                      options:
+                        - { id: a, text: 2^3 x 2^4 = 2^7 }
+                        - { id: b, text: 2^3 x 2^4 = 2^12 }
+                        - { id: c, text: (-3)^2 = 9 }
+                        - { id: d, text: -3^2 = 9 }
+                        - { id: e, text: 5^0 = 1 }
+                      multiple: true
+                      position: 1
+                      chapter: { position: 2, title: Puissances et pourcentages, lang: fr }
+                      course: { slug: les-bases-du-calcul, title: Les bases du calcul, lang: fr, difficulty: debutant }
+                      web_url: https://pulsars.science/cours/les-bases-du-calcul/exercice/3
+                shortAnswer:
+                  value:
+                    data:
+                      id: 2
+                      lang: fr
+                      type: reponse_courte
+                      title: Simplifier une fraction
+                      question_md: "Simplifie la fraction `18/24` au maximum.\n\nÉcris ta réponse sous la forme `a/b`."
+                      options: null
+                      multiple: null
+                      position: 2
+                      chapter: { position: 1, title: L'ordre des opérations, lang: fr }
+                      course: { slug: les-bases-du-calcul, title: Les bases du calcul, lang: fr, difficulty: debutant }
+                      web_url: https://pulsars.science/cours/les-bases-du-calcul/exercice/2
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/exams:
+    get:
+      tags: [exams]
+      operationId: listExams
+      summary: Published exam papers
+      description: |
+        Only `statut = publie` with a past `published_at`. Exams in
+        `attente_import` or `brouillon` (awaiting human review of the AI
+        import) are never returned. Sorted by `published_at` descending, then
+        `id` descending.
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/ExamType' }
+        - name: subject
+          in: query
+          schema: { $ref: '#/components/schemas/ExamSubject' }
+        - name: level
+          in: query
+          description: Free-text level as stored (`3e`, `Terminale`, `CPGE`), exact match.
+          schema: { type: string, maxLength: 50, example: Terminale }
+        - name: session
+          in: query
+          description: Exact match on the session label (`2026`, `Session 2026 — 16 juin 2026`).
+          schema: { type: string, maxLength: 80 }
+        - name: country
+          in: query
+          schema: { type: string, pattern: '^[A-Z]{2}$', example: FR }
+        - name: competition
+          in: query
+          description: Competitive exam key, only for `type=concours`.
+          schema: { type: string, example: centrale-supelec }
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200':
+          description: A page of exams
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ExamSummary' }
+                  next_cursor: { $ref: '#/components/schemas/NextCursor' }
+              examples:
+                page:
+                  $ref: '#/components/examples/ExamsPage'
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/exams/{slug}:
+    get:
+      tags: [exams]
+      operationId: getExam
+      summary: A published exam with its statements, without corrections
+      description: |
+        Parts carry their statement (`enonce_md`) only. The model answer
+        (`corrige_md`) and the correction PDF are **never** returned, even
+        though the website shows them: the game may reuse exam questions.
+        Exam `title` and `description` are not translatable in Laravel; only
+        parts are.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, example: baccalaureat-general-2026-mathematiques-specialite-jour-1 }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The exam
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ExamDetail' }
+              example:
+                data:
+                  id: 2
+                  slug: baccalaureat-general-2026-mathematiques-specialite-jour-1
+                  lang: fr
+                  title: Baccalauréat général 2026 — Mathématiques, spécialité (jour 1)
+                  type: bac
+                  competition: null
+                  subject: mathematiques
+                  country: FR
+                  level: Terminale
+                  tracks: []
+                  session: Session 2026 — 16 juin 2026
+                  duration_minutes: 240
+                  total_points: 20
+                  part_count: 4
+                  pdf_url: https://pulsars.science/examens/baccalaureat-general-2026-mathematiques-specialite-jour-1/telecharger
+                  official_url: null
+                  source_url: null
+                  published_at: '2026-08-13T09:32:04Z'
+                  web_url: https://pulsars.science/examens/baccalaureat-general-2026-mathematiques-specialite-jour-1
+                  description: "Sujet de spécialité mathématiques du baccalauréat général, session 2026, épreuve du 16 juin (sujet 26-MATJ1ME1). Quatre exercices : probabilités et inégalité de Bienaymé-Tchebychev, vrai/faux en géométrie dans l'espace et dénombrement, équation différentielle et suite pour un système de chauffage, étude d'une fonction avec logarithme."
+                  parts:
+                    - id: 46
+                      position: 1
+                      lang: fr
+                      title: "Exercice 1 — Probabilités : traversée en navire"
+                      points: 5
+                      statement_md: "Un navire assure la liaison entre deux ports de la Méditerranée. Lors d'une traversée, une famille a la possibilité de réserver une cabine ainsi qu'un emplacement…"
+                    - id: 47
+                      position: 2
+                      lang: fr
+                      title: "Exercice 2 — Vrai/faux : géométrie dans l'espace et dénombrement"
+                      points: 4
+                      statement_md: "*Pour chacune des affirmations suivantes, indiquer si elle est vraie ou fausse. Justifier chaque réponse. Une réponse non justifiée ne rapporte aucun point.*…"
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/resources:
+    get:
+      tags: [resources]
+      operationId: listResources
+      summary: Published free resources
+      description: Only `statut = publie`. Sorted by `created_at` descending, then `id` descending.
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - name: category
+          in: query
+          description: Exact match on the **original** (French) category, e.g. `Mathématiques`.
+          schema: { type: string, maxLength: 120 }
+        - name: doc_lang
+          in: query
+          description: Language of the document itself (not of its description).
+          schema: { type: string, maxLength: 8, example: en }
+        - name: mode
+          in: query
+          schema: { $ref: '#/components/schemas/ResourceMode' }
+        - name: license
+          in: query
+          schema: { type: string, example: cc0-1.0 }
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200':
+          description: A page of resources
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Resource' }
+                  next_cursor: { $ref: '#/components/schemas/NextCursor' }
+              examples:
+                page:
+                  $ref: '#/components/examples/ResourcesPage'
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/resources/{slug}:
+    get:
+      tags: [resources]
+      operationId: getResource
+      summary: One published resource, with licence and attribution
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, example: misselbooks-abstract-algebra }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The resource
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Resource' }
+              examples:
+                hostedWithLicence:
+                  $ref: '#/components/examples/ResourceAbstractAlgebraResponse'
+                hostedWithoutLicence:
+                  summary: A hosted article whose licence was never recorded
+                  value:
+                    data:
+                      id: 1
+                      slug: article-chimie-inorganique-ic901972h
+                      lang: fr
+                      title: 'Tripodal 4-Pyridyl-Derived Host Ligands and Their Metallo-Supramolecular Chemistry: Stella Octangula and Bowl-Shaped Assemblies'
+                      description: Un article de recherche en chimie inorganique, à télécharger en PDF.
+                      category: Chimie
+                      doc_lang: en
+                      mode: host
+                      attribution: null
+                      license: null
+                      download_url: https://pulsars.science/ressources/article-chimie-inorganique-ic901972h/telecharger
+                      source_url: null
+                      size_bytes: 3451711
+                      created_at: '2026-08-07T14:44:26Z'
+                      updated_at: '2026-08-07T14:44:26Z'
+                      web_url: https://pulsars.science/ressources/article-chimie-inorganique-ic901972h
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/me:
+    get:
+      tags: [account]
+      operationId: getMe
+      summary: Public profile of the token's user
+      description: |
+        Returns exactly what `https://pulsars.science/membres/{pseudo}` shows to
+        anyone, minus school level and class (see `game-design.md` /
+        decisions): pseudo, avatar, bio, roles, membership date, XP and level.
+        Never e-mail, locale, social logins or moderation state.
+
+        `Cache-Control: private, no-store`.
+      security:
+        - gameToken: []
+      responses:
+        '200':
+          description: The profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/Me' }
+              example:
+                data:
+                  id: '1'
+                  pseudo: jikuji
+                  avatar_url: null
+                  bio: null
+                  member_since: '2026-08-07T14:44:15Z'
+                  roles:
+                    - { slug: super-admin, name: Super admin, category: permission, color: '#d1544f' }
+                  xp:
+                    total: 0
+                    level: 1
+                    level_start: 0
+                    next_level_at: 100
+                  profile_url: https://pulsars.science/membres/jikuji
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: The account in `sub` no longer exists (deleted after the token was issued).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+components:
+  securitySchemes:
+    gameToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        EdDSA (Ed25519) JWT issued by `POST https://pulsars.science/jeu/jeton`.
+        See `auth-jwt.md`.
+
+  parameters:
+    Lang:
+      name: lang
+      in: query
+      description: |
+        Language of the content. Absent → original language (`fr`). Falls back
+        to French per object and per field when a translation is missing; each
+        object says what it got in its own `lang` field.
+      schema: { $ref: '#/components/schemas/LangCode' }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque value from a previous `next_cursor`. Only valid with the same filters.
+      schema: { type: string, maxLength: 512 }
+    Search:
+      name: q
+      in: query
+      description: |
+        Case-insensitive substring search on title and description, in the
+        original text and in the translation for `lang`. Minimum 2 characters.
+      schema: { type: string, minLength: 2, maxLength: 100 }
+    CourseSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, example: les-bases-du-calcul }
+
+  headers:
+    ETag:
+      description: Strong validator, hash of the response body.
+      schema: { type: string, example: '"5f2b9c1e"' }
+    CacheControlPublic:
+      schema: { type: string, example: 'public, max-age=300, stale-while-revalidate=60' }
+    RateLimitLimit:
+      schema: { type: integer, example: 60 }
+    RateLimitRemaining:
+      schema: { type: integer, example: 57 }
+    RateLimitReset:
+      description: Seconds until the window resets.
+      schema: { type: integer, example: 41 }
+    RetryAfter:
+      schema: { type: integer, example: 12 }
+
+  responses:
+    NotModified:
+      description: The `If-None-Match` value matches; no body.
+    BadRequest:
+      description: Invalid parameter or cursor
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/invalid-parameter
+            title: Invalid parameter
+            status: 400
+            detail: One or more query parameters are invalid.
+            instance: /v1/courses?limit=500
+            errors:
+              - { parameter: limit, detail: must be between 1 and 100 }
+    NotFound:
+      description: Unknown or unpublished resource
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/not-found
+            title: Resource not found
+            status: 404
+            detail: No published course has the slug 'les-bases-du-calcul-2'.
+            instance: /v1/courses/les-bases-du-calcul-2
+    Unauthorized:
+      description: Missing, invalid or expired token
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, example: 'Bearer error="invalid_token", error_description="token expired"' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/unauthorized
+            title: Invalid token
+            status: 401
+            detail: The token has expired.
+            instance: /v1/me
+            reason: expired
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/rate-limited
+            title: Too many requests
+            status: 429
+            detail: Limit of 60 requests per minute reached.
+
+  examples:
+    CoursesPage:
+      value:
+        data:
+          - id: 1
+            slug: les-bases-du-calcul
+            lang: fr
+            title: Les bases du calcul
+            description: Priorités opératoires, fractions, puissances et pourcentages. De quoi calculer juste, sans calculatrice. Aucun prérequis.
+            theme: Mathématiques
+            subject: { slug: mathematiques, name: Mathématiques }
+            topic: null
+            difficulty: debutant
+            levels: []
+            duration_minutes: 60
+            tags: [maths, calcul]
+            author: jikuji
+            chapter_count: 2
+            lesson_count: 4
+            exercise_count: 5
+            available_langs: [fr, en]
+            published_at: '2026-08-17T09:27:34Z'
+            updated_at: '2026-08-17T09:27:34Z'
+            web_url: https://pulsars.science/cours/les-bases-du-calcul
+        next_cursor: eyJrIjpbIkxlcyBiYXNlcyBkdSBjYWxjdWwiLDFdLCJmIjoiOWYxYyJ9
+    ExercisesPage:
+      value:
+        data:
+          - id: 1
+            lang: fr
+            type: qcm
+            title: Appliquer les priorités
+            question_md: Combien vaut `12 - 2 x 3 + 1` ?
+            options:
+              - { id: a, text: '31' }
+              - { id: b, text: '7' }
+              - { id: c, text: '11' }
+              - { id: d, text: '4' }
+            multiple: false
+            position: 1
+            chapter: { position: 1, title: L'ordre des opérations, lang: fr }
+            course: { slug: les-bases-du-calcul, title: Les bases du calcul, lang: fr, difficulty: debutant }
+            web_url: https://pulsars.science/cours/les-bases-du-calcul/exercice/1
+        next_cursor: eyJrIjpbMV0sImYiOiJhMWIyIn0
+    ExerciseQcmResponse:
+      value:
+        data:
+          id: 1
+          lang: fr
+          type: qcm
+          title: Appliquer les priorités
+          question_md: Combien vaut `12 - 2 x 3 + 1` ?
+          options:
+            - { id: a, text: '31' }
+            - { id: b, text: '7' }
+            - { id: c, text: '11' }
+            - { id: d, text: '4' }
+          multiple: false
+          position: 1
+          chapter: { position: 1, title: L'ordre des opérations, lang: fr }
+          course: { slug: les-bases-du-calcul, title: Les bases du calcul, lang: fr, difficulty: debutant }
+          web_url: https://pulsars.science/cours/les-bases-du-calcul/exercice/1
+    ExamsPage:
+      value:
+        data:
+          - id: 2
+            slug: baccalaureat-general-2026-mathematiques-specialite-jour-1
+            lang: fr
+            title: Baccalauréat général 2026 — Mathématiques, spécialité (jour 1)
+            type: bac
+            competition: null
+            subject: mathematiques
+            country: FR
+            level: Terminale
+            tracks: []
+            session: Session 2026 — 16 juin 2026
+            duration_minutes: 240
+            total_points: 20
+            part_count: 4
+            pdf_url: https://pulsars.science/examens/baccalaureat-general-2026-mathematiques-specialite-jour-1/telecharger
+            official_url: null
+            source_url: null
+            published_at: '2026-08-13T09:32:04Z'
+            web_url: https://pulsars.science/examens/baccalaureat-general-2026-mathematiques-specialite-jour-1
+          - id: 5
+            slug: centrale-supelec-2026-mathematiques-1-mp-mpi
+            lang: fr
+            title: Centrale-Supélec 2026 — Mathématiques 1 (MP, MPI)
+            type: concours
+            competition: centrale-supelec
+            subject: mathematiques
+            country: FR
+            level: CPGE
+            tracks: [MP, MPI]
+            session: '2026'
+            duration_minutes: null
+            total_points: null
+            part_count: 0
+            pdf_url: null
+            official_url: https://www.concours-centrale-supelec.fr/sites/default/files/documents/M098.pdf
+            source_url: https://www.concours-centrale-supelec.fr/sujets-rapports
+            published_at: '2026-08-13T11:03:10Z'
+            web_url: https://pulsars.science/examens/centrale-supelec-2026-mathematiques-1-mp-mpi
+        next_cursor: null
+    ResourcesPage:
+      value:
+        data:
+          - id: 2
+            slug: misselbooks-abstract-algebra
+            lang: fr
+            title: Abstract Algebra
+            description: 'Un manuel d’algèbre abstraite en anglais (220 pages) : groupes, anneaux, corps, avec des applications à la cryptographie. Écrit et publié en accès libre par Andrew Misseldine.'
+            category: Mathématiques
+            doc_lang: en
+            mode: host
+            attribution: Andrew Misseldine
+            license:
+              key: cc0-1.0
+              name: CC0 1.0 (domaine public)
+              url: https://creativecommons.org/publicdomain/zero/1.0/
+            download_url: https://pulsars.science/ressources/misselbooks-abstract-algebra/telecharger
+            source_url: https://github.com/emisseldine/MisselBooks/blob/main/AbstractAlgebra/Abstract%20Algebra.pdf
+            size_bytes: 1543021
+            created_at: '2026-08-07T14:44:26Z'
+            updated_at: '2026-08-07T14:44:26Z'
+            web_url: https://pulsars.science/ressources/misselbooks-abstract-algebra
+        next_cursor: null
+    ResourceAbstractAlgebraResponse:
+      value:
+        data:
+          id: 2
+          slug: misselbooks-abstract-algebra
+          lang: fr
+          title: Abstract Algebra
+          description: 'Un manuel d’algèbre abstraite en anglais (220 pages) : groupes, anneaux, corps, avec des applications à la cryptographie. Écrit et publié en accès libre par Andrew Misseldine.'
+          category: Mathématiques
+          doc_lang: en
+          mode: host
+          attribution: Andrew Misseldine
+          license:
+            key: cc0-1.0
+            name: CC0 1.0 (domaine public)
+            url: https://creativecommons.org/publicdomain/zero/1.0/
+          download_url: https://pulsars.science/ressources/misselbooks-abstract-algebra/telecharger
+          source_url: https://github.com/emisseldine/MisselBooks/blob/main/AbstractAlgebra/Abstract%20Algebra.pdf
+          size_bytes: 1543021
+          created_at: '2026-08-07T14:44:26Z'
+          updated_at: '2026-08-07T14:44:26Z'
+          web_url: https://pulsars.science/ressources/misselbooks-abstract-algebra
+  schemas:
+    LangCode:
+      type: string
+      enum: [fr, en]
+    Difficulty:
+      type: string
+      enum: [debutant, intermediaire, avance]
+      description: '`App\Enums\Difficulte`.'
+    Level:
+      type: string
+      enum: [college, lycee, superieur]
+      description: Normalised from the free tags `collège`/`college`, `lycée`/`lycee`, `supérieur`.
+    ExerciseType:
+      type: string
+      enum: [qcm, reponse_courte, reponse_libre]
+      description: |
+        `App\Enums\TypeExercice`. `qcm` and `reponse_courte` are graded by the
+        server; `reponse_libre` is never auto-graded (the learner compares
+        with the solution).
+    ExamType:
+      type: string
+      enum: [brevet, bac, blanc, concours]
+    ExamSubject:
+      type: string
+      enum: [mathematiques, physique, chimie, informatique, sciences-industrielles, langues, redaction]
+      description: '`App\Enums\MatiereExamen`. Independent from the course subjects.'
+    ResourceMode:
+      type: string
+      enum: [host, link]
+      description: |
+        `host`: Pulsars serves the file (`download_url` is set; `source_url`,
+        when set, credits where it came from). `link`: the resource lives on
+        its author's site (`source_url` is the target, `download_url` is null).
+    NextCursor:
+      type: [string, 'null']
+      description: Pass it as `cursor` to get the next page; null on the last page.
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details.
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [parameter, detail]
+            properties:
+              parameter: { type: string }
+              detail: { type: string }
+        reason:
+          type: string
+          description: For 401 only. See `auth-jwt.md`.
+          enum: [missing, malformed, expired, not_yet_valid, bad_signature, unknown_kid, bad_issuer, bad_audience, bad_algorithm]
+        trace_id: { type: string }
+      additionalProperties: false
+
+    Health:
+      type: object
+      required: [status, version, checked_at, checks]
+      properties:
+        status: { type: string, enum: [ok, degraded, down] }
+        version: { type: string }
+        checked_at: { type: string, format: date-time }
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, ok, duration_ms, error]
+            properties:
+              name: { type: string, enum: [postgres, redis] }
+              ok: { type: boolean }
+              duration_ms: { type: number }
+              error:
+                type: [string, 'null']
+                description: Short code (`timeout`, `connection_refused`, `auth_failed`), never a raw message.
+
+    SubjectRef:
+      type: object
+      required: [slug, name]
+      properties:
+        slug: { type: string, description: 'Slug of the subject name (`Mathématiques` → `mathematiques`).' }
+        name: { type: string, description: Translated when `lang=en` and a translation exists. }
+    TopicRef:
+      type: object
+      required: [slug, name]
+      properties:
+        slug: { type: string }
+        name: { type: string, description: Never translated (no translation exists). }
+
+    Catalog:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [taxonomy, lang, subjects]
+          properties:
+            taxonomy: { type: string, enum: [theme, domain-subject-topic] }
+            lang: { $ref: '#/components/schemas/LangCode' }
+            subjects:
+              type: array
+              items:
+                type: object
+                required: [slug, name, course_count, topics]
+                properties:
+                  slug: { type: string }
+                  name: { type: string }
+                  course_count: { type: integer, description: Includes courses without a topic. }
+                  topics:
+                    type: array
+                    items:
+                      type: object
+                      required: [slug, name, course_count]
+                      properties:
+                        slug: { type: string }
+                        name: { type: string }
+                        course_count: { type: integer }
+
+    CourseSummary:
+      type: object
+      required: [id, slug, lang, title, description, theme, subject, topic, difficulty, levels, duration_minutes, tags, author, chapter_count, lesson_count, exercise_count, available_langs, published_at, updated_at, web_url]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        lang: { $ref: '#/components/schemas/LangCode' }
+        title: { type: string, description: Translatable. }
+        description: { type: string, description: Translatable. }
+        theme:
+          type: string
+          description: Raw Laravel `theme`, kept so clients can display what the site displays.
+        subject: { $ref: '#/components/schemas/SubjectRef' }
+        topic:
+          oneOf:
+            - $ref: '#/components/schemas/TopicRef'
+            - type: 'null'
+        difficulty: { $ref: '#/components/schemas/Difficulty' }
+        levels:
+          type: array
+          items: { $ref: '#/components/schemas/Level' }
+        duration_minutes: { type: [integer, 'null'] }
+        tags:
+          type: array
+          items: { type: string }
+          description: Free tags as stored, never translated.
+        author:
+          type: [string, 'null']
+          description: Pseudo of the author account. Null if the account was deleted.
+        chapter_count: { type: integer }
+        lesson_count: { type: integer }
+        exercise_count: { type: integer }
+        available_langs:
+          type: array
+          items: { $ref: '#/components/schemas/LangCode' }
+          description: '`fr` always; `en` when a course-level translation exists.'
+        published_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        web_url: { type: string, format: uri }
+
+    CourseDetail:
+      allOf:
+        - $ref: '#/components/schemas/CourseSummary'
+        - type: object
+          required: [chapters]
+          properties:
+            chapters:
+              type: array
+              items:
+                type: object
+                required: [position, title, lang, lessons, exercises]
+                properties:
+                  position: { type: integer, description: 'Laravel `ordre`, starting at 1.' }
+                  title: { type: string }
+                  lang: { $ref: '#/components/schemas/LangCode' }
+                  lessons:
+                    type: array
+                    items:
+                      type: object
+                      required: [slug, position, title, lang]
+                      properties:
+                        slug: { type: string }
+                        position: { type: integer }
+                        title: { type: string }
+                        lang: { $ref: '#/components/schemas/LangCode' }
+                  exercises:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, position, type, title, lang]
+                      properties:
+                        id: { type: integer }
+                        position: { type: integer }
+                        type: { $ref: '#/components/schemas/ExerciseType' }
+                        title: { type: string }
+                        lang: { $ref: '#/components/schemas/LangCode' }
+
+    LessonLink:
+      type: object
+      required: [slug, title]
+      properties:
+        slug: { type: string }
+        title: { type: string }
+
+    Lesson:
+      type: object
+      required: [slug, lang, title, position, content_md, chapter, course, previous, next, updated_at, web_url]
+      properties:
+        slug: { type: string }
+        lang: { $ref: '#/components/schemas/LangCode' }
+        title: { type: string }
+        position: { type: integer }
+        content_md: { type: string, description: Raw Markdown with LaTeX. Translatable. }
+        chapter:
+          type: object
+          required: [position, title, lang]
+          properties:
+            position: { type: integer }
+            title: { type: string }
+            lang: { $ref: '#/components/schemas/LangCode' }
+        course:
+          type: object
+          required: [slug, title, lang]
+          properties:
+            slug: { type: string }
+            title: { type: string }
+            lang: { $ref: '#/components/schemas/LangCode' }
+        previous:
+          description: Previous lesson in reading order across chapters.
+          oneOf:
+            - $ref: '#/components/schemas/LessonLink'
+            - type: 'null'
+        next:
+          oneOf:
+            - $ref: '#/components/schemas/LessonLink'
+            - type: 'null'
+        updated_at: { type: string, format: date-time }
+        web_url: { type: string, format: uri }
+
+    Exercise:
+      type: object
+      description: |
+        Never contains the answer. Excluded on purpose: `solution_md`,
+        `donnees.correctes` (QCM), `donnees.acceptees` (short answer), and the
+        English translation of `solution_md`.
+      required: [id, lang, type, title, question_md, options, multiple, position, chapter, course, web_url]
+      properties:
+        id: { type: integer }
+        lang: { $ref: '#/components/schemas/LangCode' }
+        type: { $ref: '#/components/schemas/ExerciseType' }
+        title: { type: string }
+        question_md: { type: string }
+        options:
+          description: |
+            QCM choices, in stored order; null for other types. Option texts
+            are **never translated** (they live in the `donnees` JSON, which
+            Laravel does not translate).
+          oneOf:
+            - type: array
+              items:
+                type: object
+                required: [id, text]
+                properties:
+                  id: { type: string }
+                  text: { type: string }
+            - type: 'null'
+        multiple:
+          type: [boolean, 'null']
+          description: |
+            QCM only: true when more than one option is correct (checkboxes
+            rather than radio buttons). This is a deliberate, small hint that
+            the website already gives. Null for other types.
+        position: { type: integer }
+        chapter:
+          type: object
+          required: [position, title, lang]
+          properties:
+            position: { type: integer }
+            title: { type: string }
+            lang: { $ref: '#/components/schemas/LangCode' }
+        course:
+          type: object
+          required: [slug, title, lang, difficulty]
+          properties:
+            slug: { type: string }
+            title: { type: string }
+            lang: { $ref: '#/components/schemas/LangCode' }
+            difficulty: { $ref: '#/components/schemas/Difficulty' }
+        web_url: { type: string, format: uri }
+
+    ExamSummary:
+      type: object
+      required: [id, slug, lang, title, type, competition, subject, country, level, tracks, session, duration_minutes, total_points, part_count, pdf_url, official_url, source_url, published_at, web_url]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        lang:
+          type: string
+          const: fr
+          description: Exam titles are not translatable in Laravel; always `fr`.
+        title: { type: string }
+        type: { $ref: '#/components/schemas/ExamType' }
+        competition:
+          type: [string, 'null']
+          description: Competitive exam key (`centrale-supelec`), null for national exams.
+        subject: { $ref: '#/components/schemas/ExamSubject' }
+        country: { type: string, pattern: '^[A-Z]{2}$' }
+        level: { type: string }
+        tracks:
+          type: array
+          items: { type: string }
+          description: CPGE tracks (`MP`, `MPI`…); empty for national exams.
+        session: { type: [string, 'null'] }
+        duration_minutes: { type: [integer, 'null'] }
+        total_points: { type: [integer, 'null'] }
+        part_count: { type: integer }
+        pdf_url:
+          type: [string, 'null']
+          format: uri
+          description: The statement PDF served by Laravel, when Pulsars hosts it.
+        official_url:
+          type: [string, 'null']
+          format: uri
+          description: |
+            The statement on the organiser's site, for exams Pulsars does not
+            host. Laravel only shows URLs that pass `App\Support\SujetOfficiel`
+            (domain and path allow-list); the API must apply the same filter
+            and return null otherwise.
+        source_url:
+          type: [string, 'null']
+          format: uri
+          description: The organiser's page listing papers, cited as the source.
+        published_at: { type: string, format: date-time }
+        web_url: { type: string, format: uri }
+
+    ExamDetail:
+      allOf:
+        - $ref: '#/components/schemas/ExamSummary'
+        - type: object
+          required: [description, parts]
+          properties:
+            description: { type: [string, 'null'] }
+            parts:
+              type: array
+              items:
+                type: object
+                description: '`corrige_md` is excluded on purpose.'
+                required: [id, position, lang, title, points, statement_md]
+                properties:
+                  id: { type: integer }
+                  position: { type: integer }
+                  lang: { $ref: '#/components/schemas/LangCode' }
+                  title: { type: string }
+                  points: { type: [number, 'null'] }
+                  statement_md: { type: string }
+
+    License:
+      type: object
+      required: [key, name, url]
+      properties:
+        key: { type: string, description: 'Key of `config/licences.php` (e.g. `cc-by-4.0`), or `autre`.' }
+        name:
+          type: string
+          description: Display name; for `autre`, the free text entered by the uploader.
+        url: { type: [string, 'null'], format: uri }
+
+    Resource:
+      type: object
+      required: [id, slug, lang, title, description, category, doc_lang, mode, attribution, license, download_url, source_url, size_bytes, created_at, updated_at, web_url]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        lang: { $ref: '#/components/schemas/LangCode' }
+        title: { type: string }
+        description: { type: [string, 'null'] }
+        category:
+          type: [string, 'null']
+          description: Translatable.
+        doc_lang:
+          type: [string, 'null']
+          description: Language of the document itself.
+        mode: { $ref: '#/components/schemas/ResourceMode' }
+        attribution:
+          type: [string, 'null']
+          description: Name credited as author of the document (`auteur_nom`), not a Pulsars account.
+        license:
+          description: Null when no licence was recorded (older resources).
+          oneOf:
+            - $ref: '#/components/schemas/License'
+            - type: 'null'
+        download_url: { type: [string, 'null'], format: uri }
+        source_url: { type: [string, 'null'], format: uri }
+        size_bytes:
+          type: [integer, 'null']
+          description: Only for `host`.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        web_url: { type: string, format: uri }
+
+    Role:
+      type: object
+      required: [slug, name, category, color]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        category: { type: string, enum: [permission, matiere, distinction] }
+        color: { type: string, pattern: '^#[0-9a-fA-F]{6}$' }
+
+    Me:
+      type: object
+      required: [id, pseudo, avatar_url, bio, member_since, roles, xp, profile_url]
+      properties:
+        id: { type: string, description: Same value as the JWT `sub`. }
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+        bio: { type: [string, 'null'], maxLength: 280 }
+        member_since: { type: string, format: date-time }
+        roles:
+          type: array
+          items: { $ref: '#/components/schemas/Role' }
+          description: Sorted by permission level descending, then display order.
+        xp:
+          type: object
+          description: |
+            Computed exactly like `App\Services\Experience::pour()`. See
+            `webhooks.md` for the scale.
+          required: [total, level, level_start, next_level_at]
+          properties:
+            total: { type: integer }
+            level: { type: integer, minimum: 1 }
+            level_start: { type: integer, description: XP at which the current level starts. }
+            next_level_at: { type: integer }
+        profile_url: { type: string, format: uri }

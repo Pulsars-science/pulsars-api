@@ -1,0 +1,53 @@
+name: Contract change
+description: Propose a change to docs/contract/ (OpenAPI, JWT, webhooks, views).
+labels: [contract]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The contract is shared with the Laravel site and the game front end.
+        It changes before the code: see "Changing the contract" in CONTRIBUTING.md.
+  - type: dropdown
+    id: document
+    attributes:
+      label: Document
+      multiple: true
+      options:
+        - openapi.yaml
+        - auth-jwt.md
+        - webhooks.md
+        - database.md / views.sql
+        - game-design.md
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+    validations:
+      required: true
+  - type: dropdown
+    id: compatibility
+    attributes:
+      label: Compatibility
+      options:
+        - Additive (fits in /v1)
+        - Breaking (needs /v2 or coordinated release)
+    validations:
+      required: true
+  - type: checkboxes
+    id: affected
+    attributes:
+      label: Who must change
+      options:
+        - label: pulsars-api (this repository)
+        - label: Laravel site (pulsars.science)
+        - label: Game front end (game.pulsars.science)
+        - label: Third-party API clients

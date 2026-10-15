@@ -1,0 +1,45 @@
+[package]
+name = "pulsars-api"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Public content API and game server of Pulsars (https://pulsars.science)"
+repository = "https://github.com/Pulsars-science/pulsars-api"
+publish = false
+
+[dependencies]
+axum = "0.8"
+chrono = { version = "0.4.45", features = ["serde"] }
+fred = { version = "10.1.0", default-features = false, features = ["i-std", "enable-rustls-ring"] }
+metrics = { version = "0.24.6", default-features = false }
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "macros", "migrate", "chrono", "uuid", "json"] }
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["full"] }
+tower = { version = "0.5.3", features = ["util", "timeout"] }
+tower-http = { version = "0.7.1", features = ["cors", "trace", "timeout", "compression-gzip", "compression-br", "limit", "request-id", "catch-panic", "set-header", "util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+uuid = { version = "1.28.0", features = ["v4", "v7"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# No panics on request paths. Tests opt out in clippy.toml and with an
+# explicit `allow` at the top of integration test files.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
