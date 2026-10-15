@@ -1,0 +1,117 @@
+# pulsars-api: the public content API and game server of api.pulsars.science.
+#
+#   sudo cp pulsars-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pulsars-api
+#
+# It listens on 127.0.0.1:8080 (public traffic, through nginx) and
+# 127.0.0.1:9464 (/metrics, never proxied). Nothing to open on the firewall.
+# Full procedure: docs/deployment.md. `deploy-api` installs this file on each
+# deployment when it has changed.
+
+[Unit]
+Description=Pulsars API (api.pulsars.science)
+Documentation=https://github.com/Pulsars-science/pulsars-api/blob/main/docs/deployment.md
+# Ordering only, not a dependency: the API starts without PostgreSQL or Redis
+# and connects when they come up (`/healthz` reports them meanwhile).
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+# Restart loops: give up rather than hammer the machine. These keys belong to
+# [Unit]; in [Service] systemd ignores them.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# `exec`: `systemctl start` fails at once if the binary cannot be executed.
+Type=exec
+User=pulsars-api
+Group=pulsars-api
+
+# Read by systemd itself (as root) before dropping privileges: the file can
+# stay root:root 0600, unreadable by the service account.
+EnvironmentFile=/etc/pulsars-api/pulsars-api.env
+
+# `current` is a symlink to the active release, swapped by `deploy-api`.
+ExecStart=/opt/pulsars-api/current/pulsars-api
+WorkingDirectory=/opt/pulsars-api/current
+
+Restart=on-failure
+RestartSec=3
+# 78 (EX_CONFIG) is an invalid configuration: restarting cannot fix it, the
+# log already lists every problem.
+RestartPreventExitStatus=78
+
+# SIGTERM starts the drain: in-flight requests get SHUTDOWN_GRACE_SECS
+# (default 20) to finish, then PostgreSQL and Redis are closed. This timeout
+# must stay above SHUTDOWN_GRACE_SECS, or systemd sends SIGKILL in the middle
+# of the drain. Raise both together.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pulsars-api
+
+# One connection is one descriptor: the default soft limit of 1024 would cap
+# WebSocket players well below what the machine can take.
+LimitNOFILE=65536
+# Normal use is a few tens of MB. A leak hits this ceiling instead of the
+# rest of the VPS (Octane, the databases).
+MemoryHigh=384M
+MemoryMax=512M
+TasksMax=256
+
+# ---------------------------------------------------------------- sandbox
+#
+# The binary only needs to: read its own files, open TCP sockets (listeners,
+# PostgreSQL, Redis, Laravel's JWKS over HTTPS) and resolve names. Each line
+# below was checked against a Tokio + rustls (ring) build under systemd; see
+# docs/deployment.md, "Sandbox".
+
+NoNewPrivileges=yes
+# No capability at all: port 8080 needs none.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# The whole file system is read-only; the service writes nothing to disk
+# (logs go to the journal through stdout).
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+DevicePolicy=closed
+UMask=0077
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# Other processes are invisible, and /proc shows only this process's own
+# entries. Rust reads /proc/self/cgroup and /proc/self/mountinfo to size the
+# Tokio runtime from the CPU quota: those stay visible.
+ProtectProc=invisible
+ProcSubset=pid
+
+# AF_UNIX: name resolution through systemd-resolved (nss-resolve), and a
+# PostgreSQL socket if DATABASE_URL ever points to one.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# No JIT anywhere (ring is precompiled assembly), so no page ever needs to be
+# writable and executable at once.
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+
+SystemCallArchitectures=native
+# Tokio needs epoll, eventfd, futex, clone3 and the timer calls, all in
+# @system-service. It never uses io_uring.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
