@@ -134,7 +134,13 @@ pub fn cors_restricted(origins: Vec<HeaderValue>) -> CorsLayer {
             header::CONTENT_TYPE,
             TRACEPARENT,
         ])
-        .expose_headers([X_REQUEST_ID, header::RETRY_AFTER])
+        .expose_headers([
+            X_REQUEST_ID,
+            HeaderName::from_static("ratelimit-limit"),
+            HeaderName::from_static("ratelimit-remaining"),
+            HeaderName::from_static("ratelimit-reset"),
+            header::RETRY_AFTER,
+        ])
         .max_age(std::time::Duration::from_secs(600))
 }
 
@@ -148,7 +154,7 @@ pub fn span_trace_id(request: &Request) -> String {
         .unwrap_or_default()
 }
 
-/// The client's IP address, for logs (and later rate limits): the last
+/// The client's IP address, for logs and rate limits: the last
 /// `X-Forwarded-For` entry, which the edge proxy appends (earlier entries
 /// come from the client and can be forged), or the peer address when the
 /// API is reached directly.

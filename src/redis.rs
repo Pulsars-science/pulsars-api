@@ -1,5 +1,5 @@
-//! Redis client (matchmaking queues, pub/sub and rate limits in later
-//! phases).
+//! Redis client: rate limits, and matchmaking queues and pub/sub in later
+//! phases.
 //!
 //! `fred` is used rather than `redis`: it reconnects on its own with a
 //! configurable policy, has first-class pub/sub (needed to run several API

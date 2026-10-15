@@ -9,6 +9,7 @@ pub mod db;
 pub mod error;
 pub mod links;
 pub mod middleware;
+pub mod rate_limit;
 pub mod redis;
 pub mod routes;
 pub mod state;

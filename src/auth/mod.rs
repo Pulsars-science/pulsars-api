@@ -25,6 +25,12 @@ pub use token::{Claims, Expected, Reason};
 #[derive(Debug, Clone)]
 pub struct AuthUser(pub Claims);
 
+/// The outcome of verifying a request's `Authorization` header, left in the
+/// request extensions by whoever verified it first (the rate limiter), so
+/// the token is verified once per request.
+#[derive(Debug, Clone)]
+pub struct TokenCheck(pub Result<Claims, Failure>);
+
 /// Why [`authenticate`] failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -64,13 +70,20 @@ impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        let header = parts.headers.get(AUTHORIZATION).map(|v| v.as_bytes());
-        let expected = Expected {
-            issuer: &state.config.jwt_issuer,
-            audience: &state.config.jwt_audience,
+        let result = match parts.extensions.get::<TokenCheck>() {
+            // Already verified by the rate limiter.
+            Some(TokenCheck(result)) => result.clone(),
+            None => {
+                let header = parts.headers.get(AUTHORIZATION).map(|v| v.as_bytes());
+                let expected = Expected {
+                    issuer: &state.config.jwt_issuer,
+                    audience: &state.config.jwt_audience,
+                };
+                let now = chrono::Utc::now().timestamp();
+                authenticate(header, &state.jwks, expected, now).await
+            }
         };
-        let now = chrono::Utc::now().timestamp();
-        match authenticate(header, &state.jwks, expected, now).await {
+        match result {
             Ok(claims) => Ok(Self(claims)),
             Err(Failure::Rejected { reason, kid }) => {
                 metrics::counter!(names::AUTH_REJECTIONS_TOTAL, "reason" => reason.code())

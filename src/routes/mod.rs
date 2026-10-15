@@ -14,7 +14,7 @@ use axum::Router;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{OriginalUri, Request};
 use axum::http::{HeaderValue, StatusCode};
-use axum::middleware::from_fn;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower::ServiceBuilder;
@@ -29,6 +29,7 @@ use tracing::Level;
 
 use crate::error::ApiError;
 use crate::middleware::{self as mw, X_REQUEST_ID};
+use crate::rate_limit;
 use crate::state::AppState;
 
 /// Builds the public application.
@@ -60,12 +61,14 @@ pub fn router(state: AppState) -> Router {
             get(resources::show).options(preflight),
         )
         .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
 
     // Authenticated endpoints: only the game front end may call them from a
     // browser.
     let authenticated = Router::new()
         .route("/v1/me", get(me::me).options(preflight))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
 
     let routes = Router::new()
