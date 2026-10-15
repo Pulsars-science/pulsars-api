@@ -17,6 +17,12 @@ pub const GAME_ORIGIN: &str = "https://game.pulsars.science";
 /// Origin of the Vite dev server, allowed only in development.
 pub const DEV_GAME_ORIGIN: &str = "http://localhost:5173";
 
+/// The Laravel site: issuer of game tokens and home of member profiles.
+pub const SITE_URL: &str = "https://pulsars.science";
+
+/// `aud` of the game tokens meant for this API.
+pub const API_AUDIENCE: &str = "api.pulsars.science";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Environment {
     Development,
@@ -59,6 +65,16 @@ pub struct Config {
     pub database_url: Secret,
     pub database_max_connections: u32,
     pub redis_url: Secret,
+    /// Laravel's public keys (`docs/contract/auth-jwt.md` §3). HTTPS only in
+    /// production.
+    pub jwks_url: String,
+    /// Expected `iss` of game tokens.
+    pub jwt_issuer: String,
+    /// Expected `aud` of game tokens.
+    pub jwt_audience: String,
+    /// Base URL of Laravel's `public` disk, without trailing slash. Avatar
+    /// URLs are `<base>/<avatar_path>`.
+    pub public_storage_url: String,
     /// Origins allowed to call authenticated and game endpoints with
     /// credentials. Public content endpoints allow any origin.
     pub cors_allowed_origins: Vec<HeaderValue>,
@@ -150,6 +166,10 @@ impl Config {
             .optional("SHUTDOWN_GRACE_SECS", "20", |v| parse_range(v, 1, 300))
             .map(|s| Duration::from_secs(u64::from(s)));
         let origins_raw = reader.optional_raw("CORS_ALLOWED_ORIGINS");
+        let jwks_raw = reader.required("JWKS_URL", |v| Ok(v.to_owned()));
+        let jwt_issuer = reader.optional("JWT_ISSUER", SITE_URL, |v| Ok(v.to_owned()));
+        let jwt_audience = reader.optional("JWT_AUDIENCE", API_AUDIENCE, |v| Ok(v.to_owned()));
+        let storage_raw = reader.optional_raw("PUBLIC_STORAGE_URL");
 
         // Cross-field checks need the individual values first.
         let cors_allowed_origins = environment.and_then(|env| {
@@ -163,6 +183,30 @@ impl Config {
                     reader
                         .problems
                         .push(format!("CORS_ALLOWED_ORIGINS: {message}"));
+                    None
+                }
+            }
+        });
+
+        // Over plain http, anyone on the path could swap the keys.
+        let jwks_url = match (environment, jwks_raw) {
+            (Some(env), Some(raw)) => match parse_http_url(&raw, env) {
+                Ok(url) => Some(url),
+                Err(message) => {
+                    reader.problems.push(format!("JWKS_URL: {message}"));
+                    None
+                }
+            },
+            _ => None,
+        };
+        let public_storage_url = environment.and_then(|env| {
+            let raw = storage_raw.unwrap_or_else(|| format!("{SITE_URL}/storage"));
+            match parse_http_url(&raw, env) {
+                Ok(url) => Some(url.trim_end_matches('/').to_owned()),
+                Err(message) => {
+                    reader
+                        .problems
+                        .push(format!("PUBLIC_STORAGE_URL: {message}"));
                     None
                 }
             }
@@ -198,6 +242,10 @@ impl Config {
             database_url,
             database_max_connections,
             redis_url,
+            jwks_url,
+            jwt_issuer,
+            jwt_audience,
+            public_storage_url,
             cors_allowed_origins,
             request_timeout,
             body_limit_bytes,
@@ -212,6 +260,10 @@ impl Config {
                 Some(database_url),
                 Some(database_max_connections),
                 Some(redis_url),
+                Some(jwks_url),
+                Some(jwt_issuer),
+                Some(jwt_audience),
+                Some(public_storage_url),
                 Some(cors_allowed_origins),
                 Some(request_timeout),
                 Some(body_limit_bytes),
@@ -225,6 +277,10 @@ impl Config {
                 database_url,
                 database_max_connections,
                 redis_url,
+                jwks_url,
+                jwt_issuer,
+                jwt_audience,
+                public_storage_url,
                 cors_allowed_origins,
                 request_timeout,
                 body_limit_bytes,
@@ -314,6 +370,26 @@ fn parse_url_scheme(value: &str, schemes: &[&str]) -> Result<(), String> {
     }
 }
 
+/// An absolute http(s) URL with a host and no credentials; http only in
+/// development. The value is not secret, so it may be echoed.
+fn parse_http_url(value: &str, environment: Environment) -> Result<String, String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "must be an absolute URL".to_owned())?;
+    match (url.scheme(), environment) {
+        ("https", _) | ("http", Environment::Development) => {}
+        ("http", Environment::Production) => {
+            return Err("must use https in production".to_owned());
+        }
+        _ => return Err("must be an http:// or https:// URL".to_owned()),
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("must have a host".to_owned());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("must not contain credentials".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
 fn default_origins(environment: Environment) -> Vec<String> {
     match environment {
         Environment::Production => vec![GAME_ORIGIN.to_owned()],
@@ -372,6 +448,7 @@ mod tests {
                 "postgres://pulsars_api:secret@localhost/pulsars",
             ),
             ("REDIS_URL", "redis://localhost:6379"),
+            ("JWKS_URL", "https://pulsars.science/.well-known/jwks.json"),
         ]
     }
 
@@ -396,6 +473,46 @@ mod tests {
         );
         assert_eq!(config.body_limit_bytes, 65536);
         assert_eq!(config.log_format, LogFormat::Json);
+        assert_eq!(config.jwt_issuer, "https://pulsars.science");
+        assert_eq!(config.jwt_audience, "api.pulsars.science");
+        assert_eq!(config.public_storage_url, "https://pulsars.science/storage");
+    }
+
+    #[test]
+    fn jwks_url_must_be_https_in_production() {
+        let err = with(&[("JWKS_URL", "http://pulsars.test/.well-known/jwks.json")])
+            .expect_err("must fail");
+        assert_eq!(err.problems, vec!["JWKS_URL: must use https in production"]);
+        let dev = with(&[
+            ("PULSARS_ENV", "development"),
+            ("JWKS_URL", "http://localhost:8000/.well-known/jwks.json"),
+        ])
+        .expect("http is fine in development");
+        assert_eq!(dev.jwks_url, "http://localhost:8000/.well-known/jwks.json");
+    }
+
+    #[test]
+    fn rejects_unusable_jwks_urls() {
+        for bad in [
+            "pulsars.science/.well-known/jwks.json",
+            "ftp://pulsars.science/jwks.json",
+            "https://user:pass@pulsars.science/jwks.json",
+        ] {
+            let err = with(&[("JWKS_URL", bad)]).expect_err(bad);
+            assert!(err.problems[0].starts_with("JWKS_URL: "), "{bad}");
+            assert!(
+                !err.problems[0].contains("pass@"),
+                "never echoes credentials"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_url_loses_its_trailing_slash() {
+        let config =
+            with(&[("PUBLIC_STORAGE_URL", "https://cdn.example/storage/")]).expect("valid");
+        assert_eq!(config.public_storage_url, "https://cdn.example/storage");
+        assert!(with(&[("PUBLIC_STORAGE_URL", "http://cdn.example/storage")]).is_err());
     }
 
     #[test]
@@ -416,7 +533,8 @@ mod tests {
             vec![
                 "PULSARS_ENV: missing",
                 "DATABASE_URL: missing",
-                "REDIS_URL: missing"
+                "REDIS_URL: missing",
+                "JWKS_URL: missing"
             ]
         );
     }

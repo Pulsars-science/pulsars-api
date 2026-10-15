@@ -22,6 +22,7 @@ use tower::ServiceExt as _;
 /// Nothing listens on port 1: connections are refused immediately.
 const DEAD_POSTGRES: &str = "postgres://pulsars_api:x@127.0.0.1:1/pulsars";
 const DEAD_REDIS: &str = "redis://127.0.0.1:1";
+const DEAD_JWKS: &str = "http://127.0.0.1:1/.well-known/jwks.json";
 
 fn integration_urls() -> Option<(String, String)> {
     let db = std::env::var("TEST_DATABASE_URL")
@@ -47,6 +48,7 @@ fn config(database_url: &str, redis_url: &str, extra: &[(&str, &str)]) -> Config
         ("PULSARS_ENV".to_owned(), "development".to_owned()),
         ("DATABASE_URL".to_owned(), database_url.to_owned()),
         ("REDIS_URL".to_owned(), redis_url.to_owned()),
+        ("JWKS_URL".to_owned(), DEAD_JWKS.to_owned()),
     ];
     vars.extend(
         extra
