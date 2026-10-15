@@ -1,7 +1,10 @@
 //! Route tree and middleware stack.
 
+pub mod cursor;
 pub mod health;
 pub mod me;
+pub mod params;
+pub mod public;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
