@@ -1,6 +1,7 @@
 //! Route tree and middleware stack.
 
 pub mod health;
+pub mod me;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
@@ -28,11 +29,17 @@ pub fn router(state: AppState) -> Router {
     let config = state.config.clone();
     let [(nosniff_name, nosniff), (robots_name, robots)] = mw::static_headers();
 
-    // Content endpoints (phase 3) will be nested under /v1 with
-    // `mw::cors_public()`; `/v1/me` and `/v1/game` with
-    // `mw::cors_restricted(config.cors_allowed_origins)`.
+    // Authenticated endpoints: only the game front end may call them from a
+    // browser. Content endpoints (phase 3) will get `mw::cors_public()`.
+    // The explicit OPTIONS handler routes preflights through the CORS layer,
+    // which answers them; without it the router's 405 fallback would.
+    let authenticated = Router::new()
+        .route("/v1/me", get(me::me).options(preflight))
+        .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(authenticated)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.
@@ -105,6 +112,11 @@ async fn not_found(OriginalUri(uri): OriginalUri) -> Response {
         instance: Some(uri.path().to_owned()),
     }
     .into_response()
+}
+
+/// Reached only by an OPTIONS request that is not a CORS preflight.
+async fn preflight() -> StatusCode {
+    StatusCode::NO_CONTENT
 }
 
 async fn method_not_allowed() -> Response {

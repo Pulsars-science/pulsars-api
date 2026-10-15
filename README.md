@@ -47,6 +47,11 @@ set -a; . ./.env; set +a; cargo run
 Then `curl http://127.0.0.1:8080/healthz`. Metrics are on
 `http://127.0.0.1:9464/metrics`.
 
+`/healthz` answers 503 until the API has loaded Laravel's public keys from
+`JWKS_URL` (a local Laravel by default, see `.env.example`). Authenticated
+endpoints such as `GET /v1/me` need a token issued by that Laravel
+(`POST /jeu/jeton`, see [`auth-jwt.md`](docs/contract/auth-jwt.md)).
+
 The demo database contains a handful of courses, exercises, exams and
 resources from the open Pulsars content, plus drafts and answers that the
 views must hide. It contains no production data.
@@ -68,9 +73,9 @@ CI runs everything against real PostgreSQL and Redis, plus `cargo fmt`,
 | Phase | Content | State |
 |---|---|---|
 | 0 | Contract and plan | done |
-| 1 | Open-source skeleton, `/healthz`, CI | in review |
-| 2 | JWT authentication, `/v1/me` | next |
-| 3 | Content endpoints | planned |
+| 1 | Open-source skeleton, `/healthz`, CI | done |
+| 2 | JWT authentication, `/v1/me` | in review |
+| 3 | Content endpoints | next |
 | 4 | Game | blocked on game design |
 | 5 | Results webhook to Laravel | planned |
 | 6 | Code sandbox (only if the game runs code) | undecided |

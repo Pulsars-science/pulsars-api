@@ -3,6 +3,7 @@
 //! See `docs/architecture.md` and `docs/contract/` for what this service
 //! does and the rules it follows.
 
+pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;

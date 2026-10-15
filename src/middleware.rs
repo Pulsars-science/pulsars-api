@@ -1,11 +1,13 @@
 //! HTTP middleware shared by every route.
 
 use std::any::Any;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use axum::body::Body;
-use axum::extract::{MatchedPath, Request};
+use axum::extract::{ConnectInfo, MatchedPath, Request};
 use axum::http::header::{CONTENT_TYPE, HeaderName};
+use axum::http::request::Parts;
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -18,6 +20,7 @@ use crate::telemetry::{self, CURRENT_TRACE, TraceContext, names};
 pub const TRACEPARENT: HeaderName = HeaderName::from_static("traceparent");
 pub const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 pub const X_ROBOTS_TAG: HeaderName = HeaderName::from_static("x-robots-tag");
+pub const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 
 /// Reads (or starts) the W3C trace context and makes it available to the
 /// rest of the request: as a request extension for the log span, and as a
@@ -143,4 +146,70 @@ pub fn span_trace_id(request: &Request) -> String {
         .map(|c| c.trace_id.clone())
         .or_else(telemetry::current_trace_id)
         .unwrap_or_default()
+}
+
+/// The client's IP address, for logs (and later rate limits): the last
+/// `X-Forwarded-For` entry, which the edge proxy appends (earlier entries
+/// come from the client and can be forged), or the peer address when the
+/// API is reached directly.
+pub fn client_ip(parts: &Parts) -> Option<IpAddr> {
+    let forwarded = parts
+        .headers
+        .get_all(X_FORWARDED_FOR)
+        .iter()
+        .next_back()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit(',').next())
+        .and_then(|ip| ip.trim().parse().ok());
+    forwarded.or_else(|| {
+        parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts(forwarded: &[&str], peer: Option<SocketAddr>) -> Parts {
+        let mut builder = axum::http::Request::get("/");
+        for value in forwarded {
+            builder = builder.header(X_FORWARDED_FOR, *value);
+        }
+        let mut request = builder.body(()).unwrap_or_default();
+        if let Some(peer) = peer {
+            request.extensions_mut().insert(ConnectInfo(peer));
+        }
+        request.into_parts().0
+    }
+
+    fn ip(forwarded: &[&str], peer: Option<SocketAddr>) -> Option<String> {
+        client_ip(&parts(forwarded, peer)).map(|ip| ip.to_string())
+    }
+
+    #[test]
+    fn client_ip_is_the_entry_added_by_the_edge() {
+        let proxy = SocketAddr::from(([127, 0, 0, 1], 5000));
+        assert_eq!(
+            ip(&["1.2.3.4, 203.0.113.7"], Some(proxy)).as_deref(),
+            Some("203.0.113.7")
+        );
+        assert_eq!(
+            ip(&["1.2.3.4", "2001:db8::1"], None).as_deref(),
+            Some("2001:db8::1")
+        );
+    }
+
+    #[test]
+    fn client_ip_falls_back_to_the_peer() {
+        let peer = SocketAddr::from(([192, 0, 2, 10], 5000));
+        assert_eq!(ip(&[], Some(peer)).as_deref(), Some("192.0.2.10"));
+        assert_eq!(
+            ip(&["not-an-ip"], Some(peer)).as_deref(),
+            Some("192.0.2.10")
+        );
+        assert_eq!(ip(&[], None), None);
+    }
 }
