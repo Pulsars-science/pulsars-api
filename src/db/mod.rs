@@ -5,7 +5,11 @@
 //! Its `search_path` is `game, api_read`, so queries name views without a
 //! schema only when unambiguous; new code should qualify them anyway.
 
+pub mod courses;
+pub mod exams;
+pub mod exercises;
 pub mod members;
+pub mod resources;
 
 use std::str::FromStr;
 use std::time::Duration;
