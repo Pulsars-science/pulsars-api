@@ -1,9 +1,11 @@
 //! Entry point: configuration, listeners and graceful shutdown.
 
+use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use fred::prelude::ClientLike as _;
+use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes, telemetry};
@@ -44,6 +46,10 @@ async fn run(config: Config) -> Result<(), String> {
         .map_err(|e| format!("cannot install the metrics recorder: {e}"))?;
     let db = db::connect_lazy(&config).map_err(|e| format!("invalid DATABASE_URL: {e}"))?;
     let redis = redis::connect(&config).map_err(|e| format!("invalid REDIS_URL: {e}"))?;
+    // Loaded in the background: Laravel being down at boot must not stop the
+    // API. `/healthz` answers 503 until the first key is loaded.
+    let jwks = Jwks::new(&config)?;
+    let jwks_refresh = jwks.spawn_refresh();
 
     let public = TcpListener::bind(config.bind_addr)
         .await
@@ -65,6 +71,7 @@ async fn run(config: Config) -> Result<(), String> {
         config: Arc::new(config),
         db: db.clone(),
         redis: redis.clone(),
+        jwks,
     };
 
     // The exporter needs periodic upkeep to drain histogram buffers.
@@ -78,8 +85,12 @@ async fn run(config: Config) -> Result<(), String> {
     });
 
     let (stop_tx, stop_rx) = watch::channel(false);
-    let public_server =
-        axum::serve(public, routes::router(state)).with_graceful_shutdown(stopped(stop_rx.clone()));
+    // The peer address is the fallback client IP in logs.
+    let public_server = axum::serve(
+        public,
+        routes::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(stopped(stop_rx.clone()));
     let internal_server = axum::serve(internal, routes::metrics_router(metrics))
         .with_graceful_shutdown(stopped(stop_rx.clone()));
 
@@ -105,6 +116,7 @@ async fn run(config: Config) -> Result<(), String> {
     };
 
     upkeep.abort();
+    jwks_refresh.abort();
     if redis.is_connected()
         && let Err(error) = redis.quit().await
     {

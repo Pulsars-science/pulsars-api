@@ -4,6 +4,11 @@
 //! answers 503. Redis only carries the game: its failure degrades the service
 //! but keeps the answer at 200, so a load balancer keeps sending content
 //! traffic.
+//!
+//! The instance is not ready either until Laravel's JWKS has been loaded
+//! once (`docs/contract/auth-jwt.md` §3): `down` and 503 meanwhile. The
+//! `Health` schema only lists the `postgres` and `redis` checks, so the JWKS
+//! state is not a check entry; the refresh task logs why it is missing.
 
 use std::time::{Duration, Instant};
 
@@ -42,10 +47,10 @@ pub async fn healthz(State(state): State<AppState>) -> Response {
         timed("redis", crate::redis::ping(&state.redis, CHECK_TIMEOUT)),
     );
 
-    let (status, code) = match (postgres.ok, redis.ok) {
-        (true, true) => ("ok", StatusCode::OK),
-        (true, false) => ("degraded", StatusCode::OK),
-        (false, _) => ("down", StatusCode::SERVICE_UNAVAILABLE),
+    let (status, code) = match (postgres.ok, redis.ok, state.jwks.is_loaded()) {
+        (false, _, _) | (_, _, false) => ("down", StatusCode::SERVICE_UNAVAILABLE),
+        (true, true, true) => ("ok", StatusCode::OK),
+        (true, false, true) => ("degraded", StatusCode::OK),
     };
 
     let body = Health {

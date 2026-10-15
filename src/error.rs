@@ -10,7 +10,11 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use crate::auth::Reason;
 use crate::telemetry;
+
+/// `realm` of the `WWW-Authenticate` challenge.
+pub const AUTH_REALM: &str = "api.pulsars.science";
 
 /// Base of every problem `type` URI.
 pub const PROBLEM_BASE: &str = "https://api.pulsars.science/problems/";
@@ -27,6 +31,12 @@ pub struct ParameterError {
 pub enum ApiError {
     #[error("invalid parameter")]
     InvalidParameter(Vec<ParameterError>),
+    /// Missing or invalid game token (`docs/contract/auth-jwt.md` §5).
+    #[error("unauthorized: {}", reason.code())]
+    Unauthorized {
+        reason: Reason,
+        instance: Option<String>,
+    },
     #[error("not found: {detail}")]
     NotFound {
         detail: String,
@@ -58,6 +68,9 @@ pub struct Problem {
     pub instance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<ParameterError>>,
+    /// For 401 only: why the token was refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
 }
@@ -66,6 +79,7 @@ impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::InvalidParameter(_) => StatusCode::BAD_REQUEST,
+            Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -78,6 +92,7 @@ impl ApiError {
     pub fn to_problem(&self) -> Problem {
         let (slug, title) = match self {
             Self::InvalidParameter(_) => ("invalid-parameter", "Invalid parameter"),
+            Self::Unauthorized { .. } => ("unauthorized", "Invalid token"),
             Self::NotFound { .. } => ("not-found", "Resource not found"),
             Self::MethodNotAllowed => ("method-not-allowed", "Method not allowed"),
             Self::PayloadTooLarge => ("payload-too-large", "Payload too large"),
@@ -89,6 +104,7 @@ impl ApiError {
             Self::InvalidParameter(_) => {
                 Some("One or more query parameters are invalid.".to_owned())
             }
+            Self::Unauthorized { reason, .. } => Some(reason.detail().to_owned()),
             Self::NotFound { detail, .. } => Some(detail.clone()),
             Self::Timeout => Some("The request took too long to process.".to_owned()),
             _ => None,
@@ -99,11 +115,17 @@ impl ApiError {
             status: self.status().as_u16(),
             detail,
             instance: match self {
-                Self::NotFound { instance, .. } => instance.clone(),
+                Self::NotFound { instance, .. } | Self::Unauthorized { instance, .. } => {
+                    instance.clone()
+                }
                 _ => None,
             },
             errors: match self {
                 Self::InvalidParameter(errors) => Some(errors.clone()),
+                _ => None,
+            },
+            reason: match self {
+                Self::Unauthorized { reason, .. } => Some(reason.code()),
                 _ => None,
             },
             trace_id: match self {
@@ -133,6 +155,9 @@ impl IntoResponse for ApiError {
             HeaderValue::from_static(PROBLEM_CONTENT_TYPE),
         );
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        if let Self::Unauthorized { reason, .. } = &self {
+            headers.insert(header::WWW_AUTHENTICATE, www_authenticate(*reason));
+        }
         if status == StatusCode::METHOD_NOT_ALLOWED {
             // Phase 1 only serves GET routes; refined per route later.
             headers.insert(
@@ -142,6 +167,20 @@ impl IntoResponse for ApiError {
         }
         response
     }
+}
+
+/// The RFC 6750 challenge: just the realm when no token was sent, the
+/// `invalid_token` error otherwise.
+fn www_authenticate(reason: Reason) -> HeaderValue {
+    let value = match reason {
+        Reason::Missing => format!("Bearer realm=\"{AUTH_REALM}\""),
+        _ => format!(
+            "Bearer realm=\"{AUTH_REALM}\", error=\"invalid_token\", error_description=\"{}\"",
+            reason.description()
+        ),
+    };
+    // Built from constants only; the fallback is never used.
+    HeaderValue::from_str(&value).unwrap_or_else(|_| HeaderValue::from_static("Bearer"))
 }
 
 #[cfg(test)]
@@ -184,5 +223,52 @@ mod tests {
         .to_problem();
         let json = serde_json::to_value(&problem).unwrap_or_default();
         assert_eq!(json["errors"][0]["parameter"], "limit");
+    }
+
+    #[test]
+    fn unauthorized_carries_the_reason_and_a_challenge() {
+        let response = ApiError::Unauthorized {
+            reason: Reason::Expired,
+            instance: Some("/v1/me".to_owned()),
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers()[header::WWW_AUTHENTICATE],
+            "Bearer realm=\"api.pulsars.science\", error=\"invalid_token\", \
+             error_description=\"token expired\""
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+
+        let problem = ApiError::Unauthorized {
+            reason: Reason::Expired,
+            instance: Some("/v1/me".to_owned()),
+        }
+        .to_problem();
+        let json = serde_json::to_value(&problem).unwrap_or_default();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "https://api.pulsars.science/problems/unauthorized",
+                "title": "Invalid token",
+                "status": 401,
+                "detail": "The token has expired.",
+                "instance": "/v1/me",
+                "reason": "expired",
+            })
+        );
+    }
+
+    #[test]
+    fn a_missing_token_gets_a_bare_challenge() {
+        let response = ApiError::Unauthorized {
+            reason: Reason::Missing,
+            instance: None,
+        }
+        .into_response();
+        assert_eq!(
+            response.headers()[header::WWW_AUTHENTICATE],
+            "Bearer realm=\"api.pulsars.science\""
+        );
     }
 }

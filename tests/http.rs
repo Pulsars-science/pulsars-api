@@ -7,16 +7,21 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
+use axum::extract::State;
 use axum::http::{Request, StatusCode, header};
+use ed25519_dalek::SigningKey;
+use pulsars_api::auth::token::testing;
+use pulsars_api::auth::{Jwks, JwksSettings};
 use pulsars_api::config::Config;
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 /// Nothing listens on port 1: connections are refused immediately.
@@ -58,13 +63,103 @@ fn config(database_url: &str, redis_url: &str, extra: &[(&str, &str)]) -> Config
     Config::from_vars(vars).expect("valid test config")
 }
 
+/// Short timeouts, production intervals otherwise.
+fn jwks_settings() -> JwksSettings {
+    JwksSettings {
+        fetch_timeout: Duration::from_secs(2),
+        ..JwksSettings::default()
+    }
+}
+
+/// The application, with a JWKS client for `config.jwks_url` that has not
+/// fetched anything yet.
 async fn app(config: Config) -> (Router, AppState) {
+    let jwks = Jwks::with_settings(&config.jwks_url, false, jwks_settings()).unwrap();
+    app_with(config, jwks)
+}
+
+fn app_with(config: Config, jwks: Jwks) -> (Router, AppState) {
     let state = AppState {
         db: db::connect_lazy(&config).unwrap(),
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
+        jwks,
     };
     (routes::router(state.clone()), state)
+}
+
+/// The application with its JWKS loaded from a fresh [`JwksServer`].
+async fn app_with_keys(database_url: &str, redis_url: &str) -> (Router, AppState, JwksServer) {
+    let server = JwksServer::start().await;
+    let (app, state) = app(config(
+        database_url,
+        redis_url,
+        &[("JWKS_URL", server.url.as_str())],
+    ))
+    .await;
+    state.jwks.refresh().await.expect("JWKS loads");
+    (app, state, server)
+}
+
+/// Laravel's JWKS endpoint, served in-process. Starts with one key, `KID`.
+struct JwksServer {
+    url: String,
+    key: SigningKey,
+    shared: Arc<JwksShared>,
+}
+
+struct JwksShared {
+    document: Mutex<Value>,
+    status: AtomicU16,
+    hits: AtomicUsize,
+}
+
+const KID: &str = "2026-10-ed25519-1";
+
+impl JwksServer {
+    async fn start() -> Self {
+        let key = testing::signing_key();
+        let shared = Arc::new(JwksShared {
+            document: Mutex::new(json!({"keys": [testing::jwk(&key, KID)]})),
+            status: AtomicU16::new(200),
+            hits: AtomicUsize::new(0),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!(
+            "http://{}/.well-known/jwks.json",
+            listener.local_addr().unwrap()
+        );
+        let router = Router::new()
+            .route(
+                "/.well-known/jwks.json",
+                axum::routing::get(|State(shared): State<Arc<JwksShared>>| async move {
+                    shared.hits.fetch_add(1, Ordering::SeqCst);
+                    let status =
+                        StatusCode::from_u16(shared.status.load(Ordering::SeqCst)).unwrap();
+                    let body = shared.document.lock().unwrap().to_string();
+                    (
+                        status,
+                        [(header::CONTENT_TYPE, "application/jwk-set+json")],
+                        body,
+                    )
+                }),
+            )
+            .with_state(shared.clone());
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        Self { url, key, shared }
+    }
+
+    fn set_document(&self, document: Value) {
+        *self.shared.document.lock().unwrap() = document;
+    }
+
+    fn set_status(&self, status: u16) {
+        self.shared.status.store(status, Ordering::SeqCst);
+    }
+
+    fn hits(&self) -> usize {
+        self.shared.hits.load(Ordering::SeqCst)
+    }
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, axum::http::HeaderMap, Value) {
@@ -214,7 +309,7 @@ async fn healthz_is_ok_with_real_services() {
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
     };
-    let (app, state) = app(config(&database_url, &redis_url, &[])).await;
+    let (app, state, _jwks) = app_with_keys(&database_url, &redis_url).await;
     // The Redis connection is established in the background.
     tokio::time::timeout(Duration::from_secs(5), async {
         use fred::prelude::ClientLike as _;
@@ -234,7 +329,7 @@ async fn healthz_is_degraded_without_redis() {
     let Some((database_url, _)) = integration_urls() else {
         return;
     };
-    let (app, _) = app(config(&database_url, DEAD_REDIS, &[])).await;
+    let (app, _, _jwks) = app_with_keys(&database_url, DEAD_REDIS).await;
     let (status, _, body) = send(&app, get("/healthz")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "degraded");
@@ -322,4 +417,84 @@ async fn no_answer_or_private_data_reaches_the_views() {
     ] {
         assert!(!dump.contains(marker), "`{marker}` leaked into api_read");
     }
+}
+
+// --- Authentication (in-process JWKS, no database needed) -----------------
+
+#[tokio::test]
+async fn healthz_is_down_until_the_jwks_is_loaded() {
+    let Some((database_url, redis_url)) = integration_urls() else {
+        return;
+    };
+    let server = JwksServer::start().await;
+    server.set_status(500);
+    let (app, state) = app(config(
+        &database_url,
+        &redis_url,
+        &[("JWKS_URL", server.url.as_str())],
+    ))
+    .await;
+
+    // Laravel down at boot: the process lives on, but is not ready.
+    assert!(state.jwks.refresh().await.is_err());
+    let (status, _, body) = send(&app, get("/healthz")).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["status"], "down");
+    assert_eq!(check(&body, "postgres")["ok"], true);
+
+    server.set_status(200);
+    state.jwks.refresh().await.expect("JWKS loads");
+    let (status, _, body) = send(&app, get("/healthz")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn the_refresh_task_loads_the_keys_once_laravel_answers() {
+    let server = JwksServer::start().await;
+    server.set_status(503);
+    let jwks = Jwks::with_settings(
+        &server.url,
+        false,
+        JwksSettings {
+            min_retry_interval: Duration::from_millis(20),
+            max_retry_interval: Duration::from_millis(50),
+            ..jwks_settings()
+        },
+    )
+    .unwrap();
+    let task = jwks.spawn_refresh();
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!jwks.is_loaded());
+    assert!(server.hits() >= 2, "failures are retried");
+
+    server.set_status(200);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !jwks.is_loaded() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("loaded once the JWKS answers");
+    task.abort();
+}
+
+#[tokio::test]
+async fn https_only_clients_refuse_a_plain_http_jwks() {
+    let server = JwksServer::start().await;
+    let jwks = Jwks::with_settings(&server.url, true, jwks_settings()).unwrap();
+    assert!(jwks.refresh().await.is_err());
+    assert_eq!(server.hits(), 0);
+}
+
+#[tokio::test]
+async fn oversized_jwks_documents_are_refused() {
+    let server = JwksServer::start().await;
+    server.set_document(json!({
+        "keys": [testing::jwk(&server.key, KID)],
+        "padding": "x".repeat(100 * 1024),
+    }));
+    let jwks = Jwks::with_settings(&server.url, false, jwks_settings()).unwrap();
+    assert!(jwks.refresh().await.is_err());
+    assert!(!jwks.is_loaded());
 }

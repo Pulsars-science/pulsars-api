@@ -31,8 +31,14 @@ tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 uuid = { version = "1.28.0", features = ["v4", "v7"] }
 webpki-roots = "1.0.9"
 
+[features]
+# Token-minting helpers for the integration tests. Never enabled in builds.
+test-util = []
+
 [dev-dependencies]
 http-body-util = "0.1.5"
+# The integration tests reach the `test-util` helpers through the library.
+pulsars-api = { path = ".", features = ["test-util"] }
 
 [lints.rust]
 unsafe_code = "forbid"

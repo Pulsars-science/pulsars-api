@@ -155,6 +155,9 @@ pub mod names {
     pub const HTTP_REQUESTS_TOTAL: &str = "http_requests_total";
     pub const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
     pub const HEALTH_CHECK_UP: &str = "health_check_up";
+    pub const AUTH_REJECTIONS_TOTAL: &str = "auth_rejections_total";
+    pub const JWKS_FETCHES_TOTAL: &str = "jwks_fetches_total";
+    pub const JWKS_KEYS: &str = "jwks_keys";
 }
 
 /// Installs the global metrics recorder and returns the handle that renders
@@ -190,6 +193,15 @@ fn describe_metrics() {
         names::HEALTH_CHECK_UP,
         "1 when the dependency answered the last health check, 0 otherwise."
     );
+    metrics::describe_counter!(
+        names::AUTH_REJECTIONS_TOTAL,
+        "Requests refused by token verification, by reason (no_keys: JWKS unusable)."
+    );
+    metrics::describe_counter!(
+        names::JWKS_FETCHES_TOTAL,
+        "JWKS fetches, by result (ok, error)."
+    );
+    metrics::describe_gauge!(names::JWKS_KEYS, "Usable keys in the last JWKS loaded.");
 }
 
 #[cfg(test)]
