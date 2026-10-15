@@ -160,6 +160,22 @@ impl JwksServer {
     fn hits(&self) -> usize {
         self.shared.hits.load(Ordering::SeqCst)
     }
+
+    /// A valid token for user `sub`, signed with the served key.
+    fn token(&self, sub: &str) -> String {
+        testing::token(&self.key, KID, sub, now())
+    }
+}
+
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn get_with_token(path: &str, token: &str) -> Request<Body> {
+    Request::get(path)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, axum::http::HeaderMap, Value) {
@@ -480,6 +496,149 @@ async fn the_refresh_task_loads_the_keys_once_laravel_answers() {
 }
 
 #[tokio::test]
+async fn me_without_a_token_is_401_with_a_bare_challenge() {
+    let (app, _, _jwks) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    let (status, headers, body) = send(&app, get("/v1/me")).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        headers[header::WWW_AUTHENTICATE],
+        "Bearer realm=\"api.pulsars.science\""
+    );
+    assert_eq!(
+        body,
+        json!({
+            "type": "https://api.pulsars.science/problems/unauthorized",
+            "title": "Invalid token",
+            "status": 401,
+            "detail": "No bearer token was provided.",
+            "instance": "/v1/me",
+            "reason": "missing",
+        })
+    );
+}
+
+#[tokio::test]
+async fn me_with_an_invalid_token_is_401_invalid_token() {
+    let (app, _, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    let other = testing::signing_key();
+    let expired = testing::token(&server.key, KID, "1", now() - 3600);
+    let forged = testing::token(&other, KID, "1", now());
+    let none = testing::sign(
+        &server.key,
+        &json!({"alg": "none", "kid": KID}),
+        &testing::claims("1", now()),
+    );
+    let wrong_aud = {
+        let mut claims = testing::claims("1", now());
+        claims["aud"] = json!("other.pulsars.science");
+        testing::sign(&server.key, &json!({"alg": "EdDSA", "kid": KID}), &claims)
+    };
+
+    for (token, reason, description) in [
+        (expired.as_str(), "expired", "token expired"),
+        (forged.as_str(), "bad_signature", "invalid signature"),
+        (none.as_str(), "bad_algorithm", "unsupported algorithm"),
+        (wrong_aud.as_str(), "bad_audience", "invalid audience"),
+        ("not-a-jwt", "malformed", "token malformed"),
+    ] {
+        let (status, headers, body) = send(&app, get_with_token("/v1/me", token)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{reason}");
+        assert_eq!(body["reason"], reason);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            headers[header::WWW_AUTHENTICATE],
+            format!(
+                "Bearer realm=\"api.pulsars.science\", error=\"invalid_token\", \
+                 error_description=\"{description}\""
+            )
+        );
+        // The problem never echoes the token.
+        assert!(!body.to_string().contains(token));
+    }
+}
+
+#[tokio::test]
+async fn unknown_kids_refetch_the_jwks_at_most_once_a_minute() {
+    let (app, _, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    assert_eq!(server.hits(), 1);
+
+    for i in 0..5 {
+        let token = testing::token(&server.key, &format!("random-{i}"), "1", now());
+        let (status, _, body) = send(&app, get_with_token("/v1/me", &token)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["reason"], "unknown_kid");
+    }
+    assert_eq!(server.hits(), 2, "a single refetch for five unknown kids");
+}
+
+#[tokio::test]
+async fn a_new_key_is_picked_up_through_the_unknown_kid_refetch() {
+    let (app, state, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    // Rotation step 1: Laravel publishes the next key.
+    let next = testing::signing_key();
+    server.set_document(json!({"keys": [
+        testing::jwk(&server.key, KID),
+        testing::jwk(&next, "2027-04-ed25519-1"),
+    ]}));
+
+    let token = testing::token(&next, "2027-04-ed25519-1", "1", now());
+    let (status, headers, body) = send(&app, get_with_token("/v1/me", &token)).await;
+    // Authenticated: the request got as far as the (dead) database.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(!headers.contains_key(header::WWW_AUTHENTICATE));
+    assert_eq!(server.hits(), 2);
+    assert!(matches!(
+        state.jwks.key("2027-04-ed25519-1").await,
+        pulsars_api::auth::Lookup::Found(_)
+    ));
+}
+
+#[tokio::test]
+async fn a_failed_refresh_keeps_the_previous_keys() {
+    let (app, state, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    server.set_status(500);
+    assert!(state.jwks.refresh().await.is_err());
+    server.set_status(200);
+    server.set_document(json!({"keys": []}));
+    assert!(
+        state.jwks.refresh().await.is_err(),
+        "an empty set is a failure"
+    );
+
+    let (status, _, body) = send(&app, get_with_token("/v1/me", &server.token("1"))).await;
+    assert_ne!(status, StatusCode::UNAUTHORIZED, "{body}");
+}
+
+#[tokio::test]
+async fn keys_older_than_24_hours_are_not_used() {
+    let (app, state, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    server.set_status(500);
+    state.jwks.age_by(Duration::from_secs(24 * 60 * 60 + 1));
+
+    let (status, headers, body) = send(&app, get_with_token("/v1/me", &server.token("1"))).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(
+        body["type"],
+        "https://api.pulsars.science/problems/unavailable"
+    );
+    assert!(!headers.contains_key(header::WWW_AUTHENTICATE));
+}
+
+#[tokio::test]
+async fn me_answers_503_while_no_key_was_ever_loaded() {
+    let (app, _) = app(config(DEAD_POSTGRES, DEAD_REDIS, &[])).await;
+    let key = testing::signing_key();
+    let token = testing::token(&key, KID, "1", now());
+    let (status, headers, body) = send(&app, get_with_token("/v1/me", &token)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+    assert!(!headers.contains_key(header::WWW_AUTHENTICATE));
+}
+
+#[tokio::test]
 async fn https_only_clients_refuse_a_plain_http_jwks() {
     let server = JwksServer::start().await;
     let jwks = Jwks::with_settings(&server.url, true, jwks_settings()).unwrap();
@@ -497,4 +656,126 @@ async fn oversized_jwks_documents_are_refused() {
     let jwks = Jwks::with_settings(&server.url, false, jwks_settings()).unwrap();
     assert!(jwks.refresh().await.is_err());
     assert!(!jwks.is_loaded());
+}
+
+#[tokio::test]
+async fn me_allows_only_the_game_origin() {
+    let (app, _, _jwks) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    let preflight = |origin: &str| {
+        Request::options("/v1/me")
+            .header(header::ORIGIN, origin)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+            .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (_, headers, _) = send(&app, preflight("http://localhost:5173")).await;
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "http://localhost:5173"
+    );
+    let (_, headers, _) = send(&app, preflight("https://evil.example")).await;
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    // Errors carry the CORS headers too, so the front end can read `reason`.
+    let request = Request::get("/v1/me")
+        .header(header::ORIGIN, "https://game.pulsars.science")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(&app, request).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "https://game.pulsars.science"
+    );
+}
+
+// --- /v1/me against the demo data -----------------------------------------
+
+#[tokio::test]
+async fn me_returns_the_public_profile() {
+    let Some((database_url, redis_url)) = integration_urls() else {
+        return;
+    };
+    let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
+
+    // `ada` (dev/db/30-demo-data.sql): bio, two roles, 102 XP.
+    let (status, headers, body) = send(&app, get_with_token("/v1/me", &server.token("2"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+    assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+    assert!(
+        headers
+            .get_all(header::VARY)
+            .iter()
+            .any(|v| v.to_str().unwrap().contains("Authorization")),
+        "{headers:?}"
+    );
+    assert_eq!(
+        body,
+        json!({"data": {
+            "id": "2",
+            "pseudo": "ada",
+            "avatar_url": null,
+            "bio": "Mathématiques et café.",
+            "member_since": "2026-08-10T09:00:00Z",
+            "roles": [
+                {"slug": "mathematiques", "name": "Mathematiques",
+                 "category": "matiere", "color": "#4f7df0"},
+                {"slug": "membre-fondateur", "name": "Membre fondateur",
+                 "category": "distinction", "color": "#c98a34"},
+            ],
+            "xp": {"total": 102, "level": 2, "level_start": 100, "next_level_at": 300},
+            "profile_url": "https://pulsars.science/membres/ada",
+        }})
+    );
+
+    // `jikuji`: the OpenAPI example.
+    let (status, _, body) = send(&app, get_with_token("/v1/me", &server.token("1"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["roles"][0]["slug"], "super-admin");
+    assert_eq!(
+        body["data"]["xp"],
+        json!({"total": 0, "level": 1, "level_start": 0, "next_level_at": 100})
+    );
+}
+
+#[tokio::test]
+async fn me_never_returns_private_fields() {
+    let Some((database_url, redis_url)) = integration_urls() else {
+        return;
+    };
+    let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
+    let (_, _, body) = send(&app, get_with_token("/v1/me", &server.token("2"))).await;
+    let text = body.to_string();
+    for marker in [
+        "example.invalid",
+        "Terminale B",
+        "lycee",
+        "demofriendtoken",
+        "\"en\"",
+    ] {
+        assert!(!text.contains(marker), "`{marker}` leaked into /v1/me");
+    }
+}
+
+#[tokio::test]
+async fn me_is_404_when_the_account_is_gone() {
+    let Some((database_url, redis_url)) = integration_urls() else {
+        return;
+    };
+    let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
+    for sub in ["999999", "not-a-number", "02"] {
+        let (status, headers, body) =
+            send(&app, get_with_token("/v1/me", &server.token(sub))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{sub}: {body}");
+        assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            body["type"],
+            "https://api.pulsars.science/problems/not-found"
+        );
+        assert_eq!(body["instance"], "/v1/me");
+    }
 }

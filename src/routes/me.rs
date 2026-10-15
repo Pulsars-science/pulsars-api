@@ -1,0 +1,253 @@
+//! `GET /v1/me`: public profile of the token's member (see `openapi.yaml`,
+//! schema `Me`).
+//!
+//! What `https://pulsars.science/membres/{pseudo}` shows to anyone, minus
+//! school level and class. Never e-mail, locale, social logins or moderation
+//! state: the `api_read` views do not even have those columns.
+
+use axum::Json;
+use axum::extract::{OriginalUri, State};
+use axum::http::{HeaderValue, header};
+use axum::response::{IntoResponse, Response};
+use chrono::SecondsFormat;
+use serde::Serialize;
+
+use crate::auth::AuthUser;
+use crate::config::SITE_URL;
+use crate::db::members::{self, Member, MemberRole};
+use crate::error::ApiError;
+use crate::state::AppState;
+
+#[derive(Debug, Serialize)]
+pub struct MeResponse {
+    pub data: Me,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Me {
+    pub id: String,
+    pub pseudo: String,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
+    pub member_since: String,
+    pub roles: Vec<Role>,
+    pub xp: Xp,
+    pub profile_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Role {
+    pub slug: String,
+    pub name: String,
+    pub category: String,
+    pub color: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct Xp {
+    pub total: i64,
+    pub level: i64,
+    /// XP at which the current level starts.
+    pub level_start: i64,
+    /// XP at which the next level starts.
+    pub next_level_at: i64,
+}
+
+impl Xp {
+    /// Level `n` starts at `50 × (n − 1) × n` XP (`webhooks.md` §5). The
+    /// level itself comes from `api_read.member_xp`.
+    pub fn new(total: i32, level: i32) -> Self {
+        let level = i64::from(level.max(1));
+        Self {
+            total: i64::from(total),
+            level,
+            level_start: 50 * (level - 1) * level,
+            next_level_at: 50 * level * (level + 1),
+        }
+    }
+}
+
+pub async fn me(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    OriginalUri(uri): OriginalUri,
+) -> Result<Response, ApiError> {
+    let gone = || ApiError::NotFound {
+        detail: "The account of this token no longer exists.".to_owned(),
+        instance: Some(uri.path().to_owned()),
+    };
+    // `sub` is Laravel's numeric `users.id` written in decimal; anything else
+    // cannot name an account.
+    let id = parse_user_id(&claims.sub).ok_or_else(gone)?;
+
+    let member = members::find(&state.db, id)
+        .await
+        .map_err(db_error)?
+        .ok_or_else(gone)?;
+    let roles = members::roles(&state.db, id).await.map_err(db_error)?;
+
+    let body = MeResponse {
+        data: to_me(member, roles, &state.config.public_storage_url)?,
+    };
+    let mut response = Json(body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    headers.append(header::VARY, HeaderValue::from_static("Authorization"));
+    Ok(response)
+}
+
+fn to_me(member: Member, roles: Vec<MemberRole>, storage_url: &str) -> Result<Me, ApiError> {
+    // `created_at` is always set by Laravel; the schema has no null here.
+    let member_since = member
+        .member_since
+        .ok_or_else(|| ApiError::Internal(format!("member {} has no created_at", member.id)))?
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
+    Ok(Me {
+        id: member.id.to_string(),
+        profile_url: format!("{SITE_URL}/membres/{}", encode(&member.pseudo, false)),
+        avatar_url: member
+            .avatar_path
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("{storage_url}/{}", encode(p.trim_start_matches('/'), true))),
+        pseudo: member.pseudo,
+        bio: member.bio,
+        member_since,
+        roles: roles
+            .into_iter()
+            .map(|r| Role {
+                slug: r.slug,
+                name: r.name,
+                category: r.category,
+                color: r.color,
+            })
+            .collect(),
+        xp: Xp::new(member.xp_total, member.xp_level),
+    })
+}
+
+fn db_error(error: sqlx::Error) -> ApiError {
+    match error {
+        sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) => {
+            ApiError::Unavailable(format!("database: {error}"))
+        }
+        _ => ApiError::Internal(format!("database: {error}")),
+    }
+}
+
+/// A positive decimal id without sign or leading zero, exactly as Laravel
+/// writes `users.id`.
+fn parse_user_id(sub: &str) -> Option<i64> {
+    let canonical =
+        !sub.is_empty() && !sub.starts_with('0') && sub.bytes().all(|b| b.is_ascii_digit());
+    if canonical { sub.parse().ok() } else { None }
+}
+
+/// Percent-encodes everything but RFC 3986 unreserved characters (and `/`
+/// when `keep_slashes`, for a path).
+fn encode(value: &str, keep_slashes: bool) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let keep = byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'.' | b'_' | b'~')
+            || (keep_slashes && byte == b'/');
+        if keep {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xp_matches_the_laravel_scale() {
+        assert_eq!(
+            Xp::new(0, 1),
+            Xp {
+                total: 0,
+                level: 1,
+                level_start: 0,
+                next_level_at: 100
+            }
+        );
+        assert_eq!(
+            Xp::new(102, 2),
+            Xp {
+                total: 102,
+                level: 2,
+                level_start: 100,
+                next_level_at: 300
+            }
+        );
+        let xp = Xp::new(300, 3);
+        assert_eq!((xp.level_start, xp.next_level_at), (300, 600));
+    }
+
+    #[test]
+    fn only_canonical_ids_name_an_account() {
+        assert_eq!(parse_user_id("42"), Some(42));
+        for bad in [
+            "",
+            "0",
+            "042",
+            "+42",
+            "-1",
+            "4 2",
+            "42a",
+            "99999999999999999999",
+        ] {
+            assert_eq!(parse_user_id(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn urls_are_percent_encoded() {
+        assert_eq!(encode("jikuji", false), "jikuji");
+        assert_eq!(encode("a b/c?é", false), "a%20b%2Fc%3F%C3%A9");
+        assert_eq!(encode("avatars/x y.webp", true), "avatars/x%20y.webp");
+    }
+
+    #[test]
+    fn profile_matches_the_schema() {
+        let member = Member {
+            id: 1,
+            pseudo: "jikuji".to_owned(),
+            avatar_path: Some("avatars/1.webp".to_owned()),
+            bio: None,
+            member_since: chrono::DateTime::parse_from_rfc3339("2026-08-07T14:44:15Z")
+                .ok()
+                .map(|d| d.with_timezone(&chrono::Utc)),
+            xp_total: 0,
+            xp_level: 1,
+        };
+        let roles = vec![MemberRole {
+            slug: "super-admin".to_owned(),
+            name: "Super admin".to_owned(),
+            category: "permission".to_owned(),
+            color: "#d1544f".to_owned(),
+        }];
+        let me = to_me(member, roles, "https://pulsars.science/storage").expect("valid");
+        let json = serde_json::to_value(&me).unwrap_or_default();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "1",
+                "pseudo": "jikuji",
+                "avatar_url": "https://pulsars.science/storage/avatars/1.webp",
+                "bio": null,
+                "member_since": "2026-08-07T14:44:15Z",
+                "roles": [{"slug": "super-admin", "name": "Super admin",
+                           "category": "permission", "color": "#d1544f"}],
+                "xp": {"total": 0, "level": 1, "level_start": 0, "next_level_at": 100},
+                "profile_url": "https://pulsars.science/membres/jikuji",
+            })
+        );
+    }
+}
