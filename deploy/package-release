@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# package-release: assembles the release archive that deploy-api installs.
+# Used by the Release workflow; runs on any Linux machine with GNU tar:
+#
+#     cargo build --release --locked --target x86_64-unknown-linux-gnu
+#     deploy/package-release x86_64-unknown-linux-gnu dist
+#
+# Produces dist/pulsars-api-v<version>-<target>.tar.gz and its .sha256. The
+# archive holds one directory: the binary, deploy-api, the systemd unit, the
+# nginx vhost, the example environment file, the licence and a VERSION file.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+target="${1:?usage: deploy/package-release TARGET [OUTDIR]}"
+out="${2:-dist}"
+
+version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+[ -n "$version" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
+name="pulsars-api-v$version-$target"
+binary="target/$target/release/pulsars-api"
+[ -x "$binary" ] || {
+    echo "missing $binary: cargo build --release --locked --target $target" >&2
+    exit 1
+}
+
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+dir="$staging/$name"
+mkdir "$dir"
+
+install -m 0755 "$binary" deploy/deploy-api "$dir/"
+install -m 0644 deploy/pulsars-api.service deploy/api.pulsars.science.conf \
+    deploy/pulsars-api.env.example LICENSE README.md "$dir/"
+printf '%s\n' "$version" >"$dir/VERSION"
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    git rev-parse HEAD >"$dir/COMMIT"
+fi
+
+mkdir -p "$out"
+tar -C "$staging" --owner=0 --group=0 --numeric-owner -czf "$out/$name.tar.gz" "$name"
+(cd "$out" && sha256sum "$name.tar.gz" >"$name.tar.gz.sha256")
+echo "$out/$name.tar.gz"

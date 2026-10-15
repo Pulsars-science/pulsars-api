@@ -44,6 +44,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   open while Redis is down. Settings `RATE_LIMIT_ANONYMOUS_PER_MINUTE` and
   `RATE_LIMIT_AUTHENTICATED_PER_MINUTE`; metrics `rate_limited_total` and
   `rate_limit_errors_total`.
+- Deployment (`deploy/`, `docs/deployment.md`), prepared but not deployed:
+  a hardened systemd unit (`pulsars-api.service`), the nginx vhost for
+  `api.pulsars.science` (TLS, WebSocket location, `X-Forwarded-For` set by
+  nginx only, security headers, flood guard), a production environment
+  file, and `deploy-api`, which installs a release, swaps it in atomically,
+  checks `/healthz` and rolls back on failure (`--rollback` by hand).
+- Release workflow: a `vX.Y.Z` tag builds `x86_64-unknown-linux-gnu` and
+  publishes the archive that `deploy-api` installs, with its SHA-256.
+- CI: `shellcheck` on every shell script.
 
 ### Changed
 

@@ -72,7 +72,15 @@ cargo test                                   # plus tests against the compose se
 ```
 
 CI runs everything against real PostgreSQL and Redis, plus `cargo fmt`,
-`cargo clippy -D warnings`, `cargo deny` and a DCO check.
+`cargo clippy -D warnings`, `cargo deny`, `shellcheck` and a DCO check.
+
+## Deployment
+
+In production the API runs on the Pulsars VPS behind nginx, as a systemd
+service installed from release archives that CI publishes on each `vX.Y.Z` tag. Installation,
+upgrades and rollback: [`docs/deployment.md`](docs/deployment.md). It is
+not deployed yet: it needs the production PostgreSQL migration, the
+`api_read` views and Laravel's JWKS endpoint first.
 
 ## Status
 
@@ -81,11 +89,11 @@ CI runs everything against real PostgreSQL and Redis, plus `cargo fmt`,
 | 0 | Contract and plan | done |
 | 1 | Open-source skeleton, `/healthz`, CI | done |
 | 2 | JWT authentication, `/v1/me` | done |
-| 3 | Content endpoints, rate limits | in review |
+| 3 | Content endpoints, rate limits | done |
 | 4 | Game | blocked on game design |
 | 5 | Results webhook to Laravel | planned |
 | 6 | Code sandbox (only if the game runs code) | undecided |
-| 7 | Deployment | planned |
+| 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |
 
 ## Contributing
 
