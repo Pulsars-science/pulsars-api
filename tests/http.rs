@@ -48,12 +48,22 @@ fn integration_urls() -> Option<(String, String)> {
     }
 }
 
+/// Test configuration. Rate limits are lifted so tests sharing a Redis
+/// do not throttle each other; rate limit tests set their own.
 fn config(database_url: &str, redis_url: &str, extra: &[(&str, &str)]) -> Config {
     let mut vars = vec![
         ("PULSARS_ENV".to_owned(), "development".to_owned()),
         ("DATABASE_URL".to_owned(), database_url.to_owned()),
         ("REDIS_URL".to_owned(), redis_url.to_owned()),
         ("JWKS_URL".to_owned(), DEAD_JWKS.to_owned()),
+        (
+            "RATE_LIMIT_ANONYMOUS_PER_MINUTE".to_owned(),
+            "1000000".to_owned(),
+        ),
+        (
+            "RATE_LIMIT_AUTHENTICATED_PER_MINUTE".to_owned(),
+            "1000000".to_owned(),
+        ),
     ];
     vars.extend(
         extra
@@ -777,5 +787,1186 @@ async fn me_is_404_when_the_account_is_gone() {
             "https://api.pulsars.science/problems/not-found"
         );
         assert_eq!(body["instance"], "/v1/me");
+    }
+}
+
+// --- Content endpoints against the demo data ------------------------------
+//
+// `dev/db/30-demo-data.sql`: two published courses (`les-bases-du-calcul`,
+// `chimie-le-tableau-periodique`), a draft and a future course; exercises
+// 1-5 published, 6 in the draft; exams 2 and 5 published, 1 a draft;
+// resources 1-3 published, 4 pending. Every exercise carries its answer and
+// every exam part its correction, so the tests can prove none comes out.
+
+/// The application against the demo database, or `None` when skipped.
+async fn content_app() -> Option<Router> {
+    let (database_url, redis_url) = integration_urls()?;
+    let (app, _) = app(config(&database_url, &redis_url, &[])).await;
+    Some(app)
+}
+
+async fn get_json(app: &Router, path: &str) -> (StatusCode, axum::http::HeaderMap, Value) {
+    send(app, get(path)).await
+}
+
+/// Values of `field` in a list response's `data`.
+fn field(body: &Value, field: &str) -> Vec<Value> {
+    body["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("not a list: {body}"))
+        .iter()
+        .map(|item| item[field].clone())
+        .collect()
+}
+
+/// Follows `next_cursor` from `path` to the last page.
+async fn all_pages(app: &Router, path: &str) -> (Vec<Value>, usize) {
+    let mut items = Vec::new();
+    let mut pages = 0;
+    let mut next = path.to_owned();
+    loop {
+        let (status, _, body) = get_json(app, &next).await;
+        assert_eq!(status, StatusCode::OK, "{next}: {body}");
+        pages += 1;
+        items.extend(body["data"].as_array().unwrap().iter().cloned());
+        match body["next_cursor"].as_str() {
+            Some(cursor) => {
+                let separator = if path.contains('?') { '&' } else { '?' };
+                next = format!("{path}{separator}cursor={cursor}");
+            }
+            None => return (items, pages),
+        }
+        assert!(pages < 50, "pagination does not end");
+    }
+}
+
+fn course_basics_fr() -> Value {
+    json!({
+        "id": 1,
+        "slug": "les-bases-du-calcul",
+        "lang": "fr",
+        "title": "Les bases du calcul",
+        "description": "Priorités opératoires, fractions, puissances et pourcentages. De quoi calculer juste, sans calculatrice. Aucun prérequis.",
+        "theme": "Mathématiques",
+        "subject": {"slug": "mathematiques", "name": "Mathématiques"},
+        "topic": null,
+        "difficulty": "debutant",
+        "levels": [],
+        "duration_minutes": 60,
+        "tags": ["maths", "calcul"],
+        "author": "jikuji",
+        "chapter_count": 2,
+        "lesson_count": 4,
+        "exercise_count": 5,
+        "available_langs": ["fr", "en"],
+        "published_at": "2026-08-17T09:27:34Z",
+        "updated_at": "2026-08-17T09:27:34Z",
+        "web_url": "https://pulsars.science/cours/les-bases-du-calcul",
+    })
+}
+
+#[tokio::test]
+async fn catalog_derives_subjects_and_topics_from_themes() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_json(&app, "/v1/catalog").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CONTENT_LANGUAGE], "fr");
+    assert_eq!(
+        body,
+        json!({"data": {
+            "taxonomy": "theme",
+            "lang": "fr",
+            "subjects": [
+                {"slug": "chimie", "name": "Chimie", "course_count": 1, "topics": [
+                    {"slug": "la-matiere", "name": "La matière", "course_count": 1},
+                ]},
+                {"slug": "mathematiques", "name": "Mathématiques", "course_count": 1, "topics": []},
+            ],
+        }})
+    );
+
+    // Subject names are translated, topic names never.
+    let (_, headers, body) = get_json(&app, "/v1/catalog?lang=en").await;
+    assert_eq!(headers[header::CONTENT_LANGUAGE], "en");
+    assert_eq!(body["data"]["lang"], "en");
+    assert_eq!(body["data"]["subjects"][0]["name"], "Chemistry");
+    assert_eq!(
+        body["data"]["subjects"][0]["topics"][0]["name"],
+        "La matière"
+    );
+    assert_eq!(body["data"]["subjects"][1]["name"], "Mathematics");
+}
+
+#[tokio::test]
+async fn courses_list_published_courses_only() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_json(&app, "/v1/courses").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CONTENT_TYPE], "application/json");
+    assert_eq!(
+        headers[header::CACHE_CONTROL],
+        "public, max-age=300, stale-while-revalidate=60"
+    );
+    assert!(headers.contains_key(header::ETAG));
+    assert_eq!(body["next_cursor"], Value::Null);
+
+    let mut slugs = field(&body, "slug");
+    slugs.sort_by_key(|s| s.to_string());
+    assert_eq!(
+        slugs,
+        vec![
+            json!("chimie-le-tableau-periodique"),
+            json!("les-bases-du-calcul")
+        ]
+    );
+    let find = |slug: &str| {
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["slug"] == slug)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(find("les-bases-du-calcul"), course_basics_fr());
+    let chimie = find("chimie-le-tableau-periodique");
+    assert_eq!(
+        chimie["topic"],
+        json!({"slug": "la-matiere", "name": "La matière"})
+    );
+    assert_eq!(chimie["levels"], json!(["lycee"]));
+    assert_eq!(chimie["available_langs"], json!(["fr"]));
+}
+
+#[tokio::test]
+async fn courses_filters() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    for (query, expected) in [
+        ("subject=chimie", vec!["chimie-le-tableau-periodique"]),
+        (
+            "subject=chimie&topic=la-matiere",
+            vec!["chimie-le-tableau-periodique"],
+        ),
+        ("subject=chimie&topic=analyse", vec![]),
+        ("subject=mathematiques", vec!["les-bases-du-calcul"]),
+        ("difficulty=debutant", vec!["les-bases-du-calcul"]),
+        // The only `avance` course is a draft.
+        ("difficulty=avance", vec![]),
+        ("level=lycee", vec!["chimie-le-tableau-periodique"]),
+        // The draft's `supérieur` tag must not show through.
+        ("level=superieur", vec![]),
+        ("tag=calcul", vec!["les-bases-du-calcul"]),
+        ("tag=lyc%C3%A9e", vec!["chimie-le-tableau-periodique"]),
+        ("available_in=en", vec!["les-bases-du-calcul"]),
+        (
+            "available_in=fr",
+            vec!["chimie-le-tableau-periodique", "les-bases-du-calcul"],
+        ),
+        ("q=CALCULATRICE", vec!["les-bases-du-calcul"]),
+        // Searched in the translation for `lang`, and only then.
+        (
+            "q=without%20a%20calculator&lang=en",
+            vec!["les-bases-du-calcul"],
+        ),
+        ("q=without%20a%20calculator", vec![]),
+        // `%` and `_` are literal characters, not wildcards.
+        ("q=%25%25", vec![]),
+        ("q=__", vec![]),
+        ("q=brouillon", vec![]),
+    ] {
+        let (status, _, body) = get_json(&app, &format!("/v1/courses?{query}")).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {body}");
+        let mut slugs: Vec<String> = field(&body, "slug")
+            .iter()
+            .map(|s| s.as_str().unwrap().to_owned())
+            .collect();
+        slugs.sort();
+        assert_eq!(slugs, expected, "{query}");
+    }
+}
+
+#[tokio::test]
+async fn course_detail_matches_the_openapi_example() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, _, body) = get_json(&app, "/v1/courses/les-bases-du-calcul").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut expected = course_basics_fr();
+    expected["chapters"] = json!([
+        {"position": 1, "title": "L'ordre des opérations", "lang": "fr",
+         "lessons": [
+            {"slug": "priorites-operatoires", "position": 1, "title": "Les priorités opératoires", "lang": "fr"},
+            {"slug": "les-fractions", "position": 2, "title": "Les fractions", "lang": "fr"},
+         ],
+         "exercises": [
+            {"id": 1, "position": 1, "type": "qcm", "title": "Appliquer les priorités", "lang": "fr"},
+            {"id": 2, "position": 2, "type": "reponse_courte", "title": "Simplifier une fraction", "lang": "fr"},
+         ]},
+        {"position": 2, "title": "Puissances et pourcentages", "lang": "fr",
+         "lessons": [
+            {"slug": "les-puissances", "position": 1, "title": "Les puissances", "lang": "fr"},
+            {"slug": "les-pourcentages", "position": 2, "title": "Les pourcentages", "lang": "fr"},
+         ],
+         "exercises": [
+            {"id": 3, "position": 1, "type": "qcm", "title": "Vrai ou faux sur les puissances", "lang": "fr"},
+            {"id": 4, "position": 2, "type": "reponse_courte", "title": "Calculer un pourcentage", "lang": "fr"},
+            {"id": 5, "position": 3, "type": "reponse_libre", "title": "Le piège des pourcentages", "lang": "fr"},
+         ]},
+    ]);
+    assert_eq!(body, json!({"data": expected}));
+}
+
+#[tokio::test]
+async fn english_falls_back_to_french_per_object_and_field() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_json(&app, "/v1/courses/les-bases-du-calcul?lang=en").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CONTENT_LANGUAGE], "en");
+    let course = &body["data"];
+    assert_eq!(course["lang"], "en");
+    assert_eq!(course["title"], "The basics of the calculation");
+    assert_eq!(course["subject"]["name"], "Mathematics");
+    // Never translated.
+    assert_eq!(course["theme"], "Mathématiques");
+    assert_eq!(course["tags"], json!(["maths", "calcul"]));
+    assert_eq!(course["chapters"][0]["lang"], "en");
+    assert_eq!(course["chapters"][0]["title"], "The order of operations");
+    assert_eq!(
+        course["chapters"][0]["exercises"][0]["title"],
+        "Set priorities"
+    );
+    assert_eq!(course["chapters"][0]["exercises"][1]["lang"], "fr");
+    assert_eq!(course["chapters"][1]["lang"], "fr");
+    assert_eq!(course["chapters"][1]["title"], "Puissances et pourcentages");
+
+    // A course without any translation stays French.
+    let (_, _, body) = get_json(&app, "/v1/courses/chimie-le-tableau-periodique?lang=en").await;
+    assert_eq!(body["data"]["lang"], "fr");
+    assert_eq!(body["data"]["subject"]["name"], "Chemistry");
+}
+
+#[tokio::test]
+async fn lessons_link_across_chapters() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, _, body) = get_json(
+        &app,
+        "/v1/courses/les-bases-du-calcul/lessons/priorites-operatoires",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let lesson = &body["data"];
+    assert_eq!(lesson["slug"], "priorites-operatoires");
+    assert_eq!(lesson["lang"], "fr");
+    assert_eq!(lesson["title"], "Les priorités opératoires");
+    assert_eq!(lesson["position"], 1);
+    assert!(
+        lesson["content_md"]
+            .as_str()
+            .unwrap()
+            .starts_with("Combien vaut `2 + 3 x 4` ?")
+    );
+    assert_eq!(
+        lesson["chapter"],
+        json!({"position": 1, "title": "L'ordre des opérations", "lang": "fr"})
+    );
+    assert_eq!(
+        lesson["course"],
+        json!({"slug": "les-bases-du-calcul", "title": "Les bases du calcul", "lang": "fr"})
+    );
+    assert_eq!(lesson["previous"], Value::Null);
+    assert_eq!(
+        lesson["next"],
+        json!({"slug": "les-fractions", "title": "Les fractions"})
+    );
+    assert_eq!(lesson["updated_at"], "2026-08-13T18:59:10Z");
+    assert_eq!(
+        lesson["web_url"],
+        "https://pulsars.science/cours/les-bases-du-calcul/lecon/priorites-operatoires"
+    );
+
+    // The last lesson of chapter 1 leads to the first of chapter 2.
+    let (_, _, body) = get_json(
+        &app,
+        "/v1/courses/les-bases-du-calcul/lessons/les-fractions",
+    )
+    .await;
+    assert_eq!(body["data"]["next"]["slug"], "les-puissances");
+    let (_, _, body) = get_json(
+        &app,
+        "/v1/courses/les-bases-du-calcul/lessons/les-pourcentages",
+    )
+    .await;
+    assert_eq!(body["data"]["next"], Value::Null);
+    assert_eq!(body["data"]["previous"]["slug"], "les-puissances");
+}
+
+#[tokio::test]
+async fn lesson_in_english_matches_the_openapi_example() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (_, _, body) = get_json(
+        &app,
+        "/v1/courses/les-bases-du-calcul/lessons/priorites-operatoires?lang=en",
+    )
+    .await;
+    let lesson = &body["data"];
+    assert_eq!(lesson["lang"], "en");
+    assert_eq!(lesson["title"], "Operational priorities");
+    assert!(
+        lesson["content_md"]
+            .as_str()
+            .unwrap()
+            .starts_with("What is `2 + 3 x 4` equal to?")
+    );
+    assert_eq!(
+        lesson["chapter"],
+        json!({"position": 1, "title": "The order of operations", "lang": "en"})
+    );
+    assert_eq!(
+        lesson["course"],
+        json!({"slug": "les-bases-du-calcul", "title": "The basics of the calculation", "lang": "en"})
+    );
+    assert_eq!(
+        lesson["next"],
+        json!({"slug": "les-fractions", "title": "Fractions"})
+    );
+
+    // Translated title, empty translated content: the content falls back.
+    let (_, _, body) = get_json(
+        &app,
+        "/v1/courses/les-bases-du-calcul/lessons/les-fractions?lang=en",
+    )
+    .await;
+    assert_eq!(body["data"]["lang"], "en");
+    assert_eq!(body["data"]["title"], "Fractions");
+    assert!(
+        body["data"]["content_md"]
+            .as_str()
+            .unwrap()
+            .starts_with("Une fraction")
+    );
+}
+
+#[tokio::test]
+async fn exercises_never_carry_their_answer() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, _, body) = get_json(&app, "/v1/exercises/1").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({"data": {
+            "id": 1,
+            "lang": "fr",
+            "type": "qcm",
+            "title": "Appliquer les priorités",
+            "question_md": "Combien vaut `12 - 2 x 3 + 1` ?",
+            "options": [
+                {"id": "a", "text": "31"},
+                {"id": "b", "text": "7"},
+                {"id": "c", "text": "11"},
+                {"id": "d", "text": "4"},
+            ],
+            "multiple": false,
+            "position": 1,
+            "chapter": {"position": 1, "title": "L'ordre des opérations", "lang": "fr"},
+            "course": {"slug": "les-bases-du-calcul", "title": "Les bases du calcul",
+                       "lang": "fr", "difficulty": "debutant"},
+            "web_url": "https://pulsars.science/cours/les-bases-du-calcul/exercice/1",
+        }})
+    );
+
+    let (_, _, body) = get_json(&app, "/v1/exercises/2").await;
+    assert_eq!(body["data"]["type"], "reponse_courte");
+    assert_eq!(
+        body["data"]["question_md"],
+        "Simplifie la fraction `18/24` au maximum.\n\nÉcris ta réponse sous la forme `a/b`."
+    );
+    assert_eq!(body["data"]["options"], Value::Null);
+    assert_eq!(body["data"]["multiple"], Value::Null);
+
+    let (_, _, body) = get_json(&app, "/v1/exercises/3").await;
+    assert_eq!(body["data"]["multiple"], true);
+    assert_eq!(body["data"]["chapter"]["position"], 2);
+    assert_eq!(body["data"]["options"].as_array().unwrap().len(), 5);
+
+    // English: title and question translated, never the solution.
+    let (_, _, body) = get_json(&app, "/v1/exercises/1?lang=en").await;
+    assert_eq!(body["data"]["lang"], "en");
+    assert_eq!(body["data"]["title"], "Set priorities");
+    assert_eq!(
+        body["data"]["question_md"],
+        "What is the value of `12 - 2 x 3 + 1`?"
+    );
+    assert_eq!(
+        body["data"]["course"]["title"],
+        "The basics of the calculation"
+    );
+    assert_eq!(body["data"]["options"][1]["text"], "7");
+}
+
+#[tokio::test]
+async fn exercises_paginate_by_id() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, _, body) = get_json(&app, "/v1/exercises?limit=2").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(field(&body, "id"), vec![json!(1), json!(2)]);
+    assert!(body["next_cursor"].is_string());
+
+    let (items, pages) = all_pages(&app, "/v1/exercises?limit=2").await;
+    let ids: Vec<Value> = items.iter().map(|e| e["id"].clone()).collect();
+    // Exercise 6 belongs to a draft course.
+    assert_eq!(ids, vec![json!(1), json!(2), json!(3), json!(4), json!(5)]);
+    assert_eq!(pages, 3);
+
+    // A page that exactly fills the limit has no next cursor.
+    let (_, _, body) = get_json(&app, "/v1/exercises?limit=5").await;
+    assert_eq!(field(&body, "id").len(), 5);
+    assert_eq!(body["next_cursor"], Value::Null);
+    let (_, _, body) = get_json(&app, "/v1/exercises?limit=100").await;
+    assert_eq!(body["next_cursor"], Value::Null);
+
+    for (query, expected) in [
+        ("type=qcm", vec![1, 3]),
+        ("type=reponse_libre", vec![5]),
+        ("course=les-bases-du-calcul", vec![1, 2, 3, 4, 5]),
+        ("course=demo-draft-course", vec![]),
+        ("subject=chimie", vec![]),
+        (
+            "subject=mathematiques&difficulty=debutant",
+            vec![1, 2, 3, 4, 5],
+        ),
+        ("difficulty=avance", vec![]),
+    ] {
+        let (status, _, body) = get_json(&app, &format!("/v1/exercises?{query}")).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {body}");
+        let expected: Vec<Value> = expected.into_iter().map(Value::from).collect();
+        assert_eq!(field(&body, "id"), expected, "{query}");
+    }
+}
+
+#[tokio::test]
+async fn cursors_are_bound_to_their_filters() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (_, _, body) = get_json(&app, "/v1/exercises?limit=1&type=qcm").await;
+    let cursor = body["next_cursor"].as_str().unwrap().to_owned();
+
+    let (status, _, body) = get_json(
+        &app,
+        &format!("/v1/exercises?limit=1&type=qcm&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(field(&body, "id"), vec![json!(3)]);
+
+    for path in [
+        format!("/v1/exercises?limit=1&cursor={cursor}"),
+        format!("/v1/exercises?type=qcm&lang=en&cursor={cursor}"),
+        format!("/v1/courses?cursor={cursor}"),
+        "/v1/exercises?cursor=not-a-cursor".to_owned(),
+        "/v1/exams?cursor=e30".to_owned(),
+    ] {
+        let (status, headers, body) = get_json(&app, &path).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        assert_eq!(
+            body["type"], "https://api.pulsars.science/problems/invalid-cursor",
+            "{path}"
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    }
+}
+
+#[tokio::test]
+async fn courses_exams_and_resources_paginate() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (courses, pages) = all_pages(&app, "/v1/courses?limit=1").await;
+    assert_eq!(pages, 2);
+    let (all, _) = all_pages(&app, "/v1/courses").await;
+    assert_eq!(courses, all);
+
+    // Newest first, then id descending.
+    let (exams, pages) = all_pages(&app, "/v1/exams?limit=1").await;
+    assert_eq!(pages, 2);
+    let ids: Vec<Value> = exams.iter().map(|e| e["id"].clone()).collect();
+    assert_eq!(ids, vec![json!(5), json!(2)]);
+
+    // Resources 1 and 2 were created in the same second: id breaks the tie.
+    let (resources, pages) = all_pages(&app, "/v1/resources?limit=1").await;
+    assert_eq!(pages, 3);
+    let ids: Vec<Value> = resources.iter().map(|r| r["id"].clone()).collect();
+    assert_eq!(ids, vec![json!(3), json!(2), json!(1)]);
+}
+
+#[tokio::test]
+async fn exams_show_statements_only() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let slug = "baccalaureat-general-2026-mathematiques-specialite-jour-1";
+    let (status, _, body) = get_json(&app, &format!("/v1/exams/{slug}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({"data": {
+            "id": 2,
+            "slug": slug,
+            "lang": "fr",
+            "title": "Baccalauréat général 2026 — Mathématiques, spécialité (jour 1)",
+            "type": "bac",
+            "competition": null,
+            "subject": "mathematiques",
+            "country": "FR",
+            "level": "Terminale",
+            "tracks": [],
+            "session": "Session 2026 — 16 juin 2026",
+            "duration_minutes": 240,
+            "total_points": 20,
+            "part_count": 2,
+            "pdf_url": format!("https://pulsars.science/examens/{slug}/telecharger"),
+            "official_url": null,
+            "source_url": null,
+            "published_at": "2026-08-13T09:32:04Z",
+            "web_url": format!("https://pulsars.science/examens/{slug}"),
+            "description": "Sujet de spécialité mathématiques du baccalauréat général, session 2026, épreuve du 16 juin (sujet 26-MATJ1ME1).",
+            "parts": [
+                {"id": 46, "position": 1, "lang": "fr",
+                 "title": "Exercice 1 — Probabilités : traversée en navire", "points": 5,
+                 "statement_md": "Un navire assure la liaison entre deux ports de la Méditerranée."},
+                {"id": 47, "position": 2, "lang": "fr",
+                 "title": "Exercice 2 — Vrai/faux : géométrie dans l'espace et dénombrement", "points": 4,
+                 "statement_md": "Pour chacune des affirmations suivantes, indiquer si elle est vraie ou fausse."},
+            ],
+        }})
+    );
+
+    // Parts are translated, the exam itself never.
+    let (_, _, body) = get_json(&app, &format!("/v1/exams/{slug}?lang=en")).await;
+    assert_eq!(body["data"]["lang"], "fr");
+    assert_eq!(body["data"]["parts"][0]["lang"], "en");
+    assert_eq!(
+        body["data"]["parts"][0]["statement_md"],
+        "A ship links two Mediterranean ports."
+    );
+    assert_eq!(body["data"]["parts"][1]["lang"], "fr");
+
+    // The external competitive paper: no hosted PDF, the allowed official URL.
+    let (_, _, body) = get_json(
+        &app,
+        "/v1/exams/centrale-supelec-2026-mathematiques-1-mp-mpi",
+    )
+    .await;
+    let exam = &body["data"];
+    assert_eq!(exam["tracks"], json!(["MP", "MPI"]));
+    assert_eq!(exam["pdf_url"], Value::Null);
+    assert_eq!(
+        exam["official_url"],
+        "https://www.concours-centrale-supelec.fr/sites/default/files/documents/M098.pdf"
+    );
+    assert_eq!(exam["part_count"], 0);
+    assert_eq!(exam["parts"], json!([]));
+    assert_eq!(exam["duration_minutes"], Value::Null);
+}
+
+#[tokio::test]
+async fn exams_filters() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    for (query, expected) in [
+        ("type=concours", vec![5]),
+        ("type=bac", vec![2]),
+        ("type=brevet", vec![]),
+        ("subject=mathematiques", vec![5, 2]),
+        ("level=Terminale", vec![2]),
+        ("level=terminale", vec![]),
+        ("session=2026", vec![5]),
+        ("country=FR", vec![5, 2]),
+        ("competition=centrale-supelec", vec![5]),
+        ("q=centrale", vec![5]),
+        ("q=26-MATJ1ME1", vec![2]),
+        ("q=relecture", vec![]),
+    ] {
+        let (status, _, body) = get_json(&app, &format!("/v1/exams?{query}")).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {body}");
+        let expected: Vec<Value> = expected.into_iter().map(Value::from).collect();
+        assert_eq!(field(&body, "id"), expected, "{query}");
+    }
+    let (_, _, body) = get_json(&app, "/v1/exams").await;
+    // Summaries carry neither description nor parts.
+    assert!(body["data"][0].get("description").is_none());
+    assert!(body["data"][0].get("parts").is_none());
+}
+
+#[tokio::test]
+async fn resources_match_the_openapi_examples() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, _, body) = get_json(&app, "/v1/resources/misselbooks-abstract-algebra").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({"data": {
+            "id": 2,
+            "slug": "misselbooks-abstract-algebra",
+            "lang": "fr",
+            "title": "Abstract Algebra",
+            "description": "Un manuel d’algèbre abstraite en anglais (220 pages) : groupes, anneaux, corps, avec des applications à la cryptographie. Écrit et publié en accès libre par Andrew Misseldine.",
+            "category": "Mathématiques",
+            "doc_lang": "en",
+            "mode": "host",
+            "attribution": "Andrew Misseldine",
+            "license": {
+                "key": "cc0-1.0",
+                "name": "CC0 1.0 (domaine public)",
+                "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+            },
+            "download_url": "https://pulsars.science/ressources/misselbooks-abstract-algebra/telecharger",
+            "source_url": "https://github.com/emisseldine/MisselBooks/blob/main/AbstractAlgebra/Abstract%20Algebra.pdf",
+            "size_bytes": 1543021,
+            "created_at": "2026-08-07T14:44:26Z",
+            "updated_at": "2026-08-07T14:44:26Z",
+            "web_url": "https://pulsars.science/ressources/misselbooks-abstract-algebra",
+        }})
+    );
+
+    let (_, _, body) = get_json(&app, "/v1/resources/article-chimie-inorganique-ic901972h").await;
+    assert_eq!(
+        body,
+        json!({"data": {
+            "id": 1,
+            "slug": "article-chimie-inorganique-ic901972h",
+            "lang": "fr",
+            "title": "Tripodal 4-Pyridyl-Derived Host Ligands and Their Metallo-Supramolecular Chemistry: Stella Octangula and Bowl-Shaped Assemblies",
+            "description": "Un article de recherche en chimie inorganique, à télécharger en PDF.",
+            "category": "Chimie",
+            "doc_lang": "en",
+            "mode": "host",
+            "attribution": null,
+            "license": null,
+            "download_url": "https://pulsars.science/ressources/article-chimie-inorganique-ic901972h/telecharger",
+            "source_url": null,
+            "size_bytes": 3451711,
+            "created_at": "2026-08-07T14:44:26Z",
+            "updated_at": "2026-08-07T14:44:26Z",
+            "web_url": "https://pulsars.science/ressources/article-chimie-inorganique-ic901972h",
+        }})
+    );
+
+    // A link: no download, no size.
+    let (_, _, body) = get_json(&app, "/v1/resources/misselbooks-calculus-i").await;
+    assert_eq!(body["data"]["mode"], "link");
+    assert_eq!(body["data"]["download_url"], Value::Null);
+    assert_eq!(body["data"]["size_bytes"], Value::Null);
+
+    // English: translated title, description and category.
+    let (_, _, body) = get_json(&app, "/v1/resources/misselbooks-abstract-algebra?lang=en").await;
+    assert_eq!(body["data"]["lang"], "en");
+    assert_eq!(body["data"]["category"], "Mathematics");
+    assert!(
+        body["data"]["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("A 220-page")
+    );
+}
+
+#[tokio::test]
+async fn resources_filters() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    for (query, expected) in [
+        ("mode=link", vec![3]),
+        ("mode=host", vec![2, 1]),
+        ("license=cc0-1.0", vec![3, 2]),
+        // The original category, whatever `lang` says.
+        ("category=Math%C3%A9matiques", vec![3, 2]),
+        ("category=Mathematics&lang=en", vec![]),
+        ("doc_lang=en", vec![3, 2, 1]),
+        ("doc_lang=fr", vec![]),
+        ("q=algebre", vec![]),
+        ("q=alg%C3%A8bre", vec![2]),
+        ("q=textbook", vec![]),
+        ("q=textbook&lang=en", vec![2]),
+        ("q=attente", vec![]),
+    ] {
+        let (status, _, body) = get_json(&app, &format!("/v1/resources?{query}")).await;
+        assert_eq!(status, StatusCode::OK, "{query}: {body}");
+        let expected: Vec<Value> = expected.into_iter().map(Value::from).collect();
+        assert_eq!(field(&body, "id"), expected, "{query}");
+    }
+}
+
+#[tokio::test]
+async fn unpublished_content_answers_404() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    for path in [
+        "/v1/courses/demo-draft-course",
+        "/v1/courses/demo-future-course",
+        "/v1/courses/les-bases-du-calcul-2",
+        "/v1/courses/demo-draft-course/lessons/brouillon",
+        "/v1/courses/les-bases-du-calcul/lessons/brouillon",
+        // A lesson of another course.
+        "/v1/courses/les-bases-du-calcul/lessons/mendeleiev",
+        "/v1/exercises/6",
+        "/v1/exercises/999999",
+        "/v1/exercises/abc",
+        "/v1/exercises/0",
+        "/v1/exams/diplome-national-du-brevet-2026-mathematiques-serie-generale",
+        "/v1/resources/demo-pending-resource",
+    ] {
+        let (status, headers, body) = get_json(&app, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+        // Public caches may keep a 404 for a minute.
+        assert_eq!(
+            headers[header::CACHE_CONTROL],
+            "public, max-age=60",
+            "{path}"
+        );
+        assert_eq!(
+            body["type"],
+            "https://api.pulsars.science/problems/not-found"
+        );
+        assert_eq!(body["instance"], path);
+    }
+    let (_, _, body) = get_json(&app, "/v1/courses/les-bases-du-calcul-2").await;
+    assert_eq!(
+        body["detail"],
+        "No published course has the slug 'les-bases-du-calcul-2'."
+    );
+}
+
+#[tokio::test]
+async fn invalid_parameters_are_all_reported() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) =
+        get_json(&app, "/v1/courses?limit=500&lang=de&topic=analyse&q=x").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        body,
+        json!({
+            "type": "https://api.pulsars.science/problems/invalid-parameter",
+            "title": "Invalid parameter",
+            "status": 400,
+            "detail": "One or more query parameters are invalid.",
+            "errors": [
+                {"parameter": "lang", "detail": "must be one of: fr, en"},
+                {"parameter": "limit", "detail": "must be between 1 and 100"},
+                {"parameter": "topic", "detail": "requires `subject`"},
+                {"parameter": "q", "detail": "must be between 2 and 100 characters"},
+            ],
+        })
+    );
+
+    for (path, parameter) in [
+        ("/v1/catalog?lang=EN", "lang"),
+        ("/v1/courses?limit=0", "limit"),
+        ("/v1/courses?limit=101", "limit"),
+        ("/v1/courses?limit=ten", "limit"),
+        ("/v1/courses?difficulty=facile", "difficulty"),
+        ("/v1/courses?level=lyc%C3%A9e", "level"),
+        ("/v1/courses?available_in=de", "available_in"),
+        ("/v1/courses?subject=", "subject"),
+        ("/v1/courses?lang=fr&lang=en", "lang"),
+        ("/v1/exercises?type=vrai_faux", "type"),
+        ("/v1/exercises?topic=analyse", "topic"),
+        ("/v1/exams?type=examen", "type"),
+        ("/v1/exams?subject=histoire", "subject"),
+        ("/v1/exams?country=fr", "country"),
+        ("/v1/exams?country=FRA", "country"),
+        ("/v1/resources?mode=file", "mode"),
+        ("/v1/resources?doc_lang=fr-FR-x-long", "doc_lang"),
+        ("/v1/courses/les-bases-du-calcul?lang=de", "lang"),
+        ("/v1/exercises/1?lang=de", "lang"),
+    ] {
+        let (status, _, body) = get_json(&app, path).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        assert_eq!(body["errors"][0]["parameter"], parameter, "{path}");
+    }
+
+    // Edges that are valid, and unknown parameters, which are ignored.
+    for path in [
+        "/v1/courses?limit=1",
+        "/v1/courses?limit=100",
+        "/v1/courses?q=ab",
+        "/v1/courses?unknown=1&utm_source=x",
+    ] {
+        let (status, _, body) = get_json(&app, path).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn conditional_requests_answer_304() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (_, headers, _) = get_json(&app, "/v1/courses/les-bases-du-calcul").await;
+    let etag = headers[header::ETAG].to_str().unwrap().to_owned();
+    assert!(etag.starts_with('"'), "strong ETag: {etag}");
+
+    let request = Request::get("/v1/courses/les-bases-du-calcul")
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(response.headers()[header::ETAG], etag.as_str());
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "public, max-age=300, stale-while-revalidate=60"
+    );
+    let body = to_bytes(response.into_body(), 1024).await.unwrap();
+    assert!(body.is_empty());
+
+    // Another language is another representation.
+    let (_, headers, _) = get_json(&app, "/v1/courses/les-bases-du-calcul?lang=en").await;
+    assert_ne!(headers[header::ETAG].to_str().unwrap(), etag);
+    let request = Request::get("/v1/courses/les-bases-du-calcul?lang=en")
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn content_allows_any_origin_and_requires_json() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let request = Request::get("/v1/exams")
+        .header(header::ORIGIN, "https://anyone.example")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_CREDENTIALS));
+
+    let preflight = Request::options("/v1/courses")
+        .header(header::ORIGIN, "https://anyone.example")
+        .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(&app, preflight).await;
+    assert!(status.is_success(), "{status}");
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+
+    let request = Request::get("/v1/exams")
+        .header(header::ACCEPT, "text/html")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::NOT_ACCEPTABLE);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+    assert_eq!(
+        body["type"],
+        "https://api.pulsars.science/problems/not-acceptable"
+    );
+}
+
+/// Every public response the demo data can produce, in both languages.
+async fn crawl(app: &Router) -> String {
+    let mut paths: Vec<String> = vec![
+        "/v1/catalog".into(),
+        "/v1/courses?limit=100".into(),
+        "/v1/exercises?limit=100".into(),
+        "/v1/exams?limit=100".into(),
+        "/v1/resources?limit=100".into(),
+    ];
+    for (list, detail) in [
+        ("/v1/courses?limit=100", "/v1/courses/"),
+        ("/v1/exams?limit=100", "/v1/exams/"),
+        ("/v1/resources?limit=100", "/v1/resources/"),
+    ] {
+        let (_, _, body) = get_json(app, list).await;
+        for slug in field(&body, "slug") {
+            paths.push(format!("{detail}{}", slug.as_str().unwrap()));
+        }
+    }
+    for id in 1..=10 {
+        paths.push(format!("/v1/exercises/{id}"));
+    }
+    let (_, _, course) = get_json(app, "/v1/courses/les-bases-du-calcul").await;
+    for chapter in course["data"]["chapters"].as_array().unwrap() {
+        for lesson in chapter["lessons"].as_array().unwrap() {
+            paths.push(format!(
+                "/v1/courses/les-bases-du-calcul/lessons/{}",
+                lesson["slug"].as_str().unwrap()
+            ));
+        }
+    }
+    paths.push("/v1/courses/chimie-le-tableau-periodique/lessons/mendeleiev".into());
+
+    let mut dump = String::new();
+    for path in paths {
+        for lang in ["fr", "en"] {
+            let separator = if path.contains('?') { '&' } else { '?' };
+            let (_, _, body) = get_json(app, &format!("{path}{separator}lang={lang}")).await;
+            dump.push_str(&body.to_string());
+            dump.push('\n');
+        }
+    }
+    dump
+}
+
+#[tokio::test]
+async fn no_draft_answer_or_personal_data_is_ever_served() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let dump = crawl(&app).await;
+    assert!(
+        dump.contains("les-bases-du-calcul"),
+        "the crawl saw content"
+    );
+    assert!(dump.contains("Mendeleïev"), "the crawl saw every lesson");
+
+    // Markers planted in dev/db/30-demo-data.sql, keys of answer fields,
+    // unpublished slugs and storage paths.
+    for marker in [
+        "SOLUTION-MARKER",
+        "CORRIGE-MARKER",
+        "PROMPT-MARKER",
+        "solution",
+        "correctes",
+        "acceptees",
+        "corrige",
+        "\"correct\"",
+        "example.invalid",
+        "demofriendtoken",
+        "not-a-real-hash",
+        "Terminale B (private)",
+        "\"email\"",
+        "demo-draft-course",
+        "demo-future-course",
+        "demo-pending-resource",
+        "diplome-national-du-brevet",
+        "Brouillon",
+        "Invisible",
+        "Exercice brouillon",
+        "examens/bac-2026-maths-jour-1",
+        "ressources/ic901972h.pdf",
+        "ressources/pending.pdf",
+        "sujet.pdf",
+        "\"statut\"",
+        "\"vues\"",
+        "\"telechargements\"",
+        "auteur_id",
+        "ajoute_par",
+    ] {
+        assert!(!dump.contains(marker), "`{marker}` was served");
+    }
+}
+
+// --- Rate limits (real Redis) ---------------------------------------------
+
+fn test_redis_url() -> Option<String> {
+    match std::env::var("TEST_REDIS_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        Some(url) => Some(url),
+        None if std::env::var("REQUIRE_INTEGRATION").as_deref() == Ok("1") => {
+            panic!("REQUIRE_INTEGRATION=1 but TEST_REDIS_URL is not set")
+        }
+        None => {
+            eprintln!("skipped: TEST_REDIS_URL is not set");
+            None
+        }
+    }
+}
+
+async fn wait_for_redis(state: &AppState) {
+    use fred::prelude::ClientLike as _;
+    tokio::time::timeout(Duration::from_secs(5), state.redis.wait_for_connect())
+        .await
+        .expect("redis connects within 5 s")
+        .expect("redis connects");
+}
+
+/// A client IP no other test (or earlier run) uses.
+fn fresh_ip() -> String {
+    let id = uuid::Uuid::new_v4().as_u128();
+    format!("2001:db8::{:x}:{:x}", (id >> 16) & 0xffff, id & 0xffff)
+}
+
+fn from_ip(path: &str, ip: &str) -> Request<Body> {
+    Request::get(path)
+        .header("x-forwarded-for", format!("203.0.113.9, {ip}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn header_u64(headers: &axum::http::HeaderMap, name: &str) -> u64 {
+    headers[name].to_str().unwrap().parse().unwrap()
+}
+
+#[tokio::test]
+async fn anonymous_clients_are_limited_per_ip() {
+    let Some(redis_url) = test_redis_url() else {
+        return;
+    };
+    // `limit=500` answers 400 before any database access: no PostgreSQL
+    // needed, and the request is still counted.
+    let (app, state) = app(config(
+        DEAD_POSTGRES,
+        &redis_url,
+        &[("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "3")],
+    ))
+    .await;
+    wait_for_redis(&state).await;
+    let ip = fresh_ip();
+    let path = "/v1/courses?limit=500";
+
+    for remaining in [2, 1, 0] {
+        let (status, headers, _) = send(&app, from_ip(path, &ip)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(headers["ratelimit-limit"], "3");
+        assert_eq!(header_u64(&headers, "ratelimit-remaining"), remaining);
+        let reset = header_u64(&headers, "ratelimit-reset");
+        assert!((1..=60).contains(&reset), "{reset}");
+    }
+
+    let request = Request::get(path)
+        .header("x-forwarded-for", format!("203.0.113.9, {ip}"))
+        .header(header::ORIGIN, "https://anyone.example")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    let retry_after = header_u64(&headers, "retry-after");
+    assert!((1..=60).contains(&retry_after), "{retry_after}");
+    assert_eq!(header_u64(&headers, "ratelimit-remaining"), 0);
+    // Browsers can read the problem.
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    assert_eq!(
+        body,
+        json!({
+            "type": "https://api.pulsars.science/problems/rate-limited",
+            "title": "Too many requests",
+            "status": 429,
+            "detail": "Limit of 3 requests per minute reached.",
+        })
+    );
+
+    // Another IP has its own counter; the forged first entry is ignored.
+    let (status, _, _) = send(&app, from_ip(path, &fresh_ip())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // /healthz is never limited.
+    let (status, headers, _) = send(&app, from_ip("/healthz", &ip)).await;
+    assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(!headers.contains_key("ratelimit-limit"));
+}
+
+#[tokio::test]
+async fn authenticated_clients_are_limited_per_sub() {
+    let Some(redis_url) = test_redis_url() else {
+        return;
+    };
+    let server = JwksServer::start().await;
+    let (app, state) = app(config(
+        DEAD_POSTGRES,
+        &redis_url,
+        &[
+            ("JWKS_URL", server.url.as_str()),
+            ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000"),
+            ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "2"),
+        ],
+    ))
+    .await;
+    state.jwks.refresh().await.expect("JWKS loads");
+    wait_for_redis(&state).await;
+
+    // A `sub` naming no account answers 404 without touching PostgreSQL.
+    let sub = format!("rate-{}", uuid::Uuid::new_v4().simple());
+    let token = server.token(&sub);
+    let ip = fresh_ip();
+    let request = |path: &str, ip: &str| {
+        Request::get(path)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header("x-forwarded-for", ip.to_owned())
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (status, headers, body) = send(&app, request("/v1/me", &ip)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(headers["ratelimit-limit"], "2");
+    assert_eq!(headers["ratelimit-remaining"], "1");
+    // The counter follows the member across IPs and endpoints.
+    let (status, headers, _) = send(&app, request("/v1/courses?limit=500", &fresh_ip())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(headers["ratelimit-remaining"], "0");
+    let (status, headers, body) = send(&app, request("/v1/me", &ip)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert!(headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(body["detail"], "Limit of 2 requests per minute reached.");
+
+    // Without a valid token, the same IP is still under its own limit.
+    let (status, headers, body) = send(&app, from_ip("/v1/me", &ip)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(headers["ratelimit-limit"], "1000");
+    let forged = testing::token(&testing::signing_key(), KID, &sub, now());
+    let bad = Request::get("/v1/me")
+        .header(header::AUTHORIZATION, format!("Bearer {forged}"))
+        .header("x-forwarded-for", ip.clone())
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, body) = send(&app, bad).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["reason"], "bad_signature");
+    assert_eq!(headers["ratelimit-limit"], "1000");
+}
+
+#[tokio::test]
+async fn limits_fail_open_when_redis_is_down() {
+    let (app, _) = app(config(
+        DEAD_POSTGRES,
+        DEAD_REDIS,
+        &[("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1")],
+    ))
+    .await;
+    let ip = fresh_ip();
+    for _ in 0..3 {
+        let started = std::time::Instant::now();
+        let (status, headers, _) = send(&app, from_ip("/v1/courses?limit=500", &ip)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!headers.contains_key("ratelimit-limit"));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "never waits for Redis"
+        );
     }
 }

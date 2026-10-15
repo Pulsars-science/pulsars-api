@@ -158,6 +158,8 @@ pub mod names {
     pub const AUTH_REJECTIONS_TOTAL: &str = "auth_rejections_total";
     pub const JWKS_FETCHES_TOTAL: &str = "jwks_fetches_total";
     pub const JWKS_KEYS: &str = "jwks_keys";
+    pub const RATE_LIMITED_TOTAL: &str = "rate_limited_total";
+    pub const RATE_LIMIT_ERRORS_TOTAL: &str = "rate_limit_errors_total";
 }
 
 /// Installs the global metrics recorder and returns the handle that renders
@@ -202,6 +204,14 @@ fn describe_metrics() {
         "JWKS fetches, by result (ok, error)."
     );
     metrics::describe_gauge!(names::JWKS_KEYS, "Usable keys in the last JWKS loaded.");
+    metrics::describe_counter!(
+        names::RATE_LIMITED_TOTAL,
+        "Requests refused with 429, by scope (ip, sub)."
+    );
+    metrics::describe_counter!(
+        names::RATE_LIMIT_ERRORS_TOTAL,
+        "Requests let through unlimited because Redis could not count them."
+    );
 }
 
 #[cfg(test)]

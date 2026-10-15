@@ -78,6 +78,11 @@ pub struct Config {
     /// Origins allowed to call authenticated and game endpoints with
     /// credentials. Public content endpoints allow any origin.
     pub cors_allowed_origins: Vec<HeaderValue>,
+    /// Requests per minute per client IP without a valid token
+    /// (`docs/contract/README.md`, rate limits).
+    pub rate_limit_anonymous: u32,
+    /// Requests per minute per token `sub`.
+    pub rate_limit_authenticated: u32,
     pub request_timeout: Duration,
     pub body_limit_bytes: usize,
     pub log_format: LogFormat,
@@ -146,6 +151,13 @@ impl Config {
         let redis_url = reader.required("REDIS_URL", |v| {
             parse_url_scheme(v, &["redis", "rediss"]).map(|()| Secret::new(v))
         });
+        let rate_limit_anonymous = reader.optional("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "60", |v| {
+            parse_range(v, 1, 1_000_000)
+        });
+        let rate_limit_authenticated =
+            reader.optional("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "120", |v| {
+                parse_range(v, 1, 1_000_000)
+            });
         let request_timeout = reader
             .optional("REQUEST_TIMEOUT_SECS", "10", |v| parse_range(v, 1, 120))
             .map(|s| Duration::from_secs(u64::from(s)));
@@ -247,6 +259,8 @@ impl Config {
             jwt_audience,
             public_storage_url,
             cors_allowed_origins,
+            rate_limit_anonymous,
+            rate_limit_authenticated,
             request_timeout,
             body_limit_bytes,
             log_format,
@@ -265,6 +279,8 @@ impl Config {
                 Some(jwt_audience),
                 Some(public_storage_url),
                 Some(cors_allowed_origins),
+                Some(rate_limit_anonymous),
+                Some(rate_limit_authenticated),
                 Some(request_timeout),
                 Some(body_limit_bytes),
                 Some(log_format),
@@ -282,6 +298,8 @@ impl Config {
                 jwt_audience,
                 public_storage_url,
                 cors_allowed_origins,
+                rate_limit_anonymous,
+                rate_limit_authenticated,
                 request_timeout,
                 body_limit_bytes,
                 log_format,
@@ -476,6 +494,8 @@ mod tests {
         assert_eq!(config.jwt_issuer, "https://pulsars.science");
         assert_eq!(config.jwt_audience, "api.pulsars.science");
         assert_eq!(config.public_storage_url, "https://pulsars.science/storage");
+        assert_eq!(config.rate_limit_anonymous, 60);
+        assert_eq!(config.rate_limit_authenticated, 120);
     }
 
     #[test]
@@ -594,8 +614,9 @@ mod tests {
         let err = with(&[
             ("DATABASE_MAX_CONNECTIONS", "0"),
             ("REQUEST_TIMEOUT_SECS", "abc"),
+            ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "0"),
         ])
         .expect_err("must fail");
-        assert_eq!(err.problems.len(), 2);
+        assert_eq!(err.problems.len(), 3);
     }
 }

@@ -1,13 +1,20 @@
 //! Route tree and middleware stack.
 
+pub mod courses;
+pub mod cursor;
+pub mod exams;
+pub mod exercises;
 pub mod health;
 pub mod me;
+pub mod params;
+pub mod public;
+pub mod resources;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{OriginalUri, Request};
 use axum::http::{HeaderValue, StatusCode};
-use axum::middleware::from_fn;
+use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower::ServiceBuilder;
@@ -22,6 +29,7 @@ use tracing::Level;
 
 use crate::error::ApiError;
 use crate::middleware::{self as mw, X_REQUEST_ID};
+use crate::rate_limit;
 use crate::state::AppState;
 
 /// Builds the public application.
@@ -29,16 +37,43 @@ pub fn router(state: AppState) -> Router {
     let config = state.config.clone();
     let [(nosniff_name, nosniff), (robots_name, robots)] = mw::static_headers();
 
+    // Public content: any origin, no credentials. The explicit OPTIONS
+    // handlers route preflights through the CORS layer, which answers them;
+    // without them the router's 405 fallback would.
+    let content = Router::new()
+        .route("/v1/catalog", get(courses::catalog).options(preflight))
+        .route("/v1/courses", get(courses::list).options(preflight))
+        .route("/v1/courses/{slug}", get(courses::show).options(preflight))
+        .route(
+            "/v1/courses/{slug}/lessons/{lesson}",
+            get(courses::lesson).options(preflight),
+        )
+        .route("/v1/exercises", get(exercises::list).options(preflight))
+        .route(
+            "/v1/exercises/{id}",
+            get(exercises::show).options(preflight),
+        )
+        .route("/v1/exams", get(exams::list).options(preflight))
+        .route("/v1/exams/{slug}", get(exams::show).options(preflight))
+        .route("/v1/resources", get(resources::list).options(preflight))
+        .route(
+            "/v1/resources/{slug}",
+            get(resources::show).options(preflight),
+        )
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
+        .layer(mw::cors_public());
+
     // Authenticated endpoints: only the game front end may call them from a
-    // browser. Content endpoints (phase 3) will get `mw::cors_public()`.
-    // The explicit OPTIONS handler routes preflights through the CORS layer,
-    // which answers them; without it the router's 405 fallback would.
+    // browser.
     let authenticated = Router::new()
         .route("/v1/me", get(me::me).options(preflight))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
 
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(content)
         .merge(authenticated)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)

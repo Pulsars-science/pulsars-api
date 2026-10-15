@@ -45,7 +45,13 @@ set -a; . ./.env; set +a; cargo run
 ```
 
 Then `curl http://127.0.0.1:8080/healthz`. Metrics are on
-`http://127.0.0.1:9464/metrics`.
+`http://127.0.0.1:9464/metrics`. Content needs no token:
+
+```bash
+curl 'http://127.0.0.1:8080/v1/courses?lang=en'
+curl 'http://127.0.0.1:8080/v1/courses/les-bases-du-calcul/lessons/les-fractions'
+curl 'http://127.0.0.1:8080/v1/exercises?type=qcm&limit=2'
+```
 
 `/healthz` answers 503 until the API has loaded Laravel's public keys from
 `JWKS_URL` (a local Laravel by default, see `.env.example`). Authenticated
@@ -74,8 +80,8 @@ CI runs everything against real PostgreSQL and Redis, plus `cargo fmt`,
 |---|---|---|
 | 0 | Contract and plan | done |
 | 1 | Open-source skeleton, `/healthz`, CI | done |
-| 2 | JWT authentication, `/v1/me` | in review |
-| 3 | Content endpoints | next |
+| 2 | JWT authentication, `/v1/me` | done |
+| 3 | Content endpoints, rate limits | in review |
 | 4 | Game | blocked on game design |
 | 5 | Results webhook to Laravel | planned |
 | 6 | Code sandbox (only if the game runs code) | undecided |
