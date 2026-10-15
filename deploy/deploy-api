@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+#
+# deploy-api: installs a release of pulsars-api on the server, restarts it,
+# checks it, and goes back to the previous release if the check fails. Run it
+# ON the server, from the extracted release archive built by CI:
+#
+#     sha256sum -c pulsars-api-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+#     tar xzf pulsars-api-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+#     ./pulsars-api-v0.2.0-x86_64-unknown-linux-gnu/deploy-api
+#
+# The release it installs is the directory this script sits in. To go back to
+# the release that ran before the last deployment:
+#
+#     /opt/pulsars-api/current/deploy-api --rollback
+#
+# Options:
+#     --rollback     switch back to the previous release and restart
+#     --no-system    do not install the systemd unit and nginx vhost
+#     --no-check     skip the final check through nginx (the local health
+#                    check always runs: it decides the rollback)
+#
+# The first installation is described in docs/deployment.md. This script only
+# handles the deployments after it.
+#
+# It stops at the first error (`set -e`). Up to the restart, nothing the
+# running service uses has changed; after it, a failed health check puts the
+# previous release back.
+
+set -euo pipefail
+
+RELEASE_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+ROOT="${PULSARS_API_ROOT:-/opt/pulsars-api}"
+SERVICE="pulsars-api"
+UNIT="/etc/systemd/system/pulsars-api.service"
+VHOST="/etc/nginx/sites-available/pulsars-api"
+ENV_FILE="/etc/pulsars-api/pulsars-api.env"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/healthz}"
+PUBLIC_URL="${PUBLIC_URL:-https://api.pulsars.science/healthz}"
+# Seconds the new release gets to answer 200 on /healthz. It needs
+# PostgreSQL and Laravel's JWKS; the JWKS fetch is retried after 1, 2, 4, 8,
+# 16 seconds.
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-45}"
+KEEP_RELEASES="${KEEP_RELEASES:-5}"
+# EX_CONFIG: what the binary returns when the configuration is invalid.
+EXIT_CONFIG=78
+
+ROLLBACK=false
+NO_SYSTEM=false
+NO_CHECK=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --rollback) ROLLBACK=true ;;
+        --no-system) NO_SYSTEM=true ;;
+        --no-check) NO_CHECK=true ;;
+        *) echo "Unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
+
+step() { printf '\n\033[1;34m▸ %s\033[0m\n' "$*"; }
+ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
+fail() { printf '\033[1;31m✖\033[0m %s\n' "$*" >&2; }
+
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=()
+else
+    SUDO=(sudo)
+fi
+
+# ------------------------------------------------------------------ helpers
+
+# Version that `current` points to, or nothing.
+release_of() {
+    local link
+    link="$(readlink "$ROOT/$1" 2>/dev/null)" || return 0
+    basename "$link"
+}
+
+# Points the `current` or `previous` link to releases/<version>. A new link
+# renamed over the old one: `current` is never missing, even for an instant.
+point() {
+    local name="$1" version="$2"
+    "${SUDO[@]}" ln -sfn "releases/$version" "$ROOT/.$name.new"
+    "${SUDO[@]}" mv -T "$ROOT/.$name.new" "$ROOT/$name"
+}
+
+# Waits for /healthz to answer 200 with the expected version. "degraded"
+# (Redis down) counts as healthy: content is still served.
+healthy() {
+    local version="$1" deadline body
+    deadline=$((SECONDS + HEALTH_TIMEOUT))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if body="$(curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null)" \
+            && grep -q "\"version\":\"$version\"" <<<"$body"; then
+            ok "healthy: $body"
+            return 0
+        fi
+        sleep 1
+    done
+    fail "no healthy answer from $HEALTH_URL within ${HEALTH_TIMEOUT}s"
+    body="$(curl -sS --max-time 3 "$HEALTH_URL" 2>&1)" || true
+    echo "    last answer: ${body:-none}" >&2
+    return 1
+}
+
+show_logs() {
+    echo "    Last log lines (sudo journalctl -u $SERVICE -n 50):" >&2
+    "${SUDO[@]}" journalctl -u "$SERVICE" -n 15 --no-pager -o cat >&2 || true
+}
+
+restart() {
+    # A deployment followed by a rollback restarts the unit several times in
+    # a row: without this, StartLimitBurst could refuse the restart that puts
+    # the good release back.
+    "${SUDO[@]}" systemctl reset-failed "$SERVICE" 2>/dev/null || true
+    # Stops the old process first: SIGTERM, drain, exit (TimeoutStopSec).
+    "${SUDO[@]}" systemctl restart "$SERVICE"
+}
+
+# ------------------------------------------------------------ safeguards
+
+command -v curl >/dev/null || { fail "curl is missing."; exit 1; }
+"${SUDO[@]}" test -f "$ENV_FILE" \
+    || { fail "No $ENV_FILE. First installation: see docs/deployment.md."; exit 1; }
+"${SUDO[@]}" test -d "$ROOT/releases" \
+    || { fail "No $ROOT/releases. First installation: see docs/deployment.md."; exit 1; }
+
+# Two deployments at once would swap the links under each other's feet.
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/pulsars-api-deploy.lock"
+flock -n 9 || { fail "Another deployment is running."; exit 1; }
+
+# ------------------------------------------------------------------ rollback
+
+if [ "$ROLLBACK" = true ]; then
+    current="$(release_of current)"
+    previous="$(release_of previous)"
+    [ -n "$previous" ] && [ -x "$ROOT/releases/$previous/pulsars-api" ] \
+        || { fail "No previous release to go back to."; exit 1; }
+
+    step "Rollback: $current → $previous"
+    point current "$previous"
+    if [ -n "$current" ]; then
+        point previous "$current"
+    fi
+    restart
+    if healthy "$(cat "$ROOT/releases/$previous/VERSION")"; then
+        ok "pulsars-api runs $previous again."
+        exit 0
+    fi
+    show_logs
+    exit 1
+fi
+
+# ---------------------------------------------------------------- the work
+
+[ -f "$RELEASE_DIR/VERSION" ] && [ -x "$RELEASE_DIR/pulsars-api" ] \
+    || { fail "$RELEASE_DIR is not an extracted release (VERSION, pulsars-api)."; exit 1; }
+VERSION="$(cat "$RELEASE_DIR/VERSION")"
+RELEASE="v$VERSION"
+TARGET="$ROOT/releases/$RELEASE"
+CURRENT="$(release_of current)"
+PREVIOUS="$(release_of previous)"
+
+step "Release $RELEASE (running now: ${CURRENT:-none})"
+
+# Run without any environment, the binary stops at once on its configuration
+# check with exit code 78. Getting 78 proves it executes on this machine
+# (architecture, glibc) without starting a second server.
+code=0
+output="$(env -i "$RELEASE_DIR/pulsars-api" 2>&1)" || code=$?
+if [ "$code" -ne "$EXIT_CONFIG" ]; then
+    fail "the binary does not run on this machine (exit $code, expected $EXIT_CONFIG):"
+    echo "$output" | head -5 | sed 's/^/    /' >&2
+    exit 1
+fi
+ok "the binary runs here ($(uname -m), $(ldd --version 2>/dev/null | head -1 | awk '{print $NF}'))"
+
+step "Installation in $TARGET"
+if [ "$RELEASE_DIR" = "$TARGET" ]; then
+    ok "already in place"
+elif "${SUDO[@]}" test -d "$TARGET"; then
+    # One tag, one binary. Re-running a deployment is fine; installing a
+    # different build under the same version is not.
+    if "${SUDO[@]}" cmp -s "$RELEASE_DIR/pulsars-api" "$TARGET/pulsars-api"; then
+        ok "already installed, same binary"
+    else
+        fail "$TARGET exists with a different binary. Bump the version instead."
+        exit 1
+    fi
+else
+    # Copied under a temporary name, then renamed: a half-copied release
+    # never carries the final name.
+    "${SUDO[@]}" rm -rf "$TARGET.tmp"
+    "${SUDO[@]}" cp -R "$RELEASE_DIR" "$TARGET.tmp"
+    # root-owned and read-only for everyone else: the service account can
+    # run its binary, never change it.
+    "${SUDO[@]}" chown -R root:root "$TARGET.tmp"
+    "${SUDO[@]}" chmod -R go-w "$TARGET.tmp"
+    "${SUDO[@]}" mv -T "$TARGET.tmp" "$TARGET"
+    ok "copied"
+fi
+
+if [ "$NO_SYSTEM" = false ]; then
+    step "System files (systemd unit and nginx vhost)"
+
+    if ! "${SUDO[@]}" cmp -s "$TARGET/pulsars-api.service" "$UNIT"; then
+        "${SUDO[@]}" install -m 0644 -o root -g root "$TARGET/pulsars-api.service" "$UNIT"
+        "${SUDO[@]}" systemctl daemon-reload
+        ok "pulsars-api.service updated"
+    fi
+
+    # An invalid configuration would also take down the other sites of the
+    # machine at the next nginx restart: keep the old one at hand and put it
+    # back if the test fails.
+    if ! "${SUDO[@]}" cmp -s "$TARGET/api.pulsars.science.conf" "$VHOST"; then
+        "${SUDO[@]}" cp "$VHOST" "$VHOST.before-deploy" 2>/dev/null || true
+        "${SUDO[@]}" install -m 0644 -o root -g root "$TARGET/api.pulsars.science.conf" "$VHOST"
+        if "${SUDO[@]}" nginx -t >/dev/null 2>&1; then
+            "${SUDO[@]}" systemctl reload nginx
+            ok "nginx vhost updated and reloaded"
+        else
+            fail "invalid nginx configuration: the previous one is restored"
+            "${SUDO[@]}" cp "$VHOST.before-deploy" "$VHOST" 2>/dev/null || true
+            "${SUDO[@]}" nginx -t || true
+            exit 1
+        fi
+    fi
+    ok "system files up to date"
+fi
+
+if [ "$CURRENT" = "$RELEASE" ]; then
+    step "Restart ($RELEASE is already current)"
+else
+    step "Switch to $RELEASE and restart"
+    point current "$RELEASE"
+    if [ -n "$CURRENT" ]; then
+        point previous "$CURRENT"
+    fi
+fi
+restart
+ok "restarted"
+
+step "Health check"
+if ! healthy "$VERSION"; then
+    show_logs
+    if [ -n "$CURRENT" ] && [ "$CURRENT" != "$RELEASE" ]; then
+        step "Back to $CURRENT"
+        point current "$CURRENT"
+        # `--rollback` must keep meaning "the release before $CURRENT", not
+        # the one that just failed.
+        if [ -n "$PREVIOUS" ]; then
+            point previous "$PREVIOUS"
+        else
+            "${SUDO[@]}" rm -f "$ROOT/previous"
+        fi
+        restart
+        if healthy "$(cat "$ROOT/releases/$CURRENT/VERSION")"; then
+            fail "$RELEASE failed its health check; $CURRENT runs again."
+        else
+            fail "$CURRENT does not answer either: the cause is probably outside the"
+            fail "binary (PostgreSQL, Laravel's JWKS, $ENV_FILE)."
+            show_logs
+        fi
+    else
+        fail "no other release to go back to."
+    fi
+    exit 1
+fi
+
+# ------------------------------------------------------------- clean-up
+
+# Keeps the KEEP_RELEASES most recent releases, plus current and previous
+# whatever their age.
+keep_current="$(release_of current)"
+keep_previous="$(release_of previous)"
+# Release names hold no spaces (vX.Y.Z), so word splitting is safe here.
+# shellcheck disable=SC2012
+old="$(ls -1t "$ROOT/releases" | tail -n +"$((KEEP_RELEASES + 1))")"
+for release in $old; do
+    if [ "$release" != "$keep_current" ] && [ "$release" != "$keep_previous" ]; then
+        "${SUDO[@]}" rm -rf "${ROOT:?}/releases/$release"
+        ok "removed old release $release"
+    fi
+done
+
+# ------------------------------------------------------------ verification
+
+if [ "$NO_CHECK" = false ]; then
+    step "Check through nginx"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$PUBLIC_URL" || true)"
+    if [ "$code" = "200" ]; then
+        ok "$PUBLIC_URL answers 200"
+    else
+        fail "$PUBLIC_URL answers ${code:-nothing} (the API itself is healthy: check nginx, DNS, certificate)"
+    fi
+fi
+
+printf '\n\033[1;32m✓ pulsars-api %s is live.\033[0m\n' "$RELEASE"
