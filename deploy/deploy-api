@@ -134,8 +134,10 @@ flock -n 9 || { fail "Another deployment is running."; exit 1; }
 if [ "$ROLLBACK" = true ]; then
     current="$(release_of current)"
     previous="$(release_of previous)"
-    [ -n "$previous" ] && [ -x "$ROOT/releases/$previous/pulsars-api" ] \
-        || { fail "No previous release to go back to."; exit 1; }
+    if [ -z "$previous" ] || [ ! -x "$ROOT/releases/$previous/pulsars-api" ]; then
+        fail "No previous release to go back to."
+        exit 1
+    fi
 
     step "Rollback: $current → $previous"
     point current "$previous"
@@ -153,8 +155,10 @@ fi
 
 # ---------------------------------------------------------------- the work
 
-[ -f "$RELEASE_DIR/VERSION" ] && [ -x "$RELEASE_DIR/pulsars-api" ] \
-    || { fail "$RELEASE_DIR is not an extracted release (VERSION, pulsars-api)."; exit 1; }
+if [ ! -f "$RELEASE_DIR/VERSION" ] || [ ! -x "$RELEASE_DIR/pulsars-api" ]; then
+    fail "$RELEASE_DIR is not an extracted release (VERSION, pulsars-api)."
+    exit 1
+fi
 VERSION="$(cat "$RELEASE_DIR/VERSION")"
 RELEASE="v$VERSION"
 TARGET="$ROOT/releases/$RELEASE"
