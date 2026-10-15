@@ -13,9 +13,9 @@ use chrono::SecondsFormat;
 use serde::Serialize;
 
 use crate::auth::AuthUser;
-use crate::config::SITE_URL;
 use crate::db::members::{self, Member, MemberRole};
 use crate::error::ApiError;
+use crate::links::{self, encode};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -80,11 +80,8 @@ pub async fn me(
     // cannot name an account.
     let id = parse_user_id(&claims.sub).ok_or_else(gone)?;
 
-    let member = members::find(&state.db, id)
-        .await
-        .map_err(db_error)?
-        .ok_or_else(gone)?;
-    let roles = members::roles(&state.db, id).await.map_err(db_error)?;
+    let member = members::find(&state.db, id).await?.ok_or_else(gone)?;
+    let roles = members::roles(&state.db, id).await?;
 
     let body = MeResponse {
         data: to_me(member, roles, &state.config.public_storage_url)?,
@@ -107,7 +104,7 @@ fn to_me(member: Member, roles: Vec<MemberRole>, storage_url: &str) -> Result<Me
         .to_rfc3339_opts(SecondsFormat::Secs, true);
     Ok(Me {
         id: member.id.to_string(),
-        profile_url: format!("{SITE_URL}/membres/{}", encode(&member.pseudo, false)),
+        profile_url: links::member(&member.pseudo),
         avatar_url: member
             .avatar_path
             .filter(|p| !p.is_empty())
@@ -128,38 +125,12 @@ fn to_me(member: Member, roles: Vec<MemberRole>, storage_url: &str) -> Result<Me
     })
 }
 
-fn db_error(error: sqlx::Error) -> ApiError {
-    match error {
-        sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) => {
-            ApiError::Unavailable(format!("database: {error}"))
-        }
-        _ => ApiError::Internal(format!("database: {error}")),
-    }
-}
-
 /// A positive decimal id without sign or leading zero, exactly as Laravel
 /// writes `users.id`.
 fn parse_user_id(sub: &str) -> Option<i64> {
     let canonical =
         !sub.is_empty() && !sub.starts_with('0') && sub.bytes().all(|b| b.is_ascii_digit());
     if canonical { sub.parse().ok() } else { None }
-}
-
-/// Percent-encodes everything but RFC 3986 unreserved characters (and `/`
-/// when `keep_slashes`, for a path).
-fn encode(value: &str, keep_slashes: bool) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        let keep = byte.is_ascii_alphanumeric()
-            || matches!(byte, b'-' | b'.' | b'_' | b'~')
-            || (keep_slashes && byte == b'/');
-        if keep {
-            out.push(char::from(byte));
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -205,13 +176,6 @@ mod tests {
         ] {
             assert_eq!(parse_user_id(bad), None, "{bad:?}");
         }
-    }
-
-    #[test]
-    fn urls_are_percent_encoded() {
-        assert_eq!(encode("jikuji", false), "jikuji");
-        assert_eq!(encode("a b/c?é", false), "a%20b%2Fc%3F%C3%A9");
-        assert_eq!(encode("avatars/x y.webp", true), "avatars/x%20y.webp");
     }
 
     #[test]

@@ -31,6 +31,10 @@ pub struct ParameterError {
 pub enum ApiError {
     #[error("invalid parameter")]
     InvalidParameter(Vec<ParameterError>),
+    /// A `cursor` that cannot be decoded, or was issued for another endpoint
+    /// or another set of filters.
+    #[error("invalid cursor")]
+    InvalidCursor,
     /// Missing or invalid game token (`docs/contract/auth-jwt.md` §5).
     #[error("unauthorized: {}", reason.code())]
     Unauthorized {
@@ -44,8 +48,14 @@ pub enum ApiError {
     },
     #[error("method not allowed")]
     MethodNotAllowed,
+    /// `Accept` excludes `application/json`.
+    #[error("not acceptable")]
+    NotAcceptable,
     #[error("payload too large")]
     PayloadTooLarge,
+    /// Over the per-minute limit; `retry_after` is in seconds.
+    #[error("rate limited")]
+    RateLimited { limit: u32, retry_after: u64 },
     #[error("request timed out")]
     Timeout,
     #[error("service unavailable: {0}")]
@@ -78,11 +88,13 @@ pub struct Problem {
 impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::InvalidParameter(_) => StatusCode::BAD_REQUEST,
+            Self::InvalidParameter(_) | Self::InvalidCursor => StatusCode::BAD_REQUEST,
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
+            Self::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -92,10 +104,13 @@ impl ApiError {
     pub fn to_problem(&self) -> Problem {
         let (slug, title) = match self {
             Self::InvalidParameter(_) => ("invalid-parameter", "Invalid parameter"),
+            Self::InvalidCursor => ("invalid-cursor", "Invalid cursor"),
             Self::Unauthorized { .. } => ("unauthorized", "Invalid token"),
             Self::NotFound { .. } => ("not-found", "Resource not found"),
             Self::MethodNotAllowed => ("method-not-allowed", "Method not allowed"),
+            Self::NotAcceptable => ("not-acceptable", "Not acceptable"),
             Self::PayloadTooLarge => ("payload-too-large", "Payload too large"),
+            Self::RateLimited { .. } => ("rate-limited", "Too many requests"),
             Self::Timeout => ("unavailable", "Request timed out"),
             Self::Unavailable(_) => ("unavailable", "Service unavailable"),
             Self::Internal(_) => ("internal", "Internal error"),
@@ -103,6 +118,13 @@ impl ApiError {
         let detail = match self {
             Self::InvalidParameter(_) => {
                 Some("One or more query parameters are invalid.".to_owned())
+            }
+            Self::InvalidCursor => {
+                Some("The cursor cannot be decoded, or was issued for other filters.".to_owned())
+            }
+            Self::NotAcceptable => Some("This API only produces application/json.".to_owned()),
+            Self::RateLimited { limit, .. } => {
+                Some(format!("Limit of {limit} requests per minute reached."))
             }
             Self::Unauthorized { reason, .. } => Some(reason.detail().to_owned()),
             Self::NotFound { detail, .. } => Some(detail.clone()),
@@ -158,6 +180,9 @@ impl IntoResponse for ApiError {
         if let Self::Unauthorized { reason, .. } = &self {
             headers.insert(header::WWW_AUTHENTICATE, www_authenticate(*reason));
         }
+        if let Self::RateLimited { retry_after, .. } = &self {
+            headers.insert(header::RETRY_AFTER, HeaderValue::from(*retry_after));
+        }
         if status == StatusCode::METHOD_NOT_ALLOWED {
             // Phase 1 only serves GET routes; refined per route later.
             headers.insert(
@@ -166,6 +191,19 @@ impl IntoResponse for ApiError {
             );
         }
         response
+    }
+}
+
+impl From<sqlx::Error> for ApiError {
+    /// A database that cannot be reached is a 503; anything else is a bug or
+    /// a contract mismatch (a view changed shape): 500.
+    fn from(error: sqlx::Error) -> Self {
+        match error {
+            sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) => {
+                Self::Unavailable(format!("database: {error}"))
+            }
+            _ => Self::Internal(format!("database: {error}")),
+        }
     }
 }
 
@@ -257,6 +295,44 @@ mod tests {
                 "reason": "expired",
             })
         );
+    }
+
+    #[test]
+    fn rate_limited_sets_retry_after() {
+        let response = ApiError::RateLimited {
+            limit: 60,
+            retry_after: 12,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "12");
+        let json = serde_json::to_value(
+            ApiError::RateLimited {
+                limit: 60,
+                retry_after: 12,
+            }
+            .to_problem(),
+        )
+        .unwrap_or_default();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "https://api.pulsars.science/problems/rate-limited",
+                "title": "Too many requests",
+                "status": 429,
+                "detail": "Limit of 60 requests per minute reached.",
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_cursor_has_its_own_type() {
+        let json = serde_json::to_value(ApiError::InvalidCursor.to_problem()).unwrap_or_default();
+        assert_eq!(
+            json["type"],
+            "https://api.pulsars.science/problems/invalid-cursor"
+        );
+        assert_eq!(json["status"], 400);
     }
 
     #[test]
