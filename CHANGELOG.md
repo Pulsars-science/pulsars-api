@@ -28,6 +28,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Settings `JWKS_URL` (required), `JWT_ISSUER`, `JWT_AUDIENCE` and
   `PUBLIC_STORAGE_URL`.
 - Metrics `auth_rejections_total`, `jwks_fetches_total` and `jwks_keys`.
+- Public content endpoints, read from the `api_read` views only:
+  `GET /v1/catalog`, `/v1/courses`, `/v1/courses/{slug}`,
+  `/v1/courses/{slug}/lessons/{lesson}`, `/v1/exercises`,
+  `/v1/exercises/{id}`, `/v1/exams`, `/v1/exams/{slug}`, `/v1/resources`
+  and `/v1/resources/{slug}`. Filters and search as in `openapi.yaml`,
+  keyset pagination with opaque cursors bound to their filters,
+  `?lang=fr|en` with per-field fallback to French, strong ETags and
+  `304 Not Modified`, public caching headers, CORS for any origin, and
+  RFC 9457 problems (`invalid-parameter`, `invalid-cursor`, `not-found`,
+  `not-acceptable`). Never solutions, corrections, drafts or personal
+  data.
+- Rate limits in Redis: 60 requests a minute per client IP, 120 per token
+  `sub`, with `RateLimit-*` headers and `429` + `Retry-After`. They fail
+  open while Redis is down. Settings `RATE_LIMIT_ANONYMOUS_PER_MINUTE` and
+  `RATE_LIMIT_AUTHENTICATED_PER_MINUTE`; metrics `rate_limited_total` and
+  `rate_limit_errors_total`.
 
 ### Changed
 
