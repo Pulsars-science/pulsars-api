@@ -1,0 +1,62 @@
+[package]
+name = "pulsars-api"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Public content API and game server of Pulsars (https://pulsars.science)"
+repository = "https://github.com/Pulsars-science/pulsars-api"
+publish = false
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+ed25519-dalek = "3.0.0"
+# Query string decoding (already used by axum).
+form_urlencoded = "1.2.2"
+fred = { version = "10.1.0", default-features = false, features = ["i-std", "enable-rustls-ring"] }
+metrics = { version = "0.24.6", default-features = false }
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+# JWKS client. `rustls-no-provider` plus the preconfigured `ring` config below:
+# the `rustls` feature would pull aws-lc-rs, whose licence includes OpenSSL.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# ETags and cursor fingerprints (already used by ed25519-dalek and sqlx).
+sha2 = "0.11.1"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "macros", "migrate", "chrono", "uuid", "json"] }
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["full"] }
+tower = { version = "0.5.3", features = ["util", "timeout"] }
+tower-http = { version = "0.7.1", features = ["cors", "trace", "timeout", "compression-gzip", "compression-br", "limit", "request-id", "catch-panic", "set-header", "util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+uuid = { version = "1.28.0", features = ["v4", "v7"] }
+webpki-roots = "1.0.9"
+
+[features]
+# Token-minting helpers for the integration tests. Never enabled in builds.
+test-util = []
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+# The integration tests reach the `test-util` helpers through the library.
+pulsars-api = { path = ".", features = ["test-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# No panics on request paths. Tests opt out in clippy.toml and with an
+# explicit `allow` at the top of integration test files.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

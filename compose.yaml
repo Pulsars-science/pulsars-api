@@ -1,0 +1,41 @@
+# Local development services. Not for production.
+#
+#   docker compose up -d       start PostgreSQL and Redis
+#   docker compose down -v     stop and delete the data (re-runs the init)
+#
+# PostgreSQL runs scripts/dev-db-init.sh on its first start: roles, schemas,
+# demo data and the api_read views from docs/contract/views.sql.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pulsars
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./dev/db/docker-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+      - ./scripts:/workspace/scripts:ro
+      - ./dev:/workspace/dev:ro
+      - ./docs/contract:/workspace/docs/contract:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pulsars"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:

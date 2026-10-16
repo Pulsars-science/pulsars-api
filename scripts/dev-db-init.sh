@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# Creates the development database layout: roles, schemas, a stand-in `site`
+# schema with demo data, and the real `api_read` views from
+# docs/contract/views.sql. Used by `docker compose` (on first start) and by CI.
+#
+# Connects with the standard libpq variables (PGHOST, PGPORT, PGUSER,
+# PGPASSWORD) as a superuser, to the database named by PGDATABASE (default
+# `pulsars`), which must exist and be empty.
+#
+#     PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=postgres ./scripts/dev-db-init.sh
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PGDATABASE="${PGDATABASE:-pulsars}"
+
+run() {
+    echo "==> $1"
+    psql --no-psqlrc --quiet --set ON_ERROR_STOP=1 --file "$1"
+}
+
+run "$root/dev/db/10-roles.sql"
+run "$root/dev/db/20-site-schema.sql"
+run "$root/dev/db/30-demo-data.sql"
+
+echo "==> $root/docs/contract/views.sql (as pulsars_site)"
+{
+    echo "SET ROLE pulsars_site;"
+    cat "$root/docs/contract/views.sql"
+} | psql --no-psqlrc --quiet --set ON_ERROR_STOP=1
+
+echo "Done. The API connects as: postgres://pulsars_api:pulsars_api_dev@${PGHOST:-localhost}:${PGPORT:-5432}/${PGDATABASE}"
