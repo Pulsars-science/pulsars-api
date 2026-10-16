@@ -125,6 +125,9 @@ INSERT INTO contenu_translations (traduisible_type, traduisible_id, langue, cham
     ('lesson', 1, 'en', '{"titre":"Operational priorities","contenu_md":"What is `2 + 3 x 4` equal to?\n\n## The rule\n\n…"}', 'demo', now(), now()),
     ('lesson', 2, 'en', '{"titre":"Fractions","contenu_md":""}', 'demo', now(), now()),
     ('exercise', 1, 'en', '{"titre":"Set priorities","question_md":"What is the value of `12 - 2 x 3 + 1`?","solution_md":"The answer is **7**. SOLUTION-MARKER-EN-1"}', 'demo', now(), now()),
+    -- Options partly translated (b empty, d and e missing: original text), and
+    -- a stray `correctes` key the view must never read.
+    ('exercise', 3, 'en', '{"titre":"True or false on powers","question_md":"Which of these equalities are **true**?","options":{"a":"OPTION-EN-A","b":"","c":"OPTION-EN-C"},"correctes":["a","c","e"]}', 'demo', now(), now()),
     ('exam_partie', 46, 'en', '{"titre":"Exercise 1 — Probability: ship crossing","enonce_md":"A ship links two Mediterranean ports.","corrige_md":"CORRIGE-MARKER-EN-46"}', 'demo', now(), now()),
     ('exam_partie', 10, 'en', '{"titre":"Part 1","enonce_md":"Write 0.75 as a fraction.","corrige_md":"CORRIGE-MARKER-EN-10"}', 'demo', now(), now()),
     ('ressource', 2, 'en', '{"titre":"Abstract Algebra","categorie":"Mathematics","description":"A 220-page abstract algebra textbook: groups, rings and fields, with applications to cryptography. Written and released openly by Andrew Misseldine."}', 'demo', now(), now());

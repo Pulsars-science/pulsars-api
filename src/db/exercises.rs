@@ -8,7 +8,10 @@ use sqlx::types::Json;
 macro_rules! exercise_select {
     () => {
         "SELECT e.id, e.type::text AS type, e.title, e.question_md,
-                e.position::int AS position, e.options, e.multiple,
+                e.position::int AS position,
+                -- Translated options when the translation has them (same ids,
+                -- same order), else the original ones.
+                COALESCE(et.options, e.options) AS options, e.multiple,
                 ch.position::int AS chapter_position, ch.title AS chapter_title,
                 c.slug AS course_slug, c.title AS course_title,
                 c.difficulty::text AS course_difficulty,
