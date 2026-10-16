@@ -1,17 +1,17 @@
 # Game token (JWT)
 
 Laravel (`pulsars.science`) is the only identity provider. When the game front
-end (`game.pulsars.science`) needs to act as a member, it asks Laravel for a
+end (`pulsars.science/jeux`) needs to act as a member, it asks Laravel for a
 short-lived token, then presents that token to the API (`api.pulsars.science`),
 which verifies it offline with Laravel's public key.
 
 ```
-game.pulsars.science                 pulsars.science                  api.pulsars.science
+pulsars.science/jeux                 pulsars.science                  api.pulsars.science
         │  OPTIONS /jeu/jeton (preflight)  │                                   │
         │─────────────────────────────────▶│                                   │
         │  POST /jeu/jeton                 │                                   │
         │  Cookie: pulsars-session=…       │                                   │
-        │  Origin: https://game.pulsars.science                                │
+        │  Origin: https://pulsars.science │                                   │
         │─────────────────────────────────▶│ checks session + origin           │
         │◀──── { "token": "eyJ…" } ────────│ signs with Ed25519 private key    │
         │                                                                      │
@@ -84,7 +84,7 @@ The whole token stays under 600 bytes.
 ```http
 POST /jeu/jeton HTTP/1.1
 Host: pulsars.science
-Origin: https://game.pulsars.science
+Origin: https://pulsars.science
 Cookie: pulsars-session=…
 Content-Type: application/json
 Accept: application/json
@@ -104,7 +104,7 @@ needs the session.
 HTTP/1.1 200 OK
 Content-Type: application/json
 Cache-Control: no-store
-Access-Control-Allow-Origin: https://game.pulsars.science
+Access-Control-Allow-Origin: https://pulsars.science
 Access-Control-Allow-Credentials: true
 Vary: Origin
 
@@ -139,23 +139,24 @@ The route uses the same guards as the site's other member actions
 
 - Session: `SESSION_DRIVER=database`, cookie `SameSite=Lax`,
   `HttpOnly`, `SESSION_DOMAIN` unset (host-only cookie on `pulsars.science`).
-- CSRF: the `web` group runs `ValidateCsrfToken`; the `XSRF-TOKEN` cookie is
-  host-only too, so JavaScript on `game.pulsars.science` **cannot read it**.
+- CSRF: the `web` group runs `ValidateCsrfToken`. The game front end does
+  not go through Inertia and does not handle the `XSRF-TOKEN` cookie.
 - CORS: no `config/cors.php` is published; Laravel's defaults apply
   (`paths: api/*, sanctum/csrf-cookie`, `allowed_origins: *`,
   `supports_credentials: false`). The current `/api/v1` relies on that `*`.
 - Sanctum is installed for personal access tokens; `statefulApi()` is not
   enabled, so there is no SPA cookie authentication on `/api/*`.
 
-**Why the session cookie reaches Laravel at all.** `game.pulsars.science` and
-`pulsars.science` share the registrable domain, so they are *same-site*. A
-`SameSite=Lax` cookie is sent on a same-site `fetch` with
-`credentials: "include"`, even across origins. A request from another site
-(`evil.example`) is cross-site: the browser does not send the cookie on a POST,
-so it arrives unauthenticated.
+**Why the session cookie reaches Laravel at all.** The game front end is
+served by nginx under `pulsars.science/jeux/`: it is the **same origin** as
+the site, so the session cookie is sent like on any page of the site. A
+request from another site (`evil.example`) is cross-site: the browser does
+not send the `SameSite=Lax` cookie on a POST, so it arrives unauthenticated.
+(The design was first written for a `game.` subdomain — same-site, not
+same-origin — which is why the route does not rely on the CSRF cookie; it
+still works if the game moves to its own subdomain one day.)
 
-**Proposed protection.** Rather than sharing the CSRF cookie across
-subdomains, the route is excluded from `ValidateCsrfToken` and protected by a
+**Proposed protection.** Rather than relying on the CSRF cookie, the route is excluded from `ValidateCsrfToken` and protected by a
 dedicated middleware, `VerifierOrigineJeu`, which:
 
 1. Answers the preflight `OPTIONS /jeu/jeton` itself (the preflight carries no
@@ -166,7 +167,7 @@ dedicated middleware, `VerifierOrigineJeu`, which:
    `Access-Control-Max-Age: 600`, `Vary: Origin` — only when the origin is
    allowed; otherwise `403` without CORS headers.
 2. On `POST`, requires an `Origin` header **exactly equal** to one of
-   `GAME_ALLOWED_ORIGINS` (`https://game.pulsars.science`, plus
+   `GAME_ALLOWED_ORIGINS` (`https://pulsars.science`, plus
    `http://localhost:5173` when `APP_ENV=local`). A missing `Origin` is
    refused.
 3. Requires `Content-Type: application/json`. A cross-site HTML form cannot
@@ -181,7 +182,7 @@ Why not the alternatives:
 
 | Option | Rejected because |
 |---|---|
-| Publish `config/cors.php` with `supports_credentials: true` for `game.pulsars.science` | Laravel's `HandleCors` has one global origin list. The public `/api/v1` needs `*`, which is forbidden together with credentials. Mixing both in one config would either break the public API or open credentials to every origin. |
+| Publish `config/cors.php` with `supports_credentials: true` for `pulsars.science/jeux` | Laravel's `HandleCors` has one global origin list. The public `/api/v1` needs `*`, which is forbidden together with credentials. Mixing both in one config would either break the public API or open credentials to every origin. |
 | `SESSION_DOMAIN=.pulsars.science` so the game can read `XSRF-TOKEN` | Sends the Laravel session cookie to **every** subdomain, including `api.pulsars.science` (the Rust API would receive it in every request and its logs) and any future subdomain. A larger blast radius for a problem the `Origin` check already solves. |
 | `GET` endpoint | A token-issuing endpoint is not a safe method; GETs get prefetched, cached and logged. |
 
