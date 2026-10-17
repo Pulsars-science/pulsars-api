@@ -22,7 +22,7 @@ and the gap is listed in the "Known gaps" section of the relevant document.
 | [`database.md`](database.md) | Schemas, roles, exposed column dictionary | both |
 | [`views.sql`](views.sql) | The `api_read` schema: one view per exposed resource | Laravel migration creates it |
 | [`postgres-migration.md`](postgres-migration.md) | Plan to move production from MySQL to PostgreSQL (not executed) | ops |
-| [`game-design.md`](game-design.md) | **Open questions** that must be decided before any game code is written | product owner |
+| [`game-design.md`](game-design.md) | Game rules decided by the product owner | product owner |
 | [`laravel-tasks.md`](laravel-tasks.md) | What the Laravel repository must implement for the API to work | Laravel |
 
 Reading order for someone building `pulsars-api`: this README, `database.md`,

@@ -8,8 +8,8 @@ This service runs at `api.pulsars.science` and provides:
 - **`/v1`**: read-only access to published content (courses, lessons,
   exercises, exams, resources). Never solutions, never personal data.
 - **`/v1/game`**: the game server of `game.pulsars.science` (matchmaking and
-  real-time matches over WebSocket). *Not built yet: the game rules are still
-  being decided in [`docs/contract/game-design.md`](docs/contract/game-design.md).*
+  real-time matches over WebSocket). *Not built yet: the game rules are
+  decided in [`docs/contract/game-design.md`](docs/contract/game-design.md).*
 
 ## Architecture in brief
 
@@ -90,9 +90,9 @@ not deployed yet: it needs the production PostgreSQL migration, the
 | 1 | Open-source skeleton, `/healthz`, CI | done |
 | 2 | JWT authentication, `/v1/me` | done |
 | 3 | Content endpoints, rate limits | done |
-| 4 | Game | blocked on game design |
+| 4 | Game (flash race, generators ported to Rust) | next |
 | 5 | Results webhook to Laravel | planned |
-| 6 | Code sandbox (only if the game runs code) | undecided |
+| 6 | Code sandbox | not needed (no code mode) |
 | 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |
 
 ## Contributing
