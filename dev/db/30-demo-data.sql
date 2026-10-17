@@ -125,6 +125,9 @@ INSERT INTO contenu_translations (traduisible_type, traduisible_id, langue, cham
     ('lesson', 1, 'en', '{"titre":"Operational priorities","contenu_md":"What is `2 + 3 x 4` equal to?\n\n## The rule\n\n…"}', 'demo', now(), now()),
     ('lesson', 2, 'en', '{"titre":"Fractions","contenu_md":""}', 'demo', now(), now()),
     ('exercise', 1, 'en', '{"titre":"Set priorities","question_md":"What is the value of `12 - 2 x 3 + 1`?","solution_md":"The answer is **7**. SOLUTION-MARKER-EN-1"}', 'demo', now(), now()),
+    -- Options partly translated (b empty, d and e missing: original text), and
+    -- a stray `correctes` key the view must never read.
+    ('exercise', 3, 'en', '{"titre":"True or false on powers","question_md":"Which of these equalities are **true**?","options":{"a":"OPTION-EN-A","b":"","c":"OPTION-EN-C"},"correctes":["a","c","e"]}', 'demo', now(), now()),
     ('exam_partie', 46, 'en', '{"titre":"Exercise 1 — Probability: ship crossing","enonce_md":"A ship links two Mediterranean ports.","corrige_md":"CORRIGE-MARKER-EN-46"}', 'demo', now(), now()),
     ('exam_partie', 10, 'en', '{"titre":"Part 1","enonce_md":"Write 0.75 as a fraction.","corrige_md":"CORRIGE-MARKER-EN-10"}', 'demo', now(), now()),
     ('ressource', 2, 'en', '{"titre":"Abstract Algebra","categorie":"Mathematics","description":"A 220-page abstract algebra textbook: groups, rings and fields, with applications to cryptography. Written and released openly by Andrew Misseldine."}', 'demo', now(), now());
@@ -143,6 +146,13 @@ INSERT INTO questions (id, user_id, titre, slug, corps, accepted_answer_id, crea
     (1, 3, 'Pourquoi 5^0 = 1 ?', 'pourquoi-5-puissance-0', 'Je ne comprends pas.', 1, now());
 INSERT INTO answers (id, question_id, user_id, corps, created_at) VALUES
     (1, 1, 2, 'Parce que 5^1 / 5^1 = 5^(1-1).', now());
+
+-- Brains: 5 per completed lesson for ada (15); emmy hides her balance.
+INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created_at) VALUES
+    (2, 5, 'lecon', 'lecon:1', '{"lesson_id": 1}', now()),
+    (2, 5, 'lecon', 'lecon:2', '{"lesson_id": 2}', now()),
+    (2, 5, 'lecon', 'lecon:3', '{"lesson_id": 3}', now());
+UPDATE users SET cerveaux_publics = false WHERE id = 3;
 
 -- Keep sequences ahead of the explicit ids above.
 SELECT setval('site.users_id_seq', (SELECT max(id) FROM users));

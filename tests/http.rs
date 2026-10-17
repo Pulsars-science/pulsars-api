@@ -19,6 +19,7 @@ use ed25519_dalek::SigningKey;
 use pulsars_api::auth::token::testing;
 use pulsars_api::auth::{Jwks, JwksSettings};
 use pulsars_api::config::Config;
+use pulsars_api::game::{Game, GameSettings};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
 use serde_json::{Value, json};
@@ -89,8 +90,10 @@ async fn app(config: Config) -> (Router, AppState) {
 }
 
 fn app_with(config: Config, jwks: Jwks) -> (Router, AppState) {
+    let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
-        db: db::connect_lazy(&config).unwrap(),
+        game: Game::start(db.clone(), GameSettings::default()),
+        db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
         jwks,
@@ -690,14 +693,14 @@ async fn me_allows_only_the_game_origin() {
 
     // Errors carry the CORS headers too, so the front end can read `reason`.
     let request = Request::get("/v1/me")
-        .header(header::ORIGIN, "https://game.pulsars.science")
+        .header(header::ORIGIN, "https://pulsars.science")
         .body(Body::empty())
         .unwrap();
     let (status, headers, _) = send(&app, request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(
         headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
-        "https://game.pulsars.science"
+        "https://pulsars.science"
     );
 }
 
@@ -710,7 +713,7 @@ async fn me_returns_the_public_profile() {
     };
     let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
 
-    // `ada` (dev/db/30-demo-data.sql): bio, two roles, 102 XP.
+    // `ada` (dev/db/30-demo-data.sql): bio, two roles, 102 XP, 15 brains.
     let (status, headers, body) = send(&app, get_with_token("/v1/me", &server.token("2"))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(headers[header::CONTENT_TYPE], "application/json");
@@ -737,6 +740,7 @@ async fn me_returns_the_public_profile() {
                  "category": "distinction", "color": "#c98a34"},
             ],
             "xp": {"total": 102, "level": 2, "level_start": 100, "next_level_at": 300},
+            "brains": 15,
             "profile_url": "https://pulsars.science/membres/ada",
         }})
     );
@@ -749,6 +753,13 @@ async fn me_returns_the_public_profile() {
         body["data"]["xp"],
         json!({"total": 0, "level": 1, "level_start": 0, "next_level_at": 100})
     );
+    // No movement: 0, not null.
+    assert_eq!(body["data"]["brains"], 0);
+
+    // `emmy` hides her balance from others, not from herself.
+    let (status, _, body) = send(&app, get_with_token("/v1/me", &server.token("3"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["brains"], 0);
 }
 
 #[tokio::test]
@@ -1216,6 +1227,21 @@ async fn exercises_never_carry_their_answer() {
         "The basics of the calculation"
     );
     assert_eq!(body["data"]["options"][1]["text"], "7");
+
+    // Translated options keep the original ids and order; a missing or empty
+    // translation falls back to the original text, option by option.
+    let (_, _, body) = get_json(&app, "/v1/exercises/3?lang=en").await;
+    assert_eq!(
+        body["data"]["options"],
+        json!([
+            {"id": "a", "text": "OPTION-EN-A"},
+            {"id": "b", "text": "2^3 x 2^4 = 2^12"},
+            {"id": "c", "text": "OPTION-EN-C"},
+            {"id": "d", "text": "-3^2 = 9"},
+            {"id": "e", "text": "5^0 = 1"},
+        ])
+    );
+    assert!(!body.to_string().contains("correctes"), "{body}");
 }
 
 #[tokio::test]

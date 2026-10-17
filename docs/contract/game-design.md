@@ -1,11 +1,11 @@
 # Game design: decisions to make
 
-**Status: open. No rule of the game is decided.**
+**Status: decided on 2026-10-17**, except the defaults marked "to confirm" in Q4.
 
 This document lists the questions the product owner must answer before
 `pulsars-api` writes any game code (its Phase 4 is blocked while a question
 below is open). Each question gives the options and their technical impact.
-It contains **no answer**: the "Decision" lines are empty on purpose.
+The "Decision" lines record the product owner's answers.
 
 When a question is answered, write the decision and the date on its
 "Decision" line, and remove the question from the "Open" list at the end.
@@ -40,7 +40,7 @@ Counts are from a fresh local seed (1,120 exercises in total).
 | **C. Both**, as separate modes | Build A first, B later on the same protocol. The protocol must allow mode-specific messages from day one. |
 | **D. Mental-arithmetic race** using the flash generators | Like A, but questions are generated, unlimited and never repeat; the generators must be ported to Rust or exposed by Laravel (see Q6). |
 
-Decision:
+Decision: **D, decided 2026-10-17.** A mental-arithmetic race on the flash generators. The protocol carries a `mode` field from day one so that other modes (quiz, code) can be added later without breaking clients.
 
 ## Q2. Which subjects (and, if code, which languages)?
 
@@ -54,7 +54,7 @@ Decision:
 Impact: every subject or language chosen at queue time splits the player pool
 (see Q3, waiting time).
 
-Decision:
+Decision: **Decided 2026-10-17.** The player picks one subject or "all" before the match; no programming languages (no code mode). Each subject, and "all", is a separate ranked queue (see Q5).
 
 ## Q3. Format
 
@@ -68,7 +68,14 @@ Decision:
 
 Also: is there a bot/AI opponent when nobody is waiting?
 
-Decision:
+Decision: **Decided 2026-10-17.** Four formats:
+
+- **1 vs 1 online** with matchmaking: the only **ranked** format;
+- **challenge a friend** (private match by invitation, existing friendships): unranked;
+- **ghost**: play against the recorded run of another player, when nobody is waiting or for solo play: unranked;
+- **free-for-all, 3–8 players**: unranked.
+
+No bot opponent.
 
 ## Q4. Duration, victory, tie, forfeit, disconnection
 
@@ -88,7 +95,14 @@ For the chosen format:
 Impact: the state machine of a match in `docs/game-protocol.md`, the
 `end_reason` and `outcome` values of the webhook.
 
-Decision:
+Decision: **Decided 2026-10-17: the rules are options chosen when starting a match** ("filters" of the game mode):
+
+- duration: 60 s, 300 s, or first to 10 correct answers;
+- wrong-answer penalty: on (+1 / −1) or off (+1 / 0).
+
+Matchmaking only pairs players who chose the same options.
+
+Defaults proposed by the developer, **to confirm**: a tie is broken by the lower total answer time, otherwise a draw; leaving is a forfeit (loss); after a disconnection the clock keeps running with a 20 s grace period, then forfeit; a match where nobody answered is void (no rating, no XP).
 
 ## Q5. Ranking
 
@@ -103,7 +117,7 @@ Also: provisional rating for new players? Public leaderboard on
 `pulsars.science` (Laravel reads it from `/v1/game`)? Does a ranked match need
 a verified account older than N days (against smurfs)?
 
-Decision:
+Decision: **Decided 2026-10-17.** One Glicko-2 rating per subject (and one for "all"), for 1 vs 1 online only. Provisional rating for new players (Glicko's rating deviation). Public leaderboard on `pulsars.science`. No seasons for now.
 
 ## Q6. Where do the questions come from?
 
@@ -121,7 +135,7 @@ Impact: if answers must be available to the API, the API role needs a view
 with answers — the only exception to "no answers in `api_read`". It must then
 be a separate schema or view never used by the public endpoints.
 
-Decision:
+Decision: **Decided 2026-10-17.** The flash generators, **ported to Rust** in the API: it generates and grades questions itself, nothing is sent in advance. The generators now live in TypeScript in `pulsars-game`, with parity fixtures produced by PHP; the Rust port must pass the same fixtures. Difficulty is the generator's level (collège, seconde, …). No exercise content and no answers are needed in `api_read`.
 
 ## Q7. Sandbox
 
@@ -135,7 +149,7 @@ Only if Q1 includes code.
 - What happens if the sandbox is down: code matches disabled, quiz still
   available?
 
-Decision:
+Decision: **Not applicable (2026-10-17):** no code mode (Q1).
 
 ## Q8. Anti-cheat
 
@@ -156,7 +170,12 @@ else?
 - Sanctions: who reviews, what happens (rating reset, ban from ranked)? There
   is no ban concept in Laravel today, only forum mute.
 
-Decision:
+Decision: **Decided 2026-10-17.**
+
+- The server sends one question at a time, when it is asked, never its answer (the 4 choices are sent, not which one is right).
+- A minimum human time (about 300 ms) per correct answer: too many faster answers make the match unranked.
+
+Not for now: limits between the same two accounts, restrictions on new accounts, tab-switch detection.
 
 ## Q9. Link with XP
 
@@ -174,7 +193,7 @@ question 4, answer 4, accepted answer 12.
 Impact: new `BAREME` keys in Laravel, the `game_results` table, the
 `member_xp` view.
 
-Decision:
+Decision: **Decided 2026-10-17.** A little XP, capped: about 3 XP per match played and 5 per win, at most 30 XP per day from the game. Accounts only (not guests). It counts in the general ranking.
 
 ## Q10. Link with guilds
 
@@ -186,7 +205,7 @@ Guilds do not exist.
   Then guilds must be built in Laravel before the game (v2 of `PROJET.md`),
   and exposed to the API through a new `api_read` view.
 
-Decision:
+Decision: **Decided 2026-10-17.** The game is built without guilds; guild features come after guilds exist in Laravel.
 
 ## Q11. Who can play?
 
@@ -196,7 +215,7 @@ Decision:
 - Minors: many members are collège/lycée students. Any chat between players?
   If yes: moderation, mute (the forum mute could apply), reporting.
 
-Decision:
+Decision: **Decided 2026-10-17.** Guests and accounts. Guests play unranked and earn no XP; ranked 1 vs 1 needs an account. **No chat** between players. Impact: a guest token flow is needed besides `/v1/game/token` (see `auth-jwt.md`).
 
 ## Q12. Languages in the game
 
@@ -205,13 +224,10 @@ Decision:
   languages (only possible when translated), or one common language?
 - QCM option texts are not translated today: acceptable in English matches?
 
-Decision:
+Decision: **Decided 2026-10-17.** Each player sees the question in their own locale: a generator gives the same question in French and English from the same seed, with the same answers.
 
 ---
 
 ## Open
 
-Q1, Q2, Q3, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12.
-
-Suggested order: Q1 → Q6 → Q3 → Q4 → Q8 → Q9 → Q5 → Q11 → Q12 → Q2 → Q10 →
-Q7. The first three define almost everything else.
+None. Q4's defaults for ties, forfeits and disconnections are to confirm.

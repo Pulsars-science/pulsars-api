@@ -102,6 +102,7 @@ scopes) and to allowed columns.
 | `members` | `users`, public columns only | all accounts (see note) |
 | `member_roles` | `role_user` + `roles` | all |
 | `member_xp` | activity tables, computed | all |
+| `member_brains` | `cerveaux_mouvements` summed, `users.cerveaux_publics` | all (`brains.md` §4) |
 | `licenses` | copy of `config/licences.php` | static |
 | `subject_names` | copy of subject names in `lang/en.json` | static |
 
@@ -145,6 +146,11 @@ the views (`timestamptz`, `jsonb`).
 | `<parent>_id` | bigint | no | Id of the translated row. |
 | `lang` | varchar(5) | no | `en` today. |
 | translated fields | text | yes | `title`, `description`, `content_md`, `question_md`, `statement_md`, `category` depending on the view. Null when the translation lacks the field: the API then falls back to the original. |
+
+`exercise_translations` also has `options` (jsonb, null unless the exercise
+is a QCM whose translation has an `options` object): the same
+`[{"id", "text"}]` array as `exercises.options`, same ids and order, each text
+translated or, when missing, the original one.
 
 Translations whose `source_hash` no longer matches the source are still
 served, as Laravel does (`Traduisible::t()` ignores the hash).
@@ -277,6 +283,16 @@ Excluded: `fichier`, `nom_fichier_original`, `statut`, `ajoute_par`,
 | `user_id` | bigint | no | |
 | `total` | int | no | Same as `Experience::pour()['total']`. |
 | `level` | int | no | Same as `Experience::niveau()`. |
+
+### `api_read.member_brains`
+
+| Column | Type | Null | Meaning |
+|---|---|---|---|
+| `user_id` | bigint | no | |
+| `balance` | int | no | Sum of the member's `cerveaux_mouvements.montant` (0 without movements). |
+| `public` | boolean | no | `users.cerveaux_publics`. The API shows the balance to its owner only (`/v1/me`, `/v1/game/me`). |
+
+See `brains.md`.
 
 ### `api_read.licenses`, `api_read.subject_names`
 

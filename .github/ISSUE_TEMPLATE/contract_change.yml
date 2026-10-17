@@ -49,5 +49,5 @@ body:
       options:
         - label: pulsars-api (this repository)
         - label: Laravel site (pulsars.science)
-        - label: Game front end (game.pulsars.science)
+        - label: Game front end (pulsars.science/jeux)
         - label: Third-party API clients

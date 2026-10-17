@@ -6,7 +6,7 @@ This folder is the contract between the three Pulsars services:
 |---|---|---|
 | `pulsars.science` | this Laravel repository | Pages, SEO, accounts, forum, XP, admin. **Issues game tokens.** Writes the `site` schema. |
 | `api.pulsars.science` | `pulsars-api` (Rust, Axum) | Read-only content API (`/v1`) and the game server (`/v1/game`, WebSocket). Writes the `game` schema. |
-| `game.pulsars.science` | `pulsars-game` (Vue 3 + Vite, static) | Game front end. Sends actions, never scores. |
+| `pulsars.science/jeux` | `pulsars-game` (Vue 3 + Vite, static) | Game front end. Sends actions, never scores. |
 
 It was written from the Laravel code as it stands on `main` at commit `6551770`
 (2026-10-13). When this document and the code disagree, **the code is right**
@@ -22,7 +22,7 @@ and the gap is listed in the "Known gaps" section of the relevant document.
 | [`database.md`](database.md) | Schemas, roles, exposed column dictionary | both |
 | [`views.sql`](views.sql) | The `api_read` schema: one view per exposed resource | Laravel migration creates it |
 | [`postgres-migration.md`](postgres-migration.md) | Plan to move production from MySQL to PostgreSQL (not executed) | ops |
-| [`game-design.md`](game-design.md) | **Open questions** that must be decided before any game code is written | product owner |
+| [`game-design.md`](game-design.md) | Game rules decided by the product owner | product owner |
 | [`laravel-tasks.md`](laravel-tasks.md) | What the Laravel repository must implement for the API to work | Laravel |
 
 Reading order for someone building `pulsars-api`: this README, `database.md`,
@@ -31,7 +31,7 @@ Reading order for someone building `pulsars-api`: this README, `database.md`,
 ## Request flow
 
 ```
-game.pulsars.science ──(1) POST /jeu/jeton, session cookie──▶ pulsars.science
+pulsars.science/jeux ──(1) POST /jeu/jeton, session cookie──▶ pulsars.science
                      ◀─(2) JWT (EdDSA, 5 min) ─────────────────┘
                      ──(3) WebSocket + JWT ──▶ api.pulsars.science
                                                  │ verifies with JWKS
@@ -190,9 +190,13 @@ A `429` adds `Retry-After: <seconds>`.
   every response (same as Laravel's API today).
 - `traceparent` (W3C Trace Context) is accepted and propagated; responses
   carry `X-Request-Id`.
-- CORS: content endpoints allow any origin without credentials
-  (`Access-Control-Allow-Origin: *`); `/v1/me` and `/v1/game/*` allow only
-  `https://game.pulsars.science` (plus `http://localhost:5173` in development).
+- CORS: content endpoints and `/v1/game/leaderboard` allow any origin
+  without credentials (`Access-Control-Allow-Origin: *`); `/v1/me`,
+  `/v1/game/me` and `/v1/game/admin/stats` allow only `CORS_ALLOWED_ORIGINS`
+  (requests without `Origin`, server to server, are served as usual) (default
+  `https://pulsars.science`, plus `http://localhost:5173` in
+  development). The match WebSocket `/v1/game/ws` refuses (`403`, before the
+  upgrade) any `Origin` outside that list.
 
 ## What this API never exposes
 

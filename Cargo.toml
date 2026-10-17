@@ -1,6 +1,6 @@
 [package]
 name = "pulsars-api"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 description = "Public content API and game server of Pulsars (https://pulsars.science)"
@@ -8,12 +8,14 @@ repository = "https://github.com/Pulsars-science/pulsars-api"
 publish = false
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 ed25519-dalek = "3.0.0"
 # Query string decoding (already used by axum).
 form_urlencoded = "1.2.2"
+# HMAC-SHA256 of the webhook signature (already used by sqlx).
+hmac = "0.13.0"
 fred = { version = "10.1.0", default-features = false, features = ["i-std", "enable-rustls-ring"] }
 metrics = { version = "0.24.6", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
@@ -41,6 +43,12 @@ test-util = []
 
 [dev-dependencies]
 http-body-util = "0.1.5"
+# Paused clock in match tests (`tokio::time::pause`).
+tokio = { version = "1.53.2", features = ["full", "test-util"] }
+# WebSocket client of the game tests; the version axum's `ws` feature uses.
+tokio-tungstenite = "0.29.0"
+# `StreamExt`/`SinkExt` for that client (already used by sqlx and reqwest).
+futures-util = "0.3.34"
 # The integration tests reach the `test-util` helpers through the library.
 pulsars-api = { path = ".", features = ["test-util"] }
 

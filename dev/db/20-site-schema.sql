@@ -28,6 +28,7 @@ CREATE TABLE users (
     mute_jusqu_a timestamp(0),
     mute_motif varchar(300),
     mute_par bigint,
+    cerveaux_publics boolean NOT NULL DEFAULT true,
     created_at timestamp(0),
     updated_at timestamp(0)
 );
@@ -232,6 +233,40 @@ CREATE TABLE answers (
     deleted_at timestamp(0),
     created_at timestamp(0),
     updated_at timestamp(0)
+);
+
+-- Game webhook receiver (docs/contract/webhooks.md §4 and §5).
+CREATE TABLE game_events (
+    id bigserial PRIMARY KEY,
+    event_id uuid NOT NULL UNIQUE,
+    type varchar(255) NOT NULL,
+    payload json NOT NULL,
+    received_at timestamp(0) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at timestamp(0)
+);
+
+CREATE TABLE game_results (
+    id bigserial PRIMARY KEY,
+    game_event_id bigint NOT NULL REFERENCES game_events ON DELETE CASCADE,
+    match_id uuid NOT NULL,
+    user_id bigint NOT NULL REFERENCES users ON DELETE CASCADE,
+    mode varchar(255) NOT NULL,
+    ranked boolean NOT NULL,
+    outcome varchar(255) NOT NULL,
+    ended_at timestamp(0) NOT NULL,
+    UNIQUE (match_id, user_id)
+);
+
+-- Brains ledger (docs/contract/brains.md §1).
+CREATE TABLE cerveaux_mouvements (
+    id bigserial PRIMARY KEY,
+    user_id bigint NOT NULL REFERENCES users ON DELETE CASCADE,
+    montant integer NOT NULL,
+    raison varchar(32) NOT NULL,
+    cle varchar(120) NOT NULL,
+    details json,
+    created_at timestamp(0),
+    UNIQUE (user_id, cle)
 );
 
 RESET ROLE;

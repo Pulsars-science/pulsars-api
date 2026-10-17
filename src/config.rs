@@ -12,7 +12,7 @@ use std::time::Duration;
 use axum::http::HeaderValue;
 
 /// Origin of the game front end in production.
-pub const GAME_ORIGIN: &str = "https://game.pulsars.science";
+pub const GAME_ORIGIN: &str = "https://pulsars.science";
 
 /// Origin of the Vite dev server, allowed only in development.
 pub const DEV_GAME_ORIGIN: &str = "http://localhost:5173";
@@ -89,7 +89,26 @@ pub struct Config {
     pub log_filter: String,
     /// How long in-flight requests get to finish after SIGTERM.
     pub shutdown_grace: Duration,
+    /// Where match results go (`docs/contract/webhooks.md`). `None`: the
+    /// outbox fills up and nothing is sent.
+    pub webhook: Option<WebhookConfig>,
 }
+
+/// `LARAVEL_WEBHOOK_URL`, `LARAVEL_WEBHOOK_SECRET` and the optional
+/// `LARAVEL_WEBHOOK_HOST`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookConfig {
+    /// Laravel's receiver, usually on the loopback or a private network:
+    /// plain http is accepted in production.
+    pub url: String,
+    /// At least 32 characters (`GAME_WEBHOOK_SECRET` on the Laravel side).
+    pub secret: Secret,
+    /// `Host` header to send instead of the URL's host.
+    pub host: Option<String>,
+}
+
+/// Shortest webhook secret accepted.
+const WEBHOOK_SECRET_MIN_CHARS: usize = 32;
 
 /// All the problems found in the environment.
 #[derive(Debug, PartialEq, Eq)]
@@ -182,6 +201,12 @@ impl Config {
         let jwt_issuer = reader.optional("JWT_ISSUER", SITE_URL, |v| Ok(v.to_owned()));
         let jwt_audience = reader.optional("JWT_AUDIENCE", API_AUDIENCE, |v| Ok(v.to_owned()));
         let storage_raw = reader.optional_raw("PUBLIC_STORAGE_URL");
+        let webhook = parse_webhook(
+            reader.optional_raw("LARAVEL_WEBHOOK_URL"),
+            reader.optional_raw("LARAVEL_WEBHOOK_SECRET"),
+            reader.optional_raw("LARAVEL_WEBHOOK_HOST"),
+            &mut reader.problems,
+        );
 
         // Cross-field checks need the individual values first.
         let cors_allowed_origins = environment.and_then(|env| {
@@ -305,6 +330,7 @@ impl Config {
                 log_format,
                 log_filter,
                 shutdown_grace,
+                webhook,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
@@ -406,6 +432,59 @@ fn parse_http_url(value: &str, environment: Environment) -> Result<String, Strin
         return Err("must not contain credentials".to_owned());
     }
     Ok(value.to_owned())
+}
+
+/// Both the URL and the secret, or neither.
+fn parse_webhook(
+    url: Option<String>,
+    secret: Option<String>,
+    host: Option<String>,
+    problems: &mut Vec<String>,
+) -> Option<WebhookConfig> {
+    let (url, secret) = match (url, secret) {
+        (None, None) => {
+            if host.is_some() {
+                problems.push("LARAVEL_WEBHOOK_HOST: requires LARAVEL_WEBHOOK_URL".to_owned());
+            }
+            return None;
+        }
+        (Some(_), None) => {
+            problems.push("LARAVEL_WEBHOOK_SECRET: required with LARAVEL_WEBHOOK_URL".to_owned());
+            return None;
+        }
+        (None, Some(_)) => {
+            problems.push("LARAVEL_WEBHOOK_URL: required with LARAVEL_WEBHOOK_SECRET".to_owned());
+            return None;
+        }
+        (Some(url), Some(secret)) => (url, secret),
+    };
+    let mut ok = true;
+    // Laravel listens on the loopback or a private network: http is fine
+    // in production too.
+    if let Err(message) = parse_http_url(&url, Environment::Development) {
+        problems.push(format!("LARAVEL_WEBHOOK_URL: {message}"));
+        ok = false;
+    }
+    if secret.chars().count() < WEBHOOK_SECRET_MIN_CHARS {
+        problems.push(format!(
+            "LARAVEL_WEBHOOK_SECRET: must be at least {WEBHOOK_SECRET_MIN_CHARS} characters"
+        ));
+        ok = false;
+    }
+    if let Some(host) = &host
+        && (host.is_empty()
+            || !host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':')))
+    {
+        problems.push("LARAVEL_WEBHOOK_HOST: must be a host name, e.g. pulsars.science".to_owned());
+        ok = false;
+    }
+    ok.then(|| WebhookConfig {
+        url,
+        secret: Secret::new(secret),
+        host,
+    })
 }
 
 fn default_origins(environment: Environment) -> Vec<String> {
@@ -599,14 +678,46 @@ mod tests {
     #[test]
     fn refuses_wildcard_and_http_origins_in_production() {
         assert!(with(&[("CORS_ALLOWED_ORIGINS", "*")]).is_err());
-        assert!(with(&[("CORS_ALLOWED_ORIGINS", "http://game.pulsars.science")]).is_err());
-        assert!(with(&[("CORS_ALLOWED_ORIGINS", "https://game.pulsars.science/")]).is_err());
+        assert!(with(&[("CORS_ALLOWED_ORIGINS", "http://pulsars.science")]).is_err());
+        assert!(with(&[("CORS_ALLOWED_ORIGINS", "https://pulsars.science/")]).is_err());
         let ok = with(&[(
             "CORS_ALLOWED_ORIGINS",
             "https://a.example, https://b.example",
         )])
         .expect("valid");
         assert_eq!(ok.cors_allowed_origins.len(), 2);
+    }
+
+    #[test]
+    fn the_webhook_needs_its_url_and_secret_together() {
+        assert_eq!(with(&[]).expect("valid").webhook, None);
+        let secret = "0123456789abcdef0123456789abcdef";
+        let config = with(&[
+            (
+                "LARAVEL_WEBHOOK_URL",
+                "http://127.0.0.1:8000/internal/jeu/evenements",
+            ),
+            ("LARAVEL_WEBHOOK_SECRET", secret),
+            ("LARAVEL_WEBHOOK_HOST", "pulsars.science"),
+        ])
+        .expect("http on the loopback is fine in production");
+        let webhook = config.webhook.expect("configured");
+        assert_eq!(webhook.host.as_deref(), Some("pulsars.science"));
+        assert!(!format!("{webhook:?}").contains(secret));
+
+        let err =
+            with(&[("LARAVEL_WEBHOOK_URL", "http://127.0.0.1:8000/x")]).expect_err("no secret");
+        assert_eq!(
+            err.problems,
+            vec!["LARAVEL_WEBHOOK_SECRET: required with LARAVEL_WEBHOOK_URL"]
+        );
+        let err = with(&[
+            ("LARAVEL_WEBHOOK_URL", "ftp://x/y"),
+            ("LARAVEL_WEBHOOK_SECRET", "short"),
+        ])
+        .expect_err("invalid");
+        assert_eq!(err.problems.len(), 2);
+        assert!(!err.to_string().contains("short"));
     }
 
     #[test]

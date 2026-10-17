@@ -116,14 +116,14 @@ the suite is green on PostgreSQL.
 To add to `.env.example`, with comments in the style of the existing ones:
 
 ```env
-# Jeton de jeu (game.pulsars.science -> api.pulsars.science). Voir
+# Jeton de jeu (pulsars.science/jeux -> api.pulsars.science). Voir
 # docs/api-contract/auth-jwt.md. Les cles sont dans storage/app/private/jeu.
 GAME_JWT_ACTIVE_KID=
 GAME_JWT_ISSUER=https://pulsars.science
 GAME_JWT_AUDIENCE=api.pulsars.science
 GAME_JWT_TTL=300
 # Origines autorisees a demander un jeton, separees par des virgules.
-GAME_ALLOWED_ORIGINS=https://game.pulsars.science
+GAME_ALLOWED_ORIGINS=https://pulsars.science
 
 # Webhook des resultats de partie (api -> site, reseau prive uniquement).
 # 32 octets aleatoires minimum : openssl rand -hex 32
@@ -184,6 +184,18 @@ today. Which one fronts the API is a decision (see the summary).
 | G4 | `Experience` | Hidden and soft-deleted forum posts still earn XP (the queries bypass the model scopes). | Filter `masque_le` / `deleted_at`, or accept. |
 | G5 | Lessons | Slug unique per chapter only; URLs assume unique per course. | Unique index on (course, slug) through a check in the course seeder/editor. |
 | G6 | `PROJET.md` | Says Laravel 11 / PHP 8.3 / PostgreSQL 16 / Reverb / Redis; the code is Laravel 13, prod PHP 8.4, MySQL, no Reverb, no Redis. | Update when convenient. |
+
+## A10b. Brains (`brains.md`)
+
+- Ledger `cerveaux_mouvements`, `users.cerveaux_publics`, earning rules,
+  backfill, display: `brains.md` §1, §2, §5.
+- Webhook receiver: accept the `season.ended` v1 type (`webhooks.md` §3);
+  credit per `brains.md` §3 (key `saison:<season>:<subject>`), skipping
+  deleted accounts. Until it does, these events are answered `422` and
+  dead-lettered on the API side (`pulsars-api webhooks replay <event_id>`
+  resends them).
+- `api_read.member_brains` in the views migration (copied in `views.sql`);
+  the API's `/v1/me` and `/v1/game/me` read it and fail without it.
 
 ## A11. Tests
 

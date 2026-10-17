@@ -7,6 +7,9 @@ use std::sync::Arc;
 use fred::prelude::ClientLike as _;
 use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
+use pulsars_api::game::season;
+use pulsars_api::game::webhook::{self, WebhookSettings};
+use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes, telemetry};
 use tokio::net::TcpListener;
@@ -32,11 +35,77 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_CONFIG);
     }
 
+    // `pulsars-api webhooks replay <event_id>` (docs/contract/webhooks.md §7).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        return command(&config, &args).await;
+    }
+
     match run(config).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(error = %error, "fatal error");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// One-off commands. Only `webhooks replay <event_id>` exists.
+async fn command(config: &Config, args: &[String]) -> ExitCode {
+    let [group, action, event_id] = args else {
+        eprintln!("usage: pulsars-api [webhooks replay <event_id>]");
+        return ExitCode::from(EXIT_USAGE);
+    };
+    if group != "webhooks" || action != "replay" {
+        eprintln!("usage: pulsars-api [webhooks replay <event_id>]");
+        return ExitCode::from(EXIT_USAGE);
+    }
+    let Ok(event_id) = uuid::Uuid::parse_str(event_id) else {
+        eprintln!("not a UUID: {event_id}");
+        return ExitCode::from(EXIT_USAGE);
+    };
+    let pool = match db::connect_lazy(config) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("invalid DATABASE_URL: {error}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    match webhook::replay(&pool, event_id).await {
+        Ok(true) => {
+            println!("event {event_id} queued for delivery");
+            ExitCode::SUCCESS
+        }
+        Ok(false) => {
+            eprintln!("no webhook event {event_id}");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("database error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `EX_USAGE` from sysexits.h.
+const EXIT_USAGE: u8 = 64;
+
+/// Applies the `game` migrations, retrying while the database is down: the
+/// API starts without it, like the rest of the service.
+async fn migrate(pool: sqlx::PgPool) {
+    let mut wait = std::time::Duration::from_secs(1);
+    loop {
+        match store::migrate(&pool).await {
+            Ok(()) => {
+                tracing::info!("game schema migrations applied");
+                return;
+            }
+            Err(error) => {
+                tracing::error!(error = %error, retry_secs = wait.as_secs(),
+                    "cannot apply the game schema migrations");
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(std::time::Duration::from_secs(60));
+            }
         }
     }
 }
@@ -50,6 +119,33 @@ async fn run(config: Config) -> Result<(), String> {
     // API. `/healthz` answers 503 until the first key is loaded.
     let jwks = Jwks::new(&config)?;
     let jwks_refresh = jwks.spawn_refresh();
+    // The monthly season close needs the `game.seasons` migration: it starts
+    // once the migrations are applied (docs/contract/brains.md §3).
+    let migrations = tokio::spawn({
+        let db = db.clone();
+        async move {
+            migrate(db.clone()).await;
+            // Runs forever; aborted at shutdown with this task.
+            season::run_closer(db).await;
+        }
+    });
+    let webhooks = match &config.webhook {
+        Some(settings) => Some(webhook::spawn_worker(
+            db.clone(),
+            WebhookSettings::new(
+                settings.url.clone(),
+                settings.secret.clone(),
+                settings.host.clone(),
+            ),
+        )?),
+        None => {
+            tracing::warn!(
+                "LARAVEL_WEBHOOK_URL is not set: match results stay in the outbox, unsent"
+            );
+            None
+        }
+    };
+    let game = Game::start(db.clone(), GameSettings::default());
 
     let public = TcpListener::bind(config.bind_addr)
         .await
@@ -72,6 +168,7 @@ async fn run(config: Config) -> Result<(), String> {
         db: db.clone(),
         redis: redis.clone(),
         jwks,
+        game,
     };
 
     // The exporter needs periodic upkeep to drain histogram buffers.
@@ -117,6 +214,10 @@ async fn run(config: Config) -> Result<(), String> {
 
     upkeep.abort();
     jwks_refresh.abort();
+    migrations.abort();
+    if let Some(webhooks) = webhooks {
+        webhooks.abort();
+    }
     if redis.is_connected()
         && let Err(error) = redis.quit().await
     {

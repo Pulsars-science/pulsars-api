@@ -4,6 +4,7 @@ pub mod courses;
 pub mod cursor;
 pub mod exams;
 pub mod exercises;
+pub mod game;
 pub mod health;
 pub mod me;
 pub mod params;
@@ -64,16 +65,39 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
 
+    // The leaderboard is public, like content.
+    let game_public = Router::new()
+        .route(
+            "/v1/game/leaderboard",
+            get(game::leaderboard).options(preflight),
+        )
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
+        .layer(mw::cors_public());
+
+    // The match WebSocket checks its `Origin` itself, before the upgrade.
+    let game_ws = Router::new()
+        .route("/v1/game/ws", get(game::ws))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     // Authenticated endpoints: only the game front end may call them from a
-    // browser.
+    // browser. Without `Origin` (server to server: the Laravel admin
+    // dashboard proxies the statistics) the CORS layer stays out of the way.
     let authenticated = Router::new()
         .route("/v1/me", get(me::me).options(preflight))
+        .route("/v1/game/me", get(game::me).options(preflight))
+        .route(
+            "/v1/game/admin/stats",
+            get(game::admin_stats).options(preflight),
+        )
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
 
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
         .merge(content)
+        .merge(game_public)
+        .merge(game_ws)
         .merge(authenticated)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
