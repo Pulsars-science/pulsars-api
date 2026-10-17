@@ -146,6 +146,11 @@ the views (`timestamptz`, `jsonb`).
 | `lang` | varchar(5) | no | `en` today. |
 | translated fields | text | yes | `title`, `description`, `content_md`, `question_md`, `statement_md`, `category` depending on the view. Null when the translation lacks the field: the API then falls back to the original. |
 
+`exercise_translations` also has `options` (jsonb, null unless the exercise
+is a QCM whose translation has an `options` object): the same
+`[{"id", "text"}]` array as `exercises.options`, same ids and order, each text
+translated or, when missing, the original one.
+
 Translations whose `source_hash` no longer matches the source are still
 served, as Laravel does (`Traduisible::t()` ignores the hash).
 

@@ -234,8 +234,20 @@ SELECT
     t.traduisible_id                              AS exercise_id,
     t.langue                                      AS lang,
     nullif(t.champs::jsonb ->> 'titre', '')       AS title,
-    nullif(t.champs::jsonb ->> 'question_md', '') AS question_md
+    nullif(t.champs::jsonb ->> 'question_md', '') AS question_md,
     -- `solution_md` is in the same JSON and is deliberately not selected.
+    -- QCM options: the translation stores `{"a": "...", "b": "..."}` under
+    -- `options`; served like api_read.exercises.options (same ids, same
+    -- order), falling back option by option to the original text. The
+    -- answers stay in `donnees`, never read here.
+    CASE WHEN e.options IS NOT NULL
+          AND jsonb_typeof(t.champs::jsonb -> 'options') = 'object' THEN (
+        SELECT coalesce(jsonb_agg(jsonb_build_object(
+                   'id', o ->> 'id',
+                   'text', coalesce(nullif(t.champs::jsonb -> 'options' ->> (o ->> 'id'), ''), o ->> 'text')
+               ) ORDER BY n), '[]'::jsonb)
+        FROM jsonb_array_elements(e.options) WITH ORDINALITY AS x(o, n)
+    ) END                                         AS options
 FROM site.contenu_translations t
 JOIN api_read.exercises e ON e.id = t.traduisible_id
 WHERE t.traduisible_type = 'exercise';
