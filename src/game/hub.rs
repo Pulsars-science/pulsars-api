@@ -132,6 +132,8 @@ struct Room {
 
 struct LiveMatch {
     commands: mpsc::UnboundedSender<MatchCmd>,
+    /// Read only by the tests (`Game::match_seed`, feature `test-util`).
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
     seed: u32,
     mode: Mode,
     /// Unix ms of the first question (`game.matches.started_at`).
