@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `flash` module: the 30 flash-question generators of the site, ported from
+  `pulsars-game` with PHP's Mt19937 randomness (`Hasard`), French and
+  English texts and number formatting, and `duel_questions`, the questions
+  of a duel in both languages (the "défi" algorithm, for any subject; a
+  question with fewer than four distinct choices is padded without
+  disturbing the following ones). Parity tests against fixtures produced
+  by PHP and by the TypeScript port (`scripts/flash-fixtures.mjs`).
+
 ## [0.1.0] - 2026-10-16
 
 ### Added

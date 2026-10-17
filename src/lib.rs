@@ -7,6 +7,7 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod flash;
 pub mod links;
 pub mod middleware;
 pub mod rate_limit;
