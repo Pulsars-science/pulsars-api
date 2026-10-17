@@ -69,6 +69,10 @@ The API checks at startup and then every 10 minutes whether the previous
 month is closed. A month in which the API did not exist yet is closed too
 (empty standings, decay applies).
 
+Implemented in `pulsars-api` (`src/game/season.rs`, details in
+`docs/game-protocol.md` §10). `game.seasons` also keeps the `event_id` of
+the outbox row (null when the standings are empty). Ranks are never shared.
+
 ### `season.ended` v1
 
 ```json

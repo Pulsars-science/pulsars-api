@@ -66,7 +66,11 @@ The game WebSocket is `ws://127.0.0.1:8080/v1/game/ws`: the `Origin` must
 be one of `CORS_ALLOWED_ORIGINS`, and the first frame authenticates
 (`{"type": "auth", "guest": true}` needs no token). Match results go to
 Laravel only when `LARAVEL_WEBHOOK_URL` and `LARAVEL_WEBHOOK_SECRET` are set;
-otherwise they wait in `game.webhook_outbox`.
+otherwise they wait in `game.webhook_outbox`. At startup, and every 10
+minutes, the API also closes the previous UTC month's duel season if needed
+(standings, `season.ended` event, rating decay; `docs/contract/brains.md`
+§3): a fresh local database gets its last month closed, with empty
+standings, on the first start.
 
 The demo database contains a handful of courses, exercises, exams and
 resources from the open Pulsars content, plus drafts and answers that the
@@ -102,6 +106,7 @@ not deployed yet: it needs the production PostgreSQL migration, the
 | 3 | Content endpoints, rate limits | done |
 | 4 | Game (flash race): WebSocket, matchmaking, rooms, ghosts, Glicko-2, `game` schema | done; the 30 flash generators are ported to Rust (`src/flash/`) |
 | 5 | Results webhook to Laravel (outbox, signed delivery, retries) | done |
+| 5b | Brains: monthly duel season close (`season.ended`, rating decay), balance in `/v1/me` and `/v1/game/me` ([`brains.md`](docs/contract/brains.md)) | done |
 | 6 | Code sandbox | not needed (no code mode) |
 | 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |
 

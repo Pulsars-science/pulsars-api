@@ -868,6 +868,36 @@ async fn game_me_needs_a_token_and_the_game_origin() {
     );
 }
 
+#[tokio::test]
+async fn game_me_shows_the_brains_balance() {
+    let Some((database_url, redis_url)) = integration_urls() else {
+        return;
+    };
+    let server = server(&database_url, &redis_url, fast_settings()).await;
+    wait_for_redis(&server.state).await;
+    let me = |sub: String| {
+        let token = server.keys.token(&sub, "x", "fr");
+        let app = server.app.clone();
+        async move {
+            let request = Request::get("/v1/game/me")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap())
+                    .unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+    };
+    // `ada` (dev/db/30-demo-data.sql): three lessons, 5 brains each.
+    assert_eq!(me("2".to_owned()).await["brains"], 15);
+    // An account without movements, or unknown to Laravel: 0.
+    assert_eq!(me(fresh_user().to_string()).await["brains"], 0);
+}
+
 // --- Webhook delivery -----------------------------------------------------
 
 /// Requests received: headers and raw body.

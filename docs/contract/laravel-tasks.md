@@ -185,6 +185,18 @@ today. Which one fronts the API is a decision (see the summary).
 | G5 | Lessons | Slug unique per chapter only; URLs assume unique per course. | Unique index on (course, slug) through a check in the course seeder/editor. |
 | G6 | `PROJET.md` | Says Laravel 11 / PHP 8.3 / PostgreSQL 16 / Reverb / Redis; the code is Laravel 13, prod PHP 8.4, MySQL, no Reverb, no Redis. | Update when convenient. |
 
+## A10b. Brains (`brains.md`)
+
+- Ledger `cerveaux_mouvements`, `users.cerveaux_publics`, earning rules,
+  backfill, display: `brains.md` §1, §2, §5.
+- Webhook receiver: accept the `season.ended` v1 type (`webhooks.md` §3);
+  credit per `brains.md` §3 (key `saison:<season>:<subject>`), skipping
+  deleted accounts. Until it does, these events are answered `422` and
+  dead-lettered on the API side (`pulsars-api webhooks replay <event_id>`
+  resends them).
+- `api_read.member_brains` in the views migration (copied in `views.sql`);
+  the API's `/v1/me` and `/v1/game/me` read it and fail without it.
+
 ## A11. Tests
 
 - Token endpoint: no session → 401; not verified → 403; not onboarded →

@@ -32,6 +32,8 @@ pub struct Me {
     pub member_since: String,
     pub roles: Vec<Role>,
     pub xp: Xp,
+    /// Brains balance (`brains.md` §4): the token's owner always sees it.
+    pub brains: i64,
     pub profile_url: String,
 }
 
@@ -122,6 +124,7 @@ fn to_me(member: Member, roles: Vec<MemberRole>, storage_url: &str) -> Result<Me
             })
             .collect(),
         xp: Xp::new(member.xp_total, member.xp_level),
+        brains: i64::from(member.brains),
     })
 }
 
@@ -182,6 +185,7 @@ mod tests {
                 .map(|d| d.with_timezone(&chrono::Utc)),
             xp_total: 0,
             xp_level: 1,
+            brains: 42,
         };
         let roles = vec![MemberRole {
             slug: "super-admin".to_owned(),
@@ -202,6 +206,7 @@ mod tests {
                 "roles": [{"slug": "super-admin", "name": "Super admin",
                            "category": "permission", "color": "#d1544f"}],
                 "xp": {"total": 0, "level": 1, "level_start": 0, "next_level_at": 100},
+                "brains": 42,
                 "profile_url": "https://pulsars.science/membres/jikuji",
             })
         );

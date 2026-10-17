@@ -702,8 +702,10 @@ paths:
       description: |
         Returns exactly what `https://pulsars.science/membres/{pseudo}` shows to
         anyone, minus school level and class (see `game-design.md` /
-        decisions): pseudo, avatar, bio, roles, membership date, XP and level.
-        Never e-mail, locale, social logins or moderation state.
+        decisions): pseudo, avatar, bio, roles, membership date, XP and level,
+        plus the member's brains balance (`brains.md` §4; always shown to its
+        owner, whatever `cerveaux_publics` says). Never e-mail, locale, social
+        logins or moderation state.
 
         `Cache-Control: private, no-store`.
       security:
@@ -732,6 +734,7 @@ paths:
                     level: 1
                     level_start: 0
                     next_level_at: 100
+                  brains: 0
                   profile_url: https://pulsars.science/membres/jikuji
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
@@ -792,9 +795,10 @@ paths:
     get:
       tags: [game]
       operationId: getGameMe
-      summary: The token's ratings and last matches
+      summary: The token's brains, ratings and last matches
       description: |
-        Every rating of the token's account (one per subject key it played
+        The brains balance of the token's account (`brains.md` §4; 0 for an
+        account without movements). Every rating of the token's account (one per subject key it played
         ranked, `all` included) with its rank in that subject's leaderboard,
         and its last 20 finished matches of any mode, newest first.
         `opponents` are the names of the other seats (players, guests and
@@ -811,8 +815,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ratings, recent]
+                required: [brains, ratings, recent]
                 properties:
+                  brains:
+                    type: integer
+                    minimum: 0
+                    description: Brains balance (`api_read.member_brains`), always shown to its owner.
                   ratings:
                     type: array
                     items: { $ref: '#/components/schemas/GameRating' }
@@ -821,6 +829,7 @@ paths:
                     maxItems: 20
                     items: { $ref: '#/components/schemas/GameRecentMatch' }
               example:
+                brains: 42
                 ratings:
                   - { subject: maths, rating: 1338, provisional: true, games: 1, wins: 0,
                       losses: 1, draws: 0, rank: 2 }
@@ -1520,7 +1529,7 @@ components:
 
     Me:
       type: object
-      required: [id, pseudo, avatar_url, bio, member_since, roles, xp, profile_url]
+      required: [id, pseudo, avatar_url, bio, member_since, roles, xp, brains, profile_url]
       properties:
         id: { type: string, description: Same value as the JWT `sub`. }
         pseudo: { type: string }
@@ -1542,6 +1551,13 @@ components:
             level: { type: integer, minimum: 1 }
             level_start: { type: integer, description: XP at which the current level starts. }
             next_level_at: { type: integer }
+        brains:
+          type: integer
+          minimum: 0
+          description: |
+            Brains balance, the sum of the member's ledger (`brains.md` §4,
+            `api_read.member_brains`). Shown to its owner even when
+            `cerveaux_publics` is false.
         profile_url: { type: string, format: uri }
 
     GameSubject:

@@ -144,6 +144,13 @@ INSERT INTO questions (id, user_id, titre, slug, corps, accepted_answer_id, crea
 INSERT INTO answers (id, question_id, user_id, corps, created_at) VALUES
     (1, 1, 2, 'Parce que 5^1 / 5^1 = 5^(1-1).', now());
 
+-- Brains: 5 per completed lesson for ada (15); emmy hides her balance.
+INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created_at) VALUES
+    (2, 5, 'lecon', 'lecon:1', '{"lesson_id": 1}', now()),
+    (2, 5, 'lecon', 'lecon:2', '{"lesson_id": 2}', now()),
+    (2, 5, 'lecon', 'lecon:3', '{"lesson_id": 3}', now());
+UPDATE users SET cerveaux_publics = false WHERE id = 3;
+
 -- Keep sequences ahead of the explicit ids above.
 SELECT setval('site.users_id_seq', (SELECT max(id) FROM users));
 SELECT setval('site.roles_id_seq', (SELECT max(id) FROM roles));

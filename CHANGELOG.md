@@ -8,6 +8,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Brains (`docs/contract/brains.md`): monthly duel season close. At startup
+  and every 10 minutes, the previous UTC month is closed for each subject
+  key in one transaction: standings (at least 5 ranked duels ended in the
+  month; by rating, then ranked duels, then `user_id`), a `season.ended`
+  webhook when they are not empty, the decay of every rating of the subject
+  (`1500 + 0.8 × (rating − 1500)`, RD + 50 capped at 350), and a
+  `game.seasons` row (new migration) so that a month closes once, across
+  restarts and instances (advisory lock). Metric
+  `game_seasons_closed_total`.
+- `brains` (the balance, from the new `api_read.member_brains` view) in
+  `GET /v1/me` and `GET /v1/game/me`.
+
 - Flash-duel game server (`docs/game-protocol.md`): WebSocket
   `GET /v1/game/ws` with the `Origin` checked before the upgrade, `auth`
   first frame for accounts (game token, single-use `jti` in Redis) and
@@ -47,6 +59,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   question with fewer than four distinct choices is padded without
   disturbing the following ones). Parity tests against fixtures produced
   by PHP and by the TypeScript port (`scripts/flash-fixtures.mjs`).
+
+### Fixed
+
+- The local and CI database stand-in (`dev/db/`) has the `site` tables the
+  views now read: `game_events`, `game_results` (needed by
+  `api_read.member_xp` since the game XP), `cerveaux_mouvements` and
+  `users.cerveaux_publics`; demo brains for `ada`.
 
 ## [0.1.0] - 2026-10-16
 

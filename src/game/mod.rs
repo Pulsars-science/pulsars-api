@@ -15,6 +15,8 @@
 //!   which persists the result, the ratings and the webhook outbox row in
 //!   one transaction at the end.
 //! - [`webhook`]: the outbox delivery worker (`docs/contract/webhooks.md`).
+//! - [`season`]: the monthly season close (`docs/contract/brains.md` §3):
+//!   standings, `season.ended` event and rating decay.
 //!
 //! Everything lives in this process: one API instance serves the game
 //! (`game-protocol.md` §6).
@@ -27,6 +29,7 @@ pub mod protocol;
 pub mod ranking;
 pub mod rules;
 pub mod runner;
+pub mod season;
 pub mod session;
 pub mod store;
 pub mod webhook;

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use fred::prelude::ClientLike as _;
 use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
+use pulsars_api::game::season;
 use pulsars_api::game::webhook::{self, WebhookSettings};
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
@@ -118,7 +119,16 @@ async fn run(config: Config) -> Result<(), String> {
     // API. `/healthz` answers 503 until the first key is loaded.
     let jwks = Jwks::new(&config)?;
     let jwks_refresh = jwks.spawn_refresh();
-    let migrations = tokio::spawn(migrate(db.clone()));
+    // The monthly season close needs the `game.seasons` migration: it starts
+    // once the migrations are applied (docs/contract/brains.md §3).
+    let migrations = tokio::spawn({
+        let db = db.clone();
+        async move {
+            migrate(db.clone()).await;
+            // Runs forever; aborted at shutdown with this task.
+            season::run_closer(db).await;
+        }
+    });
     let webhooks = match &config.webhook {
         Some(settings) => Some(webhook::spawn_worker(
             db.clone(),

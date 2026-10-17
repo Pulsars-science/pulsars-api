@@ -209,6 +209,15 @@ rating 1500, RD 350, volatility 0.06. One rating per account and subject key
 (`all` included). Shown rounded; a rating with RD > 110 is **provisional**.
 Ranked forfeit: the leaver loses, the other wins.
 
+**Monthly season** (`docs/contract/brains.md` §3): at the start of each UTC
+month the API closes the previous one, per subject key, in one transaction:
+standings of the accounts with at least 5 ranked duels ended in the month
+(by rating, then ranked duels in the month, then lower `user_id`), a
+`season.ended` webhook when they are not empty, then the decay of every
+rating of the subject: `rating = 1500 + 0.8 × (rating − 1500)`,
+`rd = min(350, rd + 50)`. `games`/`wins`/`losses`/`draws` are all-time and
+stay. Laravel turns the standings into brains.
+
 ## 8. `game` schema
 
 sqlx migrations in `migrations/`, run at startup (`sqlx::migrate!`).
@@ -238,6 +247,12 @@ game.webhook_outbox (
   attempts int, next_attempt_at timestamptz, last_error text null,
   created_at timestamptz, sent_at timestamptz null
 )
+game.seasons (                  -- one row per closed month and subject key
+  month text, subject text, closed_at timestamptz,
+  standings jsonb,              -- the `standings` of `season.ended`, [] if none
+  event_id uuid null,           -- the outbox row, when one was written
+  PRIMARY KEY (month, subject)
+)
 ```
 
 The outbox row is written in the same transaction as the match end
@@ -249,7 +264,7 @@ The outbox row is written in the same transaction as the match end
 | Endpoint | Auth | Body |
 |---|---|---|
 | `GET /v1/game/leaderboard?subject=maths&limit=50` | public | `{"subject", "data": [{rank, user_id, pseudo, avatar_url, rating, provisional, games, wins, losses, draws}]}` — players with at least one ranked match, best rating first. Pseudo and avatar from `api_read.members`; deleted accounts are skipped. |
-| `GET /v1/game/me` | Bearer | `{"ratings": [{subject, rating, provisional, games, wins, losses, draws, rank}], "recent": [{match_id, mode, ranked, subject, rules, ended_at, outcome, score, rating_before, rating_after, opponents: [name]}]}` (last 20 matches) |
+| `GET /v1/game/me` | Bearer | `{"brains": <balance>, "ratings": [{subject, rating, provisional, games, wins, losses, draws, rank}], "recent": [{match_id, mode, ranked, subject, rules, ended_at, outcome, score, rating_before, rating_after, opponents: [name]}]}` (last 20 matches) |
 
 Both are JSON, `Cache-Control: no-store` for `/me`, `max-age=30` for the
 leaderboard.
@@ -293,3 +308,16 @@ the few additions:
   equal rounded ratings share a rank.
 - **Shutdown**: matches in progress when the API stops are lost (neither
   stored nor sent to Laravel).
+- **Season close** (`src/game/season.rs`, added with the brains): checked
+  once the migrations are applied at startup, then every 10 minutes (1
+  minute after a database error). Only the month before the current one is
+  checked: if the API is down from before the end of a month until after
+  the end of the next one, the earlier month is never closed. A transaction-scoped advisory lock on
+  `(month, subject)` plus the `game.seasons` primary key make the close
+  happen once across restarts and instances. The rating rows of the subject
+  are locked in `user_id` order before the decay, the order a match end
+  uses, so the two cannot deadlock; a match ending during the close waits
+  and then applies its result to the decayed rating. Standings order by the
+  exact rating, not the rounded one. `/v1/game/me` reads `brains` from
+  `api_read.member_brains` (0 when the account has no row). Metric
+  `game_seasons_closed_total{subject}`.

@@ -168,6 +168,7 @@ pub mod names {
     pub const GAME_MATCHES_STARTED_TOTAL: &str = "game_matches_started_total";
     pub const GAME_MATCHES_ENDED_TOTAL: &str = "game_matches_ended_total";
     pub const GAME_PERSIST_ERRORS_TOTAL: &str = "game_persist_errors_total";
+    pub const GAME_SEASONS_CLOSED_TOTAL: &str = "game_seasons_closed_total";
     pub const WEBHOOK_ATTEMPTS_TOTAL: &str = "webhook_attempts_total";
     pub const WEBHOOK_PENDING: &str = "webhook_pending";
     pub const WEBHOOK_DEAD_TOTAL: &str = "webhook_dead_total";
@@ -246,6 +247,10 @@ fn describe_metrics() {
     metrics::describe_counter!(
         names::GAME_PERSIST_ERRORS_TOTAL,
         "Match ends that could not be written to the database."
+    );
+    metrics::describe_counter!(
+        names::GAME_SEASONS_CLOSED_TOTAL,
+        "Monthly duel seasons closed, by subject key."
     );
     metrics::describe_counter!(
         names::WEBHOOK_ATTEMPTS_TOTAL,

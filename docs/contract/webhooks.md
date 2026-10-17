@@ -1,8 +1,10 @@
 # Webhooks: match results from the API to Laravel
 
-When a match ends, the API (`pulsars-api`) tells Laravel. Laravel owns XP,
-so **Laravel decides what a result is worth**; the API only reports what
-happened.
+When a match ends, the API (`pulsars-api`) tells Laravel. Laravel owns XP
+and brains, so **Laravel decides what a result is worth**; the API only
+reports what happened. Two event types exist: `match.completed` (§3) and
+`season.ended`, the monthly duel standings (§3, defined in
+[`brains.md`](brains.md) §3).
 
 ## 1. Endpoint
 
@@ -91,7 +93,7 @@ Common envelope:
 | `event_id` | UUIDv7, generated once when the event is written to the outbox. Unique forever. Also sent as `X-Pulsars-Event-Id` so it can be logged before parsing. |
 | `type` | Event type. Laravel answers `422` to a type it does not know (so it is not silently dropped). |
 | `version` | Version of `data` for this type. Starts at 1; incremented on breaking changes, during which the API sends the version Laravel declares it supports (`GAME_WEBHOOK_VERSION`). |
-| `occurred_at` | When the match ended, by the API's clock. |
+| `occurred_at` | When the match ended (`match.completed`) or the season was closed (`season.ended`), by the API's clock. |
 
 ### `match.completed`
 
@@ -155,6 +157,44 @@ against a ghost).
 The payload carries **raw results only**: no XP, no level, no reward.
 
 No personal data travels: no pseudo (Laravel has it), no IP.
+
+### `season.ended`
+
+Sent once per UTC month and subject key (`maths`, `physics`, `chemistry`,
+`computer-science`, `all`) whose standing is not empty, when the API closes
+the month (`brains.md` §3): at its first check after the month ends (at
+startup, then every 10 minutes).
+
+```json
+{
+  "event_id": "01a3f1c0-0004-7b2e-9c1d-2f3e4a5b6c7d",
+  "type": "season.ended",
+  "version": 1,
+  "occurred_at": "2026-11-01T00:00:04Z",
+  "data": {
+    "season": "2026-10",
+    "subject": "maths",
+    "standings": [
+      {"user_id": "2", "rank": 1, "rating": 1720, "ranked_matches": 7},
+      {"user_id": "1", "rank": 2, "rating": 1280, "ranked_matches": 5}
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `season` | The closed month, `YYYY-MM`, UTC. |
+| `subject` | The subject key of the rating. |
+| `standings` | Never empty. Accounts with at least 5 ranked duels **ended** in the month in that subject, ordered by rating (desc), then more ranked duels in the month, then lower `user_id`; `rank` is 1..n without gaps (no shared ranks). |
+| `standings[].rating` | Glicko-2 rating of the subject at the close, **before** the monthly decay, rounded. |
+| `standings[].ranked_matches` | Ranked duels of the player that ended in the month in that subject. |
+
+The API does not know which accounts were deleted: a `user_id` without an
+account is in the standings, and Laravel skips it (rewards in
+`brains.md` §3, key `saison:<season>:<subject>`). The `event_id` makes a
+redelivery harmless (§4); the key `saison:<season>:<subject>` makes a second
+event for the same month impossible to credit twice anyway.
 
 ## 4. Idempotency on the Laravel side
 
@@ -269,8 +309,9 @@ queue; the contract does not change.
 ## 7. Delivery and retries on the API side
 
 - **Outbox.** The API writes the event into `game.webhook_outbox` **in the
-  same transaction** that marks the match finished. A worker sends pending
-  rows. A crash between the two cannot lose a result.
+  same transaction** that marks the match finished (or, for `season.ended`,
+  that closes the month in `game.seasons` and applies the decay). A worker
+  sends pending rows. A crash between the two cannot lose a result.
 - **Timeout** 10 seconds per attempt (connect 3 s).
 - **Backoff**: exponential with full jitter, base 10 s, factor 3, ceiling 1 h:
   each delay is drawn uniformly below 10 s, 30 s, 1.5 min, 4.5 min,

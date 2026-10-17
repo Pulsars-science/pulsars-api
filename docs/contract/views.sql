@@ -25,7 +25,8 @@
 --     exercises.donnees->acceptees, and the `solution_md` key of English
 --     translations;
 --   * exam_parties.corrige_md and its translation, exams.fichier_corrige;
---   * every personal column of `users` except pseudo, avatar, bio, created_at;
+--   * every personal column of `users` except pseudo, avatar, bio, created_at
+--     (and cerveaux_publics, with the brains balance in member_brains);
 --   * storage paths, original file names, AI prompts and errors, counters,
 --     author account ids.
 --
@@ -417,6 +418,16 @@ SELECT
         ELSE n
     END AS level
 FROM levels;
+
+-- Brains balance (docs/contract/brains.md §4): the sum of the member's
+-- ledger movements. `public` is `users.cerveaux_publics`; the API shows the
+-- balance to its owner only (/v1/me, /v1/game/me), never on public endpoints.
+CREATE OR REPLACE VIEW api_read.member_brains AS
+SELECT u.id AS user_id,
+       coalesce((SELECT sum(m.montant) FROM site.cerveaux_mouvements m
+                  WHERE m.user_id = u.id), 0)::int AS balance,
+       u.cerveaux_publics AS public
+FROM site.users u;
 
 -- -----------------------------------------------------------------------------
 -- Grants

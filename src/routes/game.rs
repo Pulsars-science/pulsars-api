@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use super::params::Params;
 use crate::auth::{self, AuthUser};
+use crate::db::members;
 use crate::error::ApiError;
 use crate::game::glicko::PROVISIONAL_RD;
 use crate::game::rules::{SUBJECT_KEYS, SubjectKey};
@@ -125,6 +126,8 @@ fn avatar_url(path: Option<String>, storage: &str) -> Option<String> {
 
 #[derive(Debug, Serialize)]
 pub struct MyGame {
+    /// Brains balance of the token's owner (`brains.md` §4).
+    pub brains: i64,
     pub ratings: Vec<MyRating>,
     pub recent: Vec<Recent>,
 }
@@ -157,7 +160,7 @@ pub struct Recent {
     pub opponents: Vec<String>,
 }
 
-/// `GET /v1/game/me`: the token's ratings and last 20 matches.
+/// `GET /v1/game/me`: the token's brains, ratings and last 20 matches.
 pub async fn me(
     State(state): State<AppState>,
     AuthUser(claims): AuthUser,
@@ -169,7 +172,9 @@ pub async fn me(
     })?;
     let ratings = store::my_ratings(&state.db, user_id).await?;
     let recent = store::recent(&state.db, user_id).await?;
+    let brains = members::brains(&state.db, user_id).await?;
     let body = MyGame {
+        brains: i64::from(brains),
         ratings: ratings
             .into_iter()
             .map(|r| MyRating {
