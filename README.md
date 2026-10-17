@@ -17,7 +17,7 @@ This service runs at `api.pulsars.science` and provides:
 ## Architecture in brief
 
 ```
-game.pulsars.science ──JWT──▶ api.pulsars.science ──signed webhook──▶ pulsars.science
+pulsars.science/jeux ──JWT──▶ api.pulsars.science ──signed webhook──▶ pulsars.science
    (Vue SPA)                   (this repository)                       (Laravel)
                                  │        │
                        PostgreSQL         Redis

@@ -97,6 +97,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   views now read: `game_events`, `game_results` (needed by
   `api_read.member_xp` since the game XP), `cerveaux_mouvements` and
   `users.cerveaux_publics`; demo brains for `ada`.
+- QCM options are translated: `GET /v1/exercises` and `/v1/exercises/{id}`
+  with `lang=en` serve the English option texts (same ids and order), falling
+  back to the original text option by option. Needs the Laravel migration
+  `add_options_to_api_read_exercise_translations`.
 
 ## [0.1.0] - 2026-10-16
 

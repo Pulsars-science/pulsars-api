@@ -331,7 +331,7 @@ variable the API reads is in the file:
 | `JWT_ISSUER` | `https://pulsars.science` | default |
 | `JWT_AUDIENCE` | `api.pulsars.science` | default |
 | `PUBLIC_STORAGE_URL` | `https://pulsars.science/storage` | default; avatar URLs |
-| `CORS_ALLOWED_ORIGINS` | `https://game.pulsars.science` | default; origins for `/v1/me` and the game |
+| `CORS_ALLOWED_ORIGINS` | `https://pulsars.science` | default; origins for `/v1/me` and the game |
 | `BIND_ADDR` | `127.0.0.1:8080` | what nginx proxies to |
 | `METRICS_ADDR` | `127.0.0.1:9464` | loopback or private only, enforced |
 | `RATE_LIMIT_ANONYMOUS_PER_MINUTE` | `60` | D7 |

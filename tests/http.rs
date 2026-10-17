@@ -693,14 +693,14 @@ async fn me_allows_only_the_game_origin() {
 
     // Errors carry the CORS headers too, so the front end can read `reason`.
     let request = Request::get("/v1/me")
-        .header(header::ORIGIN, "https://game.pulsars.science")
+        .header(header::ORIGIN, "https://pulsars.science")
         .body(Body::empty())
         .unwrap();
     let (status, headers, _) = send(&app, request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(
         headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
-        "https://game.pulsars.science"
+        "https://pulsars.science"
     );
 }
 
@@ -1227,6 +1227,21 @@ async fn exercises_never_carry_their_answer() {
         "The basics of the calculation"
     );
     assert_eq!(body["data"]["options"][1]["text"], "7");
+
+    // Translated options keep the original ids and order; a missing or empty
+    // translation falls back to the original text, option by option.
+    let (_, _, body) = get_json(&app, "/v1/exercises/3?lang=en").await;
+    assert_eq!(
+        body["data"]["options"],
+        json!([
+            {"id": "a", "text": "OPTION-EN-A"},
+            {"id": "b", "text": "2^3 x 2^4 = 2^12"},
+            {"id": "c", "text": "OPTION-EN-C"},
+            {"id": "d", "text": "-3^2 = 9"},
+            {"id": "e", "text": "5^0 = 1"},
+        ])
+    );
+    assert!(!body.to_string().contains("correctes"), "{body}");
 }
 
 #[tokio::test]
