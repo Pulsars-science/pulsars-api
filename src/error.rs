@@ -21,6 +21,12 @@ pub const PROBLEM_BASE: &str = "https://api.pulsars.science/problems/";
 
 pub const PROBLEM_CONTENT_TYPE: &str = "application/problem+json";
 
+/// `reason` of a 403 for a token whose roles do not allow the action.
+pub const INSUFFICIENT_SCOPE: &str = "insufficient_scope";
+
+const INSUFFICIENT_SCOPE_CHALLENGE: &str =
+    "Bearer realm=\"api.pulsars.science\", error=\"insufficient_scope\"";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ParameterError {
     pub parameter: String,
@@ -41,6 +47,23 @@ pub enum ApiError {
         reason: Reason,
         instance: Option<String>,
     },
+    /// The request is understood and refused (a WebSocket from an origin
+    /// that is not allowed).
+    #[error("forbidden: {detail}")]
+    Forbidden {
+        detail: String,
+        instance: Option<String>,
+    },
+    /// A valid token whose roles do not allow the action
+    /// (`docs/contract/auth-jwt.md` §5, RFC 6750 `insufficient_scope`).
+    #[error("insufficient scope: {detail}")]
+    InsufficientScope {
+        detail: String,
+        instance: Option<String>,
+    },
+    /// A plain request on the WebSocket endpoint.
+    #[error("upgrade required")]
+    UpgradeRequired,
     #[error("not found: {detail}")]
     NotFound {
         detail: String,
@@ -78,7 +101,7 @@ pub struct Problem {
     pub instance: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<ParameterError>>,
-    /// For 401 only: why the token was refused.
+    /// For 401: why the token was refused; for a 403 `insufficient_scope`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,6 +113,8 @@ impl ApiError {
         match self {
             Self::InvalidParameter(_) | Self::InvalidCursor => StatusCode::BAD_REQUEST,
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
+            Self::Forbidden { .. } | Self::InsufficientScope { .. } => StatusCode::FORBIDDEN,
+            Self::UpgradeRequired => StatusCode::UPGRADE_REQUIRED,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
@@ -106,6 +131,9 @@ impl ApiError {
             Self::InvalidParameter(_) => ("invalid-parameter", "Invalid parameter"),
             Self::InvalidCursor => ("invalid-cursor", "Invalid cursor"),
             Self::Unauthorized { .. } => ("unauthorized", "Invalid token"),
+            Self::Forbidden { .. } => ("forbidden", "Forbidden"),
+            Self::InsufficientScope { .. } => ("insufficient-scope", "Insufficient scope"),
+            Self::UpgradeRequired => ("upgrade-required", "Upgrade required"),
             Self::NotFound { .. } => ("not-found", "Resource not found"),
             Self::MethodNotAllowed => ("method-not-allowed", "Method not allowed"),
             Self::NotAcceptable => ("not-acceptable", "Not acceptable"),
@@ -127,7 +155,12 @@ impl ApiError {
                 Some(format!("Limit of {limit} requests per minute reached."))
             }
             Self::Unauthorized { reason, .. } => Some(reason.detail().to_owned()),
-            Self::NotFound { detail, .. } => Some(detail.clone()),
+            Self::NotFound { detail, .. }
+            | Self::Forbidden { detail, .. }
+            | Self::InsufficientScope { detail, .. } => Some(detail.clone()),
+            Self::UpgradeRequired => {
+                Some("This endpoint only accepts WebSocket upgrades.".to_owned())
+            }
             Self::Timeout => Some("The request took too long to process.".to_owned()),
             _ => None,
         };
@@ -137,9 +170,10 @@ impl ApiError {
             status: self.status().as_u16(),
             detail,
             instance: match self {
-                Self::NotFound { instance, .. } | Self::Unauthorized { instance, .. } => {
-                    instance.clone()
-                }
+                Self::NotFound { instance, .. }
+                | Self::Unauthorized { instance, .. }
+                | Self::Forbidden { instance, .. }
+                | Self::InsufficientScope { instance, .. } => instance.clone(),
                 _ => None,
             },
             errors: match self {
@@ -148,6 +182,7 @@ impl ApiError {
             },
             reason: match self {
                 Self::Unauthorized { reason, .. } => Some(reason.code()),
+                Self::InsufficientScope { .. } => Some(INSUFFICIENT_SCOPE),
                 _ => None,
             },
             trace_id: match self {
@@ -180,8 +215,18 @@ impl IntoResponse for ApiError {
         if let Self::Unauthorized { reason, .. } = &self {
             headers.insert(header::WWW_AUTHENTICATE, www_authenticate(*reason));
         }
+        if let Self::InsufficientScope { .. } = &self {
+            headers.insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static(INSUFFICIENT_SCOPE_CHALLENGE),
+            );
+        }
         if let Self::RateLimited { retry_after, .. } = &self {
             headers.insert(header::RETRY_AFTER, HeaderValue::from(*retry_after));
+        }
+        if let Self::UpgradeRequired = &self {
+            headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+            headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
         }
         if status == StatusCode::METHOD_NOT_ALLOWED {
             // Phase 1 only serves GET routes; refined per route later.
@@ -333,6 +378,33 @@ mod tests {
             "https://api.pulsars.science/problems/invalid-cursor"
         );
         assert_eq!(json["status"], 400);
+    }
+
+    #[test]
+    fn insufficient_scope_is_a_403_with_its_challenge() {
+        let error = || ApiError::InsufficientScope {
+            detail: "Admins only.".to_owned(),
+            instance: Some("/v1/game/admin/stats".to_owned()),
+        };
+        let response = error().into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers()[header::WWW_AUTHENTICATE],
+            "Bearer realm=\"api.pulsars.science\", error=\"insufficient_scope\""
+        );
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let json = serde_json::to_value(error().to_problem()).unwrap_or_default();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "https://api.pulsars.science/problems/insufficient-scope",
+                "title": "Insufficient scope",
+                "status": 403,
+                "detail": "Admins only.",
+                "instance": "/v1/game/admin/stats",
+                "reason": "insufficient_scope",
+            })
+        );
     }
 
     #[test]

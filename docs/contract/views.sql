@@ -25,7 +25,8 @@
 --     exercises.donnees->acceptees, and the `solution_md` key of English
 --     translations;
 --   * exam_parties.corrige_md and its translation, exams.fichier_corrige;
---   * every personal column of `users` except pseudo, avatar, bio, created_at;
+--   * every personal column of `users` except pseudo, avatar, bio, created_at
+--     (and cerveaux_publics, with the brains balance in member_brains);
 --   * storage paths, original file names, AI prompts and errors, counters,
 --     author account ids.
 --
@@ -396,13 +397,22 @@ WITH counts AS (
         (SELECT count(*) FROM site.answers a WHERE a.user_id = u.id)         AS answers,
         (SELECT count(*) FROM site.answers a
            JOIN site.questions q ON q.accepted_answer_id = a.id
-          WHERE a.user_id = u.id)                                            AS accepted_answers
+          WHERE a.user_id = u.id)                                            AS accepted_answers,
+        -- Game matches (webhook results): 3 per match, 5 more per win,
+        -- at most 30 per UTC day (game-design.md Q9).
+        (SELECT coalesce(sum(least(30, parties * 3 + victoires * 5)), 0) FROM (
+            SELECT count(*) AS parties,
+                   count(*) FILTER (WHERE gr.outcome = 'win') AS victoires
+              FROM site.game_results gr
+             WHERE gr.user_id = u.id
+             GROUP BY gr.ended_at::date) j)                                  AS game_xp
     FROM site.users u
 ), totals AS (
     SELECT
         user_id,
         (lessons * 10 + exercises * 8 + courses * 40
-         + questions * 4 + answers * 4 + accepted_answers * 12)::int AS total
+         + questions * 4 + answers * 4 + accepted_answers * 12
+         + game_xp)::int AS total
     FROM counts
 ), levels AS (
     -- Level n starts at 50 * (n - 1) * n; n = floor((1 + sqrt(1 + 4 * xp / 50)) / 2).
@@ -420,6 +430,16 @@ SELECT
         ELSE n
     END AS level
 FROM levels;
+
+-- Brains balance (docs/contract/brains.md §4): the sum of the member's
+-- ledger movements. `public` is `users.cerveaux_publics`; the API shows the
+-- balance to its owner only (/v1/me, /v1/game/me), never on public endpoints.
+CREATE OR REPLACE VIEW api_read.member_brains AS
+SELECT u.id AS user_id,
+       coalesce((SELECT sum(m.montant) FROM site.cerveaux_mouvements m
+                  WHERE m.user_id = u.id), 0)::int AS balance,
+       u.cerveaux_publics AS public
+FROM site.users u;
 
 -- -----------------------------------------------------------------------------
 -- Grants

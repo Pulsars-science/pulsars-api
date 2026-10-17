@@ -124,7 +124,7 @@ impl Jwks {
         https_only: bool,
         settings: JwksSettings,
     ) -> Result<Self, String> {
-        let client = http_client(https_only, settings.fetch_timeout)?;
+        let client = http_client(https_only, settings.fetch_timeout, Duration::from_secs(2))?;
         Ok(Self {
             inner: Arc::new(Inner {
                 url: url.to_owned(),
@@ -321,9 +321,14 @@ impl Jwks {
     }
 }
 
-/// The HTTP client: rustls with the `ring` provider and the Mozilla roots
-/// (`webpki-roots`, as sqlx does), no redirects, short timeouts.
-fn http_client(https_only: bool, timeout: Duration) -> Result<reqwest::Client, String> {
+/// An HTTP client (JWKS, webhooks): rustls with the `ring` provider and the
+/// Mozilla roots (`webpki-roots`, as sqlx does), no redirects, short
+/// timeouts.
+pub(crate) fn http_client(
+    https_only: bool,
+    timeout: Duration,
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, String> {
     let roots = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
@@ -341,11 +346,11 @@ fn http_client(https_only: bool, timeout: Duration) -> Result<reqwest::Client, S
         // A redirect could lead to plain http or another host: the JWKS URL
         // must point at the document itself.
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(2))
+        .connect_timeout(connect_timeout)
         .timeout(timeout)
         .user_agent(concat!("pulsars-api/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| format!("cannot build the JWKS HTTP client: {e}"))
+        .map_err(|e| format!("cannot build an HTTP client: {e}"))
 }
 
 /// Keeps the usable keys of a JWK set (RFC 7517), indexed by `kid`.

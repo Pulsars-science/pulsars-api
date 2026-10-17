@@ -114,6 +114,15 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+/// The account id of a token's `sub`: a positive decimal id without sign or
+/// leading zero, exactly as Laravel writes `users.id`. Anything else cannot
+/// name an account.
+pub fn user_id(sub: &str) -> Option<i64> {
+    let canonical =
+        !sub.is_empty() && !sub.starts_with('0') && sub.bytes().all(|b| b.is_ascii_digit());
+    if canonical { sub.parse().ok() } else { None }
+}
+
 /// The `kid` comes from an unverified token: keep it short and printable
 /// before it reaches the logs.
 fn loggable(kid: &str) -> String {

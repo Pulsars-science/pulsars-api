@@ -19,6 +19,7 @@ use ed25519_dalek::SigningKey;
 use pulsars_api::auth::token::testing;
 use pulsars_api::auth::{Jwks, JwksSettings};
 use pulsars_api::config::Config;
+use pulsars_api::game::{Game, GameSettings};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
 use serde_json::{Value, json};
@@ -89,8 +90,10 @@ async fn app(config: Config) -> (Router, AppState) {
 }
 
 fn app_with(config: Config, jwks: Jwks) -> (Router, AppState) {
+    let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
-        db: db::connect_lazy(&config).unwrap(),
+        game: Game::start(db.clone(), GameSettings::default()),
+        db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
         jwks,
@@ -710,7 +713,7 @@ async fn me_returns_the_public_profile() {
     };
     let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
 
-    // `ada` (dev/db/30-demo-data.sql): bio, two roles, 102 XP.
+    // `ada` (dev/db/30-demo-data.sql): bio, two roles, 102 XP, 15 brains.
     let (status, headers, body) = send(&app, get_with_token("/v1/me", &server.token("2"))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(headers[header::CONTENT_TYPE], "application/json");
@@ -737,6 +740,7 @@ async fn me_returns_the_public_profile() {
                  "category": "distinction", "color": "#c98a34"},
             ],
             "xp": {"total": 102, "level": 2, "level_start": 100, "next_level_at": 300},
+            "brains": 15,
             "profile_url": "https://pulsars.science/membres/ada",
         }})
     );
@@ -749,6 +753,13 @@ async fn me_returns_the_public_profile() {
         body["data"]["xp"],
         json!({"total": 0, "level": 1, "level_start": 0, "next_level_at": 100})
     );
+    // No movement: 0, not null.
+    assert_eq!(body["data"]["brains"], 0);
+
+    // `emmy` hides her balance from others, not from herself.
+    let (status, _, body) = send(&app, get_with_token("/v1/me", &server.token("3"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["brains"], 0);
 }
 
 #[tokio::test]

@@ -1,8 +1,10 @@
 # Webhooks: match results from the API to Laravel
 
-When a match ends, the API (`pulsars-api`) tells Laravel. Laravel owns XP,
-so **Laravel decides what a result is worth**; the API only reports what
-happened.
+When a match ends, the API (`pulsars-api`) tells Laravel. Laravel owns XP
+and brains, so **Laravel decides what a result is worth**; the API only
+reports what happened. Two event types exist: `match.completed` (§3) and
+`season.ended`, the monthly duel standings (§3, defined in
+[`brains.md`](brains.md) §3).
 
 ## 1. Endpoint
 
@@ -91,12 +93,15 @@ Common envelope:
 | `event_id` | UUIDv7, generated once when the event is written to the outbox. Unique forever. Also sent as `X-Pulsars-Event-Id` so it can be logged before parsing. |
 | `type` | Event type. Laravel answers `422` to a type it does not know (so it is not silently dropped). |
 | `version` | Version of `data` for this type. Starts at 1; incremented on breaking changes, during which the API sends the version Laravel declares it supports (`GAME_WEBHOOK_VERSION`). |
-| `occurred_at` | When the match ended, by the API's clock. |
+| `occurred_at` | When the match ended (`match.completed`) or the season was closed (`season.ended`), by the API's clock. |
 
 ### `match.completed`
 
-Sent once per match that reached an end state (normal end, forfeit,
-disconnection). Matches cancelled before they started are not sent.
+Sent once per match that reached an end state (normal end, time out,
+forfeit, including a disconnection past the grace period). Not sent for a
+**void** match (nobody answered anything, `game-protocol.md` §4), nor for a
+match without any account among its live players (guests only, or a guest
+against a ghost).
 
 ```json
 {
@@ -106,7 +111,7 @@ disconnection). Matches cancelled before they started are not sent.
   "occurred_at": "2026-10-13T10:20:31Z",
   "data": {
     "match_id": "01929a7e-9f00-7aa1-b2c3-d4e5f6a7b8c9",
-    "mode": "TBD-by-game-design",
+    "mode": "flash-duel",
     "ranked": true,
     "started_at": "2026-10-13T10:15:02Z",
     "ended_at": "2026-10-13T10:20:31Z",
@@ -118,8 +123,8 @@ disconnection). Matches cancelled before they started are not sent.
         "outcome": "win",
         "score": 12,
         "rank": 1,
-        "rating_before": 1200,
-        "rating_after": 1216
+        "rating_before": 1500,
+        "rating_after": 1662
       },
       {
         "user_id": "3",
@@ -127,33 +132,69 @@ disconnection). Matches cancelled before they started are not sent.
         "outcome": "loss",
         "score": 9,
         "rank": 2,
-        "rating_before": 1200,
-        "rating_after": 1184
+        "rating_before": 1500,
+        "rating_after": 1338
       }
     ]
   }
 }
 ```
 
-| Field | Meaning | Status |
-|---|---|---|
-| `match_id` | UUIDv7 of the match in the `game` schema. | Fixed. |
-| `mode` | Game mode key. | **Depends on `game-design.md` Q1–Q3.** |
-| `ranked` | Whether the match counted for the ranking. | Fixed, values depend on Q5. |
-| `started_at`, `ended_at` | ISO 8601 UTC. | Fixed. |
-| `end_reason` | `completed`, `forfeit`, `disconnect`, `timeout`. | List to confirm with Q4. |
-| `players[].user_id` | Laravel user id as a string (the JWT `sub`). | Fixed. |
-| `players[].team` | Team key, or null in free-for-all. | Depends on Q3 and Q10 (guilds). |
-| `players[].outcome` | `win`, `loss`, `draw`, `forfeit`. | Depends on Q4. |
-| `players[].score` | Raw score of the match, as the server computed it. | Meaning depends on Q1. |
-| `players[].rank` | Final placement, 1 = best; equal ranks for a draw. | Fixed. |
-| `players[].rating_*` | Rating before and after, or null if unranked. | Depends on Q5. |
+| Field | Meaning |
+|---|---|
+| `match_id` | UUIDv7 of the match in the `game` schema. |
+| `mode` | `flash-duel` (1 vs 1 from matchmaking), `flash-room` (private room, 2–8 players), `flash-ghost` (against a recorded run). New modes get new keys. |
+| `ranked` | Whether the match counted for the ranking: only `flash-duel` between two accounts, unless the anti-cheat rule made it unranked (`game-protocol.md` §4). |
+| `started_at`, `ended_at` | ISO 8601 UTC. `started_at` is when the questions started (after the countdown). |
+| `end_reason` | `completed` (time limit, target reached, or every question answered), `timeout` (target mode, nobody reached the target in 300 s), `forfeit` (a player left, or stayed disconnected past the 20 s grace period). `void` matches are never sent. |
+| `players[].user_id` | Laravel user id as a string (the JWT `sub`). **Account players only**: guests and ghosts are not listed, so a room can list fewer players than it had. Never empty. |
+| `players[].team` | Always `null`: no team mode (guilds do not exist, `game-design.md` Q10). |
+| `players[].outcome` | `win` (rank 1 alone), `draw` (rank 1 shared), `loss`, `forfeit` (the player left; leavers rank last). |
+| `players[].score` | Points of the flash race: +1 per right answer, −1 per wrong answer when the match has the penalty rule (else 0). Can be negative. |
+| `players[].rank` | Final placement among all seats (guests and ghosts included), 1 = best; by score, then lower total answer time over right answers; equal ranks for a draw. |
+| `players[].rating_*` | Glicko-2 rating of the match's subject before and after, rounded; `null` when `ranked` is false. |
 
-The payload carries **raw results only**: no XP, no level, no reward. The
-fields marked "depends on" are placeholders: their names are proposed, their
-values cannot be fixed before `game-design.md` is answered.
+The payload carries **raw results only**: no XP, no level, no reward.
 
 No personal data travels: no pseudo (Laravel has it), no IP.
+
+### `season.ended`
+
+Sent once per UTC month and subject key (`maths`, `physics`, `chemistry`,
+`computer-science`, `all`) whose standing is not empty, when the API closes
+the month (`brains.md` §3): at its first check after the month ends (at
+startup, then every 10 minutes).
+
+```json
+{
+  "event_id": "01a3f1c0-0004-7b2e-9c1d-2f3e4a5b6c7d",
+  "type": "season.ended",
+  "version": 1,
+  "occurred_at": "2026-11-01T00:00:04Z",
+  "data": {
+    "season": "2026-10",
+    "subject": "maths",
+    "standings": [
+      {"user_id": "2", "rank": 1, "rating": 1720, "ranked_matches": 7},
+      {"user_id": "1", "rank": 2, "rating": 1280, "ranked_matches": 5}
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `season` | The closed month, `YYYY-MM`, UTC. |
+| `subject` | The subject key of the rating. |
+| `standings` | Never empty. Accounts with at least 5 ranked duels **ended** in the month in that subject, ordered by rating (desc), then more ranked duels in the month, then lower `user_id`; `rank` is 1..n without gaps (no shared ranks). |
+| `standings[].rating` | Glicko-2 rating of the subject at the close, **before** the monthly decay, rounded. |
+| `standings[].ranked_matches` | Ranked duels of the player that ended in the month in that subject. |
+
+The API does not know which accounts were deleted: a `user_id` without an
+account is in the standings, and Laravel skips it (rewards in
+`brains.md` §3, key `saison:<season>:<subject>`). The `event_id` makes a
+redelivery harmless (§4); the key `saison:<season>:<subject>` makes a second
+event for the same month impossible to credit twice anyway.
 
 ## 4. Idempotency on the Laravel side
 
@@ -235,13 +276,15 @@ a new `game_results` table written by the webhook receiver:
 | `ended_at` | timestamp |
 | unique | `(match_id, user_id)` |
 
-and new `BAREME` keys, for example `partie_jouee` and `partie_gagnee`. Their
-values, and whether they are capped (per day, per opponent) to stop farming,
-are **`game-design.md` Q9**. Nothing is decided here.
+Implemented (2026-10-18) outside `BAREME`, because of the daily cap:
+`Experience::PARTIE_JOUEE` (3 per match, whatever the outcome),
+`PARTIE_GAGNEE` (5 more per win) and `PLAFOND_JEU_PAR_JOUR` (30), summed per
+UTC day of `ended_at` (game-design.md Q9). Every mode counts; guests never
+reach Laravel. The XP detail shows one line, `parties`.
 
 `/v1/me` on the API side reproduces the same computation in the
-`api_read.member_xp` view (see `views.sql`); that view must be updated in the
-same change as `BAREME`.
+`api_read.member_xp` view (`game_xp` in `views.sql`); Laravel's migration
+builds it from the same constants.
 
 ## 6. Responses Laravel returns
 
@@ -266,21 +309,31 @@ queue; the contract does not change.
 ## 7. Delivery and retries on the API side
 
 - **Outbox.** The API writes the event into `game.webhook_outbox` **in the
-  same transaction** that marks the match finished. A worker sends pending
-  rows. A crash between the two cannot lose a result.
+  same transaction** that marks the match finished (or, for `season.ended`,
+  that closes the month in `game.seasons` and applies the decay). A worker
+  sends pending rows. A crash between the two cannot lose a result.
 - **Timeout** 10 seconds per attempt (connect 3 s).
 - **Backoff**: exponential with full jitter, base 10 s, factor 3, ceiling 1 h:
-  about 10 s, 30 s, 1.5 min, 4.5 min, 13.5 min, 40 min, then every hour.
+  each delay is drawn uniformly below 10 s, 30 s, 1.5 min, 4.5 min,
+  13.5 min, 40 min, then 1 h. A `429` waits its `Retry-After` (capped at
+  1 h) instead.
 - **Maximum**: 20 attempts or 24 hours, whichever comes first. Then the row
   becomes `dead`, an error is logged and the `webhook_dead_total` metric
-  increases. A command (`pulsars-api webhooks replay <event_id>`) resends it.
+  increases. A command (`pulsars-api webhooks replay <event_id>`) resends it:
+  the row goes back to `pending` with its attempts and age reset. `400`,
+  `413` and `422` answers make the row `dead` at once.
 - **Order** is not guaranteed between matches. Laravel must not assume it
   (it does not need to: each event stands alone).
 - **Concurrency**: one in-flight attempt per `event_id`
   (`SELECT … FOR UPDATE SKIP LOCKED`), so several API instances can run the
   worker.
-- Metrics: `webhook_attempts_total{status}`, `webhook_pending`,
-  `webhook_dead_total`, `webhook_latency_seconds`.
+- Metrics: `webhook_attempts_total{status}` (`sent`, `rejected`, `failed`),
+  `webhook_pending`, `webhook_dead_total`, `webhook_latency_seconds`.
+- **Configuration**: `LARAVEL_WEBHOOK_URL` and `LARAVEL_WEBHOOK_SECRET`
+  (at least 32 characters) together, and optionally `LARAVEL_WEBHOOK_HOST`
+  for the `Host` header (`pulsars.science` when the URL is
+  `http://127.0.0.1:8000/…`). Without them the worker does not run and the
+  rows stay `pending` until it does.
 
 ## 8. Known gaps
 
@@ -288,5 +341,5 @@ queue; the contract does not change.
 - XP is computed, not stored: "Laravel awards XP" really means "Laravel stores
   a result row that `Experience` counts".
 - The `/classement` page and home page top 5 are built from
-  `Experience::classement()`; adding a game source changes them too. Whether
-  match XP should appear in the general ranking is part of Q9.
+  `Experience::classement()`; adding a game source changes them too, as Q9
+  decided (match XP counts in the general ranking).

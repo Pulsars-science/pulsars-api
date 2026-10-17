@@ -1,5 +1,6 @@
-//! Member profiles, from `api_read.members`, `api_read.member_roles` and
-//! `api_read.member_xp` (`docs/contract/database.md` §4).
+//! Member profiles, from `api_read.members`, `api_read.member_roles`,
+//! `api_read.member_xp` and `api_read.member_brains`
+//! (`docs/contract/database.md` §4, `docs/contract/brains.md` §4).
 //!
 //! Only ever read by id: the API has no member directory.
 
@@ -16,6 +17,8 @@ pub struct Member {
     pub member_since: Option<DateTime<Utc>>,
     pub xp_total: i32,
     pub xp_level: i32,
+    /// Brains balance, shown to the member themselves only.
+    pub brains: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -26,14 +29,16 @@ pub struct MemberRole {
     pub color: String,
 }
 
-/// The profile and XP of member `id`, or `None` if the account no longer
-/// exists.
+/// The profile, XP and brains of member `id`, or `None` if the account no
+/// longer exists.
 pub async fn find(pool: &PgPool, id: i64) -> Result<Option<Member>, sqlx::Error> {
     sqlx::query_as(
         "SELECT m.id, m.pseudo, m.avatar_path, m.bio, m.member_since,
-                x.total AS xp_total, x.level AS xp_level
+                x.total AS xp_total, x.level AS xp_level,
+                coalesce(b.balance, 0) AS brains
            FROM api_read.members m
            JOIN api_read.member_xp x ON x.user_id = m.id
+           LEFT JOIN api_read.member_brains b ON b.user_id = m.id
           WHERE m.id = $1",
     )
     .bind(id)
@@ -53,4 +58,15 @@ pub async fn roles(pool: &PgPool, id: i64) -> Result<Vec<MemberRole>, sqlx::Erro
     .bind(id)
     .fetch_all(pool)
     .await
+}
+
+/// The brains balance of `user_id` (`brains.md` §4): 0 for an account
+/// without movements, or one that no longer exists.
+pub async fn brains(pool: &PgPool, user_id: i64) -> Result<i32, sqlx::Error> {
+    let balance: Option<i32> =
+        sqlx::query_scalar("SELECT balance FROM api_read.member_brains WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(balance.unwrap_or(0))
 }
