@@ -65,9 +65,12 @@ impl DuelQuestion { pub fn text(&self, lang: Lang) -> &Localized; }
 pub fn duel_questions(subject: Option<Subject>, seed: u32, count: usize) -> Vec<DuelQuestion>;
 ```
 
-A generator with fewer than four distinct answers can give fewer choices; the
-duel always needs four, so `duel_questions` pads by drawing again (documented
-in the code) — in practice every generator reaches four.
+Rarely, the "défi" finds fewer than four distinct choices (1 question in
+about 2,400 in the PHP fixtures, e.g. a limit whose only answers are `0`,
+`+∞`, `−∞`). The duel always needs four: `duel_questions` then draws extra
+decoys from a **clone** of the random stream and inserts them at random
+positions, so the existing choices keep their order and every following
+question stays identical to the "défi".
 
 ## 3. WebSocket
 

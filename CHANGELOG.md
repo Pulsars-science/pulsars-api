@@ -40,8 +40,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `game_matches_started_total`, `game_matches_ended_total`,
   `game_persist_errors_total`, `webhook_attempts_total`, `webhook_pending`,
   `webhook_dead_total`, `webhook_latency_seconds`.
-- A temporary `src/flash/` with one trivial generator per subject, to be
-  replaced by the port of the 30 flash generators.
+- `flash` module: the 30 flash-question generators of the site, ported from
+  `pulsars-game` with PHP's Mt19937 randomness (`Hasard`), French and
+  English texts and number formatting, and `duel_questions`, the questions
+  of a duel in both languages (the "défi" algorithm, for any subject; a
+  question with fewer than four distinct choices is padded without
+  disturbing the following ones). Parity tests against fixtures produced
+  by PHP and by the TypeScript port (`scripts/flash-fixtures.mjs`).
 
 ## [0.1.0] - 2026-10-16
 

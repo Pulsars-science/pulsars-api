@@ -459,14 +459,16 @@ async fn private_rooms_gather_players_and_the_host_starts() {
     let q_host = host.until("question").await;
     let q_friend = friend.until("question").await;
     assert_eq!(q_host["index"], 0);
-    assert!(
-        q_host["question"].as_str().unwrap().contains("mètres"),
-        "{q_host}"
-    );
-    assert!(
-        q_friend["question"].as_str().unwrap().contains("metres"),
-        "{q_friend}"
-    );
+    let match_id = uuid::Uuid::parse_str(start["match_id"].as_str().unwrap()).unwrap();
+    let seed = server
+        .state
+        .game
+        .match_seed(match_id)
+        .await
+        .expect("live match");
+    let expected = &flash::duel_questions(Some(flash::Subject::Physics), seed, 1)[0];
+    assert_eq!(q_host["question"], expected.fr.question.as_str());
+    assert_eq!(q_friend["question"], expected.en.question.as_str());
     assert_eq!(q_host["choices"].as_array().unwrap().len(), 4);
     assert!(q_host.get("correct").is_none(), "the answer is never sent");
 

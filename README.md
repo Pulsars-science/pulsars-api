@@ -100,7 +100,7 @@ not deployed yet: it needs the production PostgreSQL migration, the
 | 1 | Open-source skeleton, `/healthz`, CI | done |
 | 2 | JWT authentication, `/v1/me` | done |
 | 3 | Content endpoints, rate limits | done |
-| 4 | Game (flash race): WebSocket, matchmaking, rooms, ghosts, Glicko-2, `game` schema | done; the flash generators port is in progress (`src/flash/` is a stub) |
+| 4 | Game (flash race): WebSocket, matchmaking, rooms, ghosts, Glicko-2, `game` schema | done; the 30 flash generators are ported to Rust (`src/flash/`) |
 | 5 | Results webhook to Laravel (outbox, signed delivery, retries) | done |
 | 6 | Code sandbox | not needed (no code mode) |
 | 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |

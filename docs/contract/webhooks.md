@@ -236,14 +236,15 @@ a new `game_results` table written by the webhook receiver:
 | `ended_at` | timestamp |
 | unique | `(match_id, user_id)` |
 
-and new `BAREME` keys, for example `partie_jouee` and `partie_gagnee`.
-`game-design.md` Q9 decided about 3 XP per match played and 5 per win, at
-most 30 XP a day from the game, accounts only; the exact keys and the cap
-are Laravel's to implement.
+Implemented (2026-10-18) outside `BAREME`, because of the daily cap:
+`Experience::PARTIE_JOUEE` (3 per match, whatever the outcome),
+`PARTIE_GAGNEE` (5 more per win) and `PLAFOND_JEU_PAR_JOUR` (30), summed per
+UTC day of `ended_at` (game-design.md Q9). Every mode counts; guests never
+reach Laravel. The XP detail shows one line, `parties`.
 
 `/v1/me` on the API side reproduces the same computation in the
-`api_read.member_xp` view (see `views.sql`); that view must be updated in the
-same change as `BAREME`.
+`api_read.member_xp` view (`game_xp` in `views.sql`); Laravel's migration
+builds it from the same constants.
 
 ## 6. Responses Laravel returns
 
