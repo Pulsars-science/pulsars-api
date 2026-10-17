@@ -517,7 +517,7 @@ async fn a_russian_guest_gets_the_questions_in_russian() {
         .expect("live match");
     let expected = &flash::duel_questions(Some(flash::Subject::Chemistry), seed, 1)[0];
     assert_eq!(q_host["question"], expected.ru.question.as_str());
-    assert_eq!(q_host["series"], "Символы химических элементов");
+    assert_eq!(q_host["series"], "Обозначения химических элементов");
     assert_eq!(
         q_host["choices"],
         json!(expected.ru.choices.as_slice()),
