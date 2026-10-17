@@ -95,9 +95,14 @@ ignored. A client sends at most 20 frames per second (else close `4029`).
 {"type": "auth.ok", "player": {"user_id": "42", "name": "jikuji", "guest": false, "locale": "fr"}, "resume": null}
 ```
 
-Close codes: `4000` no auth in time, `4001` invalid token, `4003` `jti`
-reused, `4029` rate limited, `4009` the account opened another session (the
-old one is closed: one live session per account).
+Close codes: `4000` no auth in time (or a first frame that is not `auth`),
+`4001` invalid token (the close reason is the `reason` of `auth-jwt.md` §5),
+`4003` `jti` reused, `4029` rate limited, `4009` the account opened another
+session (the old one is closed: one live session per account). Standard
+codes besides: `1008` the client does not read its frames (256 queued),
+`1013` the keys or Redis are unavailable (try again later), `1001` server
+stopping or idle connection (no frame for 90 s; the server pings every
+30 s).
 
 If the account (or the guest resume token) has a match in progress, the
 server follows `auth.ok` with `match.start` (with `"resumed": true`), the
@@ -245,3 +250,43 @@ The outbox row is written in the same transaction as the match end
 
 Both are JSON, `Cache-Control: no-store` for `/me`, `max-age=30` for the
 leaderboard.
+
+## 10. Implementation notes
+
+Built on 2026-10-17 (`src/game/`). Choices the text above leaves open, and
+the few additions:
+
+- **Frames** are at most 4 KiB. `error` codes for `answer`: `bad_request`
+  (not the current question, or another match), `not_allowed` (not started,
+  over, or the player left).
+- **Queue**: `queue.join` for the key one is already waiting in keeps the
+  place; while in a match or a room it is `already_playing`. `ghost.start`,
+  `room.create` and `room.join` leave the queue and send `queue.left`.
+- **Rooms**: codes are 6 characters (`A–Z`, `2–9`, without `0 O 1 I L`),
+  matched case-insensitively. The host is always seat 0 (`host_seat` is
+  always 0). `room.leave` answers `room.closed {"reason": "left"}`; leaving
+  (or `match.leave`) during the room's match is a forfeit. After the match
+  the room goes back to its lobby with the players still connected (new
+  `room.state`), ready for another start.
+- **Anti-cheat** is counted per player: more than 3 suspicious answers from
+  one player make the match unranked.
+- **Void** looks at live players only: a ghost's answers do not make a match
+  count. A void match takes precedence over a forfeit. Its results still
+  carry ranks and outcomes (`forfeit` for leavers).
+- **`match.end`** is also sent to a player who left, as the last frame of
+  that match.
+- **Ghosts**: the ghost seat has `user_id: null` (also in
+  `game.match_players`, where `ghost_of` holds the source match). The
+  ghost's recorded `ok` is replayed as is. "Every connected player answered
+  all questions" also waits for the ghost to finish its run.
+- **Ratings** are shown in `match.start` only in ranked matches. Glicko-2
+  runs one period per match; there is no deviation growth for inactivity
+  between matches, and RD is capped at 350.
+- **Guests**: a `resume` token is honoured only while that guest has a
+  live match; otherwise the guest gets a new identity. An account token
+  without a `name` claim is named `#<id>`.
+- **`/v1/game/me`** `recent` entries carry `end_reason` too. The
+  leaderboard's `subject` defaults to `all` and `limit` to 50 (1–100);
+  equal rounded ratings share a rank.
+- **Shutdown**: matches in progress when the API stops are lost (neither
+  stored nor sent to Laravel).

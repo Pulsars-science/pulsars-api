@@ -142,8 +142,8 @@ answer differs.
 | D7 | Schools behind one public IP: 60 anonymous requests a minute per IP (the contract's figure) and nginx's 10 requests a second per IP are shared by a whole classroom. Raise them, or rely on game tokens (120/min per member)? | contract values |
 | D8 | Resource limits: `MemoryMax=512M`, `LimitNOFILE=65536`, `TasksMax=256`. | as listed |
 | D9 | Downtime on deploy: a plain restart drops new connections for about a second, and in-flight requests get up to 20 s to finish. Matches over WebSocket (Phase 4) would be cut. Zero-downtime (socket activation, or two instances behind the nginx upstream) is left for Phase 4. | plain restart |
-| D10 | WebSocket idle timeout in nginx (300 s): the game protocol must ping more often than that. Set when the game design (Q-list in `game-design.md`) settles it. | 300 s |
-| D11 | Migrations of the `game` schema (from Phase 4): run by the binary at start-up, or by `deploy-api` before the swap (needs a rollback story for the schema). | none yet: no migration exists |
+| D10 | WebSocket idle timeout in nginx (300 s): the game server pings every 30 s and closes a connection silent for 90 s (`game-protocol.md` §3.1), well inside it. | 300 s (settled) |
+| D11 | Migrations of the `game` schema: run by the binary at start-up (`sqlx::migrate!`, retried in the background while PostgreSQL is down), or by `deploy-api` before the swap (needs a rollback story for the schema). Rolling back the binary leaves the schema as it is; migrations must stay additive. | at start-up (built) |
 | D12 | Versioning: the first release is `v0.1.0` (phases 1 to 3 and this one), tagged on `main` after `develop` is merged. Who tags, and do tags require a green CI on `main`? | tag on `main` by the maintainer |
 | D13 | IPv6: the vhost listens on `[::]` too. Does the server have a public IPv6 address worth an `AAAA` record? The site has none today. | no `AAAA` record |
 | D14 | Monitoring: nothing scrapes `/metrics` yet (Grafana Alloy and Prometheus are "later" in `architecture.md`). Who gets alerted when `/healthz` fails? | nothing |
@@ -278,8 +278,9 @@ maxmemory-policy noeviction
 
 `noeviction`: when full, Redis refuses writes instead of silently dropping
 keys. The rate limiter then lets requests through (it fails open) and
-`rate_limit_errors_total` rises; matchmaking queues (Phase 4) are never lost
-without a trace.
+`rate_limit_errors_total` rises. Matchmaking queues live in the API's memory,
+not in Redis; Redis records the single-use `jti` of game tokens, and a game
+session is refused (`1013`) while Redis cannot record it.
 
 ```bash
 sudo systemctl restart redis-server

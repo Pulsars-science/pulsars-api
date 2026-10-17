@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::SecondsFormat;
 use serde::Serialize;
 
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, user_id as parse_user_id};
 use crate::db::members::{self, Member, MemberRole};
 use crate::error::ApiError;
 use crate::links::{self, encode};
@@ -123,14 +123,6 @@ fn to_me(member: Member, roles: Vec<MemberRole>, storage_url: &str) -> Result<Me
             .collect(),
         xp: Xp::new(member.xp_total, member.xp_level),
     })
-}
-
-/// A positive decimal id without sign or leading zero, exactly as Laravel
-/// writes `users.id`.
-fn parse_user_id(sub: &str) -> Option<i64> {
-    let canonical =
-        !sub.is_empty() && !sub.starts_with('0') && sub.bytes().all(|b| b.is_ascii_digit());
-    if canonical { sub.parse().ok() } else { None }
 }
 
 #[cfg(test)]

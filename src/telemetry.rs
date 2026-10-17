@@ -160,6 +160,18 @@ pub mod names {
     pub const JWKS_KEYS: &str = "jwks_keys";
     pub const RATE_LIMITED_TOTAL: &str = "rate_limited_total";
     pub const RATE_LIMIT_ERRORS_TOTAL: &str = "rate_limit_errors_total";
+    pub const GAME_CONNECTIONS_TOTAL: &str = "game_connections_total";
+    pub const GAME_AUTH_FAILURES_TOTAL: &str = "game_auth_failures_total";
+    pub const GAME_SESSIONS: &str = "game_sessions";
+    pub const GAME_QUEUED: &str = "game_queued_players";
+    pub const GAME_MATCHES_LIVE: &str = "game_matches_live";
+    pub const GAME_MATCHES_STARTED_TOTAL: &str = "game_matches_started_total";
+    pub const GAME_MATCHES_ENDED_TOTAL: &str = "game_matches_ended_total";
+    pub const GAME_PERSIST_ERRORS_TOTAL: &str = "game_persist_errors_total";
+    pub const WEBHOOK_ATTEMPTS_TOTAL: &str = "webhook_attempts_total";
+    pub const WEBHOOK_PENDING: &str = "webhook_pending";
+    pub const WEBHOOK_DEAD_TOTAL: &str = "webhook_dead_total";
+    pub const WEBHOOK_LATENCY_SECONDS: &str = "webhook_latency_seconds";
 }
 
 /// Installs the global metrics recorder and returns the handle that renders
@@ -211,6 +223,46 @@ fn describe_metrics() {
     metrics::describe_counter!(
         names::RATE_LIMIT_ERRORS_TOTAL,
         "Requests let through unlimited because Redis could not count them."
+    );
+    metrics::describe_counter!(
+        names::GAME_CONNECTIONS_TOTAL,
+        "Game WebSocket connections opened."
+    );
+    metrics::describe_counter!(
+        names::GAME_AUTH_FAILURES_TOTAL,
+        "Game WebSockets closed during authentication, by close code."
+    );
+    metrics::describe_gauge!(names::GAME_SESSIONS, "Authenticated game sessions.");
+    metrics::describe_gauge!(names::GAME_QUEUED, "Players waiting in matchmaking.");
+    metrics::describe_gauge!(names::GAME_MATCHES_LIVE, "Matches in progress.");
+    metrics::describe_counter!(
+        names::GAME_MATCHES_STARTED_TOTAL,
+        "Matches started, by mode (duel, room, ghost)."
+    );
+    metrics::describe_counter!(
+        names::GAME_MATCHES_ENDED_TOTAL,
+        "Matches ended, by mode and end reason."
+    );
+    metrics::describe_counter!(
+        names::GAME_PERSIST_ERRORS_TOTAL,
+        "Match ends that could not be written to the database."
+    );
+    metrics::describe_counter!(
+        names::WEBHOOK_ATTEMPTS_TOTAL,
+        "Webhook delivery attempts, by status (sent, rejected, failed)."
+    );
+    metrics::describe_gauge!(
+        names::WEBHOOK_PENDING,
+        "Webhook outbox rows waiting to be sent."
+    );
+    metrics::describe_counter!(
+        names::WEBHOOK_DEAD_TOTAL,
+        "Webhook events given up (dead letters)."
+    );
+    metrics::describe_histogram!(
+        names::WEBHOOK_LATENCY_SECONDS,
+        metrics::Unit::Seconds,
+        "Duration of webhook delivery attempts."
     );
 }
 

@@ -40,6 +40,11 @@ tags:
   - name: exams
   - name: resources
   - name: account
+  - name: game
+    description: |
+      Flash duels (`docs/game-protocol.md`). Matches themselves run over the
+      WebSocket `GET /v1/game/ws` (protocol §3), which is not described
+      here.
 
 paths:
   /healthz:
@@ -731,6 +736,110 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
           description: The account in `sub` no longer exists (deleted after the token was issued).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/game/leaderboard:
+    get:
+      tags: [game]
+      operationId: getGameLeaderboard
+      summary: Best Glicko-2 ratings of a subject
+      description: |
+        Players with at least one ranked match (1 vs 1 between accounts) in
+        `subject`, best rating first. Equal shown ratings share a rank.
+        Pseudo and avatar come from `api_read.members`; deleted accounts are
+        skipped. A rating whose deviation (RD) is above 110 is
+        `provisional`.
+
+        Public: any origin, no token. `Cache-Control: public, max-age=30`.
+      parameters:
+        - name: subject
+          in: query
+          schema: { $ref: '#/components/schemas/GameSubject' }
+          description: Absent → `all`.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: The leaderboard
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'public, max-age=30' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject, data]
+                properties:
+                  subject: { $ref: '#/components/schemas/GameSubject' }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/GameLeader' }
+              example:
+                subject: maths
+                data:
+                  - { rank: 1, user_id: '2', pseudo: ada, avatar_url: null, rating: 1662,
+                      provisional: true, games: 1, wins: 1, losses: 0, draws: 0 }
+                  - { rank: 2, user_id: '1', pseudo: jikuji, avatar_url: null, rating: 1338,
+                      provisional: true, games: 1, wins: 0, losses: 1, draws: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/game/me:
+    get:
+      tags: [game]
+      operationId: getGameMe
+      summary: The token's ratings and last matches
+      description: |
+        Every rating of the token's account (one per subject key it played
+        ranked, `all` included) with its rank in that subject's leaderboard,
+        and its last 20 finished matches of any mode, newest first.
+        `opponents` are the names of the other seats (players, guests and
+        ghosts) as they were at match time.
+
+        Only the game front end may call it from a browser (restricted CORS).
+        `Cache-Control: no-store`.
+      security:
+        - gameToken: []
+      responses:
+        '200':
+          description: Ratings and recent matches
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ratings, recent]
+                properties:
+                  ratings:
+                    type: array
+                    items: { $ref: '#/components/schemas/GameRating' }
+                  recent:
+                    type: array
+                    maxItems: 20
+                    items: { $ref: '#/components/schemas/GameRecentMatch' }
+              example:
+                ratings:
+                  - { subject: maths, rating: 1338, provisional: true, games: 1, wins: 0,
+                      losses: 1, draws: 0, rank: 2 }
+                recent:
+                  - match_id: 01a149ed-26f2-765b-911c-736104ab6a2a
+                    mode: duel
+                    ranked: true
+                    subject: maths
+                    rules: { duration: null, target: 10, penalty: false }
+                    ended_at: '2026-10-17T12:54:18Z'
+                    end_reason: completed
+                    outcome: loss
+                    score: 6
+                    rating_before: 1500
+                    rating_after: 1338
+                    opponents: [ada]
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: The token's `sub` is not an account id.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1434,3 +1543,64 @@ components:
             level_start: { type: integer, description: XP at which the current level starts. }
             next_level_at: { type: integer }
         profile_url: { type: string, format: uri }
+
+    GameSubject:
+      type: string
+      enum: [maths, physics, chemistry, computer-science, all]
+
+    GameRules:
+      type: object
+      description: Exactly one of `duration` and `target` is set.
+      required: [duration, target, penalty]
+      properties:
+        duration: { type: [integer, 'null'], enum: [60, 300, null] }
+        target: { type: [integer, 'null'], enum: [10, null] }
+        penalty: { type: boolean, description: A wrong answer costs a point. }
+
+    GameLeader:
+      type: object
+      required: [rank, user_id, pseudo, avatar_url, rating, provisional, games, wins, losses, draws]
+      properties:
+        rank: { type: integer, minimum: 1 }
+        user_id: { type: string }
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+        rating: { type: integer, description: Glicko-2 rating, rounded. }
+        provisional: { type: boolean, description: RD above 110. }
+        games: { type: integer }
+        wins: { type: integer }
+        losses: { type: integer }
+        draws: { type: integer }
+
+    GameRating:
+      type: object
+      required: [subject, rating, provisional, games, wins, losses, draws, rank]
+      properties:
+        subject: { $ref: '#/components/schemas/GameSubject' }
+        rating: { type: integer }
+        provisional: { type: boolean }
+        games: { type: integer }
+        wins: { type: integer }
+        losses: { type: integer }
+        draws: { type: integer }
+        rank: { type: integer, minimum: 1 }
+
+    GameRecentMatch:
+      type: object
+      required: [match_id, mode, ranked, subject, rules, ended_at, end_reason, outcome, score,
+                 rating_before, rating_after, opponents]
+      properties:
+        match_id: { type: string, format: uuid }
+        mode: { type: string, enum: [duel, room, ghost] }
+        ranked: { type: boolean }
+        subject: { $ref: '#/components/schemas/GameSubject' }
+        rules: { $ref: '#/components/schemas/GameRules' }
+        ended_at: { type: string, format: date-time }
+        end_reason: { type: string, enum: [completed, timeout, forfeit, void] }
+        outcome: { type: string, enum: [win, loss, draw, forfeit] }
+        score: { type: integer }
+        rating_before: { type: [integer, 'null'] }
+        rating_after: { type: [integer, 'null'] }
+        opponents:
+          type: array
+          items: { type: string }

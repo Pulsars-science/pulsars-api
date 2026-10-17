@@ -7,9 +7,12 @@ This service runs at `api.pulsars.science` and provides:
 
 - **`/v1`**: read-only access to published content (courses, lessons,
   exercises, exams, resources). Never solutions, never personal data.
-- **`/v1/game`**: the game server of `game.pulsars.science` (matchmaking and
-  real-time matches over WebSocket). *Not built yet: the game rules are
-  decided in [`docs/contract/game-design.md`](docs/contract/game-design.md).*
+- **`/v1/game`**: the game server of the flash duels (`pulsars-game`):
+  matchmaking, private rooms, ghost runs and real-time matches over the
+  WebSocket `/v1/game/ws`, Glicko-2 ratings per subject, the public
+  leaderboard and the player's own history. Protocol:
+  [`docs/game-protocol.md`](docs/game-protocol.md); rules:
+  [`docs/contract/game-design.md`](docs/contract/game-design.md).
 
 ## Architecture in brief
 
@@ -44,7 +47,8 @@ cp .env.example .env
 set -a; . ./.env; set +a; cargo run
 ```
 
-Then `curl http://127.0.0.1:8080/healthz`. Metrics are on
+The `game` schema migrations run at startup. Then
+`curl http://127.0.0.1:8080/healthz`. Metrics are on
 `http://127.0.0.1:9464/metrics`. Content needs no token:
 
 ```bash
@@ -57,6 +61,12 @@ curl 'http://127.0.0.1:8080/v1/exercises?type=qcm&limit=2'
 `JWKS_URL` (a local Laravel by default, see `.env.example`). Authenticated
 endpoints such as `GET /v1/me` need a token issued by that Laravel
 (`POST /jeu/jeton`, see [`auth-jwt.md`](docs/contract/auth-jwt.md)).
+
+The game WebSocket is `ws://127.0.0.1:8080/v1/game/ws`: the `Origin` must
+be one of `CORS_ALLOWED_ORIGINS`, and the first frame authenticates
+(`{"type": "auth", "guest": true}` needs no token). Match results go to
+Laravel only when `LARAVEL_WEBHOOK_URL` and `LARAVEL_WEBHOOK_SECRET` are set;
+otherwise they wait in `game.webhook_outbox`.
 
 The demo database contains a handful of courses, exercises, exams and
 resources from the open Pulsars content, plus drafts and answers that the
@@ -90,8 +100,8 @@ not deployed yet: it needs the production PostgreSQL migration, the
 | 1 | Open-source skeleton, `/healthz`, CI | done |
 | 2 | JWT authentication, `/v1/me` | done |
 | 3 | Content endpoints, rate limits | done |
-| 4 | Game (flash race, generators ported to Rust) | next |
-| 5 | Results webhook to Laravel | planned |
+| 4 | Game (flash race): WebSocket, matchmaking, rooms, ghosts, Glicko-2, `game` schema | done; the flash generators port is in progress (`src/flash/` is a stub) |
+| 5 | Results webhook to Laravel (outbox, signed delivery, retries) | done |
 | 6 | Code sandbox | not needed (no code mode) |
 | 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |
 

@@ -124,14 +124,19 @@ impl Params {
 
     /// `limit`, between 1 and 100, 20 when absent.
     pub fn limit(&mut self) -> u32 {
+        self.limit_or(DEFAULT_LIMIT)
+    }
+
+    /// `limit`, between 1 and 100, `default` when absent.
+    pub fn limit_or(&mut self, default: u32) -> u32 {
         let Some(raw) = self.raw("limit") else {
-            return DEFAULT_LIMIT;
+            return default;
         };
         match raw.parse::<u32>() {
             Ok(n) if (1..=MAX_LIMIT).contains(&n) => n,
             _ => {
                 self.error("limit", format!("must be between 1 and {MAX_LIMIT}"));
-                DEFAULT_LIMIT
+                default
             }
         }
     }

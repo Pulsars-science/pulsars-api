@@ -19,6 +19,7 @@ use ed25519_dalek::SigningKey;
 use pulsars_api::auth::token::testing;
 use pulsars_api::auth::{Jwks, JwksSettings};
 use pulsars_api::config::Config;
+use pulsars_api::game::{Game, GameSettings};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
 use serde_json::{Value, json};
@@ -89,8 +90,10 @@ async fn app(config: Config) -> (Router, AppState) {
 }
 
 fn app_with(config: Config, jwks: Jwks) -> (Router, AppState) {
+    let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
-        db: db::connect_lazy(&config).unwrap(),
+        game: Game::start(db.clone(), GameSettings::default()),
+        db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
         jwks,

@@ -190,9 +190,12 @@ A `429` adds `Retry-After: <seconds>`.
   every response (same as Laravel's API today).
 - `traceparent` (W3C Trace Context) is accepted and propagated; responses
   carry `X-Request-Id`.
-- CORS: content endpoints allow any origin without credentials
-  (`Access-Control-Allow-Origin: *`); `/v1/me` and `/v1/game/*` allow only
-  `https://game.pulsars.science` (plus `http://localhost:5173` in development).
+- CORS: content endpoints and `/v1/game/leaderboard` allow any origin
+  without credentials (`Access-Control-Allow-Origin: *`); `/v1/me` and
+  `/v1/game/me` allow only `CORS_ALLOWED_ORIGINS` (default
+  `https://game.pulsars.science`, plus `http://localhost:5173` in
+  development). The match WebSocket `/v1/game/ws` refuses (`403`, before the
+  upgrade) any `Origin` outside that list.
 
 ## What this API never exposes
 

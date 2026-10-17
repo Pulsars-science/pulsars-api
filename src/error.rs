@@ -41,6 +41,16 @@ pub enum ApiError {
         reason: Reason,
         instance: Option<String>,
     },
+    /// The request is understood and refused (a WebSocket from an origin
+    /// that is not allowed).
+    #[error("forbidden: {detail}")]
+    Forbidden {
+        detail: String,
+        instance: Option<String>,
+    },
+    /// A plain request on the WebSocket endpoint.
+    #[error("upgrade required")]
+    UpgradeRequired,
     #[error("not found: {detail}")]
     NotFound {
         detail: String,
@@ -90,6 +100,8 @@ impl ApiError {
         match self {
             Self::InvalidParameter(_) | Self::InvalidCursor => StatusCode::BAD_REQUEST,
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
+            Self::Forbidden { .. } => StatusCode::FORBIDDEN,
+            Self::UpgradeRequired => StatusCode::UPGRADE_REQUIRED,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
@@ -106,6 +118,8 @@ impl ApiError {
             Self::InvalidParameter(_) => ("invalid-parameter", "Invalid parameter"),
             Self::InvalidCursor => ("invalid-cursor", "Invalid cursor"),
             Self::Unauthorized { .. } => ("unauthorized", "Invalid token"),
+            Self::Forbidden { .. } => ("forbidden", "Forbidden"),
+            Self::UpgradeRequired => ("upgrade-required", "Upgrade required"),
             Self::NotFound { .. } => ("not-found", "Resource not found"),
             Self::MethodNotAllowed => ("method-not-allowed", "Method not allowed"),
             Self::NotAcceptable => ("not-acceptable", "Not acceptable"),
@@ -127,7 +141,10 @@ impl ApiError {
                 Some(format!("Limit of {limit} requests per minute reached."))
             }
             Self::Unauthorized { reason, .. } => Some(reason.detail().to_owned()),
-            Self::NotFound { detail, .. } => Some(detail.clone()),
+            Self::NotFound { detail, .. } | Self::Forbidden { detail, .. } => Some(detail.clone()),
+            Self::UpgradeRequired => {
+                Some("This endpoint only accepts WebSocket upgrades.".to_owned())
+            }
             Self::Timeout => Some("The request took too long to process.".to_owned()),
             _ => None,
         };
@@ -137,9 +154,9 @@ impl ApiError {
             status: self.status().as_u16(),
             detail,
             instance: match self {
-                Self::NotFound { instance, .. } | Self::Unauthorized { instance, .. } => {
-                    instance.clone()
-                }
+                Self::NotFound { instance, .. }
+                | Self::Unauthorized { instance, .. }
+                | Self::Forbidden { instance, .. } => instance.clone(),
                 _ => None,
             },
             errors: match self {
@@ -182,6 +199,10 @@ impl IntoResponse for ApiError {
         }
         if let Self::RateLimited { retry_after, .. } = &self {
             headers.insert(header::RETRY_AFTER, HeaderValue::from(*retry_after));
+        }
+        if let Self::UpgradeRequired = &self {
+            headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+            headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
         }
         if status == StatusCode::METHOD_NOT_ALLOWED {
             // Phase 1 only serves GET routes; refined per route later.
