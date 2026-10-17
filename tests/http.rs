@@ -690,14 +690,14 @@ async fn me_allows_only_the_game_origin() {
 
     // Errors carry the CORS headers too, so the front end can read `reason`.
     let request = Request::get("/v1/me")
-        .header(header::ORIGIN, "https://game.pulsars.science")
+        .header(header::ORIGIN, "https://pulsars.science")
         .body(Body::empty())
         .unwrap();
     let (status, headers, _) = send(&app, request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(
         headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
-        "https://game.pulsars.science"
+        "https://pulsars.science"
     );
 }
 

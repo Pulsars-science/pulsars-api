@@ -12,7 +12,7 @@ use std::time::Duration;
 use axum::http::HeaderValue;
 
 /// Origin of the game front end in production.
-pub const GAME_ORIGIN: &str = "https://game.pulsars.science";
+pub const GAME_ORIGIN: &str = "https://pulsars.science";
 
 /// Origin of the Vite dev server, allowed only in development.
 pub const DEV_GAME_ORIGIN: &str = "http://localhost:5173";
@@ -599,8 +599,8 @@ mod tests {
     #[test]
     fn refuses_wildcard_and_http_origins_in_production() {
         assert!(with(&[("CORS_ALLOWED_ORIGINS", "*")]).is_err());
-        assert!(with(&[("CORS_ALLOWED_ORIGINS", "http://game.pulsars.science")]).is_err());
-        assert!(with(&[("CORS_ALLOWED_ORIGINS", "https://game.pulsars.science/")]).is_err());
+        assert!(with(&[("CORS_ALLOWED_ORIGINS", "http://pulsars.science")]).is_err());
+        assert!(with(&[("CORS_ALLOWED_ORIGINS", "https://pulsars.science/")]).is_err());
         let ok = with(&[(
             "CORS_ALLOWED_ORIGINS",
             "https://a.example, https://b.example",

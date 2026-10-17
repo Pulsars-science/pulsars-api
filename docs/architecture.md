@@ -10,7 +10,7 @@ Laravel code differs.
 |---|---|
 | `pulsars-web` | The Laravel site (today's GitHub repository is `0jikuji0/pulsars`). |
 | `pulsars-api` | This repository: the public API and the game server, in Rust. |
-| `pulsars-game` | The front end of `game.pulsars.science` (Vue 3 + Vite). |
+| `pulsars-game` | The front end of `pulsars.science/jeux` (Vue 3 + Vite). |
 
 ## Services
 
@@ -20,7 +20,7 @@ Laravel code differs.
 - **api.pulsars.science**: Rust (Axum + Tokio). `/v1` read-only content
   (courses, exercises, exams, resources), `/v1/game` (matchmaking, matches),
   the match WebSocket, `/metrics` on an internal port.
-- **game.pulsars.science**: Vue 3 + Vite SPA, static. Sends actions, never
+- **pulsars.science/jeux**: Vue 3 + Vite SPA, static. Sends actions, never
   scores: the server arbitrates.
 - **Edge**: Caddy / FrankenPHP: HTTPS and routing by domain.
 
@@ -79,6 +79,10 @@ Details and sources are in `docs/contract/`.
 - Production runs **MySQL**, not SQLite (`docs/MISE-EN-PROD.md`, systemd units
   `After=mysql.service`). The prerequisite is a MySQL → PostgreSQL migration:
   `contract/postgres-migration.md`.
+- The game front end is served by nginx under **`pulsars.science/jeux/`**,
+  not a `game.` subdomain (decided 2026-10-17): no extra DNS or certificate,
+  same origin as the site. The flash questions (30 generators, wall, défi)
+  moved there from Laravel, ported to TypeScript with identical output.
 - The edge in production is **nginx** in front of Octane/FrankenPHP, not Caddy
   (`deploy/pulsars.science.conf`).
 - **Guilds and badges do not exist** in Laravel (planned v2). Distinction

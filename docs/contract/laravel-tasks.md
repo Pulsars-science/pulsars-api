@@ -116,14 +116,14 @@ the suite is green on PostgreSQL.
 To add to `.env.example`, with comments in the style of the existing ones:
 
 ```env
-# Jeton de jeu (game.pulsars.science -> api.pulsars.science). Voir
+# Jeton de jeu (pulsars.science/jeux -> api.pulsars.science). Voir
 # docs/api-contract/auth-jwt.md. Les cles sont dans storage/app/private/jeu.
 GAME_JWT_ACTIVE_KID=
 GAME_JWT_ISSUER=https://pulsars.science
 GAME_JWT_AUDIENCE=api.pulsars.science
 GAME_JWT_TTL=300
 # Origines autorisees a demander un jeton, separees par des virgules.
-GAME_ALLOWED_ORIGINS=https://game.pulsars.science
+GAME_ALLOWED_ORIGINS=https://pulsars.science
 
 # Webhook des resultats de partie (api -> site, reseau prive uniquement).
 # 32 octets aleatoires minimum : openssl rand -hex 32

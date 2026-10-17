@@ -7,14 +7,14 @@ This service runs at `api.pulsars.science` and provides:
 
 - **`/v1`**: read-only access to published content (courses, lessons,
   exercises, exams, resources). Never solutions, never personal data.
-- **`/v1/game`**: the game server of `game.pulsars.science` (matchmaking and
+- **`/v1/game`**: the game server of `pulsars.science/jeux` (matchmaking and
   real-time matches over WebSocket). *Not built yet: the game rules are still
   being decided in [`docs/contract/game-design.md`](docs/contract/game-design.md).*
 
 ## Architecture in brief
 
 ```
-game.pulsars.science ──JWT──▶ api.pulsars.science ──signed webhook──▶ pulsars.science
+pulsars.science/jeux ──JWT──▶ api.pulsars.science ──signed webhook──▶ pulsars.science
    (Vue SPA)                   (this repository)                       (Laravel)
                                  │        │
                        PostgreSQL         Redis

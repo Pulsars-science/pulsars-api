@@ -6,7 +6,7 @@ This folder is the contract between the three Pulsars services:
 |---|---|---|
 | `pulsars.science` | this Laravel repository | Pages, SEO, accounts, forum, XP, admin. **Issues game tokens.** Writes the `site` schema. |
 | `api.pulsars.science` | `pulsars-api` (Rust, Axum) | Read-only content API (`/v1`) and the game server (`/v1/game`, WebSocket). Writes the `game` schema. |
-| `game.pulsars.science` | `pulsars-game` (Vue 3 + Vite, static) | Game front end. Sends actions, never scores. |
+| `pulsars.science/jeux` | `pulsars-game` (Vue 3 + Vite, static) | Game front end. Sends actions, never scores. |
 
 It was written from the Laravel code as it stands on `main` at commit `6551770`
 (2026-10-13). When this document and the code disagree, **the code is right**
@@ -31,7 +31,7 @@ Reading order for someone building `pulsars-api`: this README, `database.md`,
 ## Request flow
 
 ```
-game.pulsars.science ──(1) POST /jeu/jeton, session cookie──▶ pulsars.science
+pulsars.science/jeux ──(1) POST /jeu/jeton, session cookie──▶ pulsars.science
                      ◀─(2) JWT (EdDSA, 5 min) ─────────────────┘
                      ──(3) WebSocket + JWT ──▶ api.pulsars.science
                                                  │ verifies with JWKS
@@ -192,7 +192,7 @@ A `429` adds `Retry-After: <seconds>`.
   carry `X-Request-Id`.
 - CORS: content endpoints allow any origin without credentials
   (`Access-Control-Allow-Origin: *`); `/v1/me` and `/v1/game/*` allow only
-  `https://game.pulsars.science` (plus `http://localhost:5173` in development).
+  `https://pulsars.science` (plus `http://localhost:5173` in development).
 
 ## What this API never exposes
 
