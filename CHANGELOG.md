@@ -8,6 +8,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Russian (`ru`) for the flash questions and the game server
+  (`docs/game-protocol.md` §2, §3.1): `Lang::Ru` (any locale starting with
+  `ru`), `src/flash/ru.json` (copy of the game's `src/i18n/ru.json`),
+  Russian numbers as `Intl.NumberFormat('ru')` writes them (U+00A0 thousands
+  separator, decimal comma, real minus), `DuelQuestion::ru` drawn from the
+  same cloned stream as English and held to the same agreement check with
+  French. Players whose token or guest `auth` frame has a `ru*` locale get
+  their questions, series titles and choices in Russian; guests are named
+  `Гость 1234`. Unit symbols (`kg`, `m/s`, `base 2`…) now go through the
+  dictionary so Russian can write them in Cyrillic; French and English
+  output is unchanged (`ucfirst` also capitalises a non-ASCII first letter,
+  which no French or English text starts with).
+  `scripts/flash-fixtures.mjs` now also writes Russian duels and
+  `tests/fixtures/flash/generators-ru.json`; `tests/flash.rs` checks the
+  Rust port against them.
+
 - `GET /v1/game/admin/stats?days=30` (`docs/game-protocol.md` §9.1), for
   the Laravel admin dashboard: live counters from the hub (sessions,
   guests, queued players, open rooms, running matches by mode, seated

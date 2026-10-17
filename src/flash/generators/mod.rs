@@ -144,13 +144,16 @@ fn pick<T: Copy, const N: usize>(rng: &mut Hasard, values: &[T; N]) -> T {
     values[rng.index_below(N) % N]
 }
 
-/// PHP's `ucfirst`: byte-wise, so only a leading ASCII `a`-`z` changes.
+/// PHP's `ucfirst` (only a leading ASCII `a`-`z` changes), extended to
+/// any lower-case first letter for Russian, like the TypeScript port. The
+/// French and English texts it is given all start with an ASCII letter, so
+/// their output is unchanged.
 fn ucfirst(text: &str) -> String {
-    let mut out = text.to_owned();
-    if let Some(first) = out.get_mut(..1) {
-        first.make_ascii_uppercase();
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
-    out
 }
 
 fn gcd(a: i64, b: i64) -> i64 {

@@ -21,9 +21,10 @@ generators. The front end is `pulsars-game` (`pulsars.science/jeux/duels`).
 A match has a **seed** (`u32`, 1..=999999). From the seed, the subject and a
 count, `flash::duel_questions` produces the list of questions every player of
 the match answers, **in the same order, each at their own pace**. Each
-question has four choices, in French and in English, with the right answer at
-the same index in both languages. The server keeps the index; the client only
-ever receives the text and the choices of the question it is on.
+question has four choices, in French, English and Russian, with the right
+answer at the same index in every language. The server keeps the index; the
+client only ever receives the text and the choices of the question it is on,
+in the player's language.
 
 A match draws 240 questions (the flash "défi" cap). A player who reaches the
 end is done; their score stays.
@@ -34,8 +35,13 @@ end is done; their score stays.
 pub use hasard::Hasard;          // PHP Random\Randomizer(Mt19937) port
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Lang { Fr, En }
-impl Lang { pub fn from_locale(locale: Option<&str>) -> Lang; pub fn code(self) -> &'static str; }
+pub enum Lang { Fr, En, Ru }
+impl Lang {
+    pub const ALL: [Lang; 3];
+    /// `en*` → En, `ru*` → Ru (case-insensitive), anything else or none → Fr.
+    pub fn from_locale(locale: Option<&str>) -> Lang;
+    pub fn code(self) -> &'static str; // "fr" | "en" | "ru"
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -55,13 +61,13 @@ pub trait Generator: Send + Sync {
 pub fn catalogue() -> &'static [&'static dyn Generator];
 
 pub struct Localized { pub question: String, pub series: String, pub choices: [String; 4] }
-pub struct DuelQuestion { pub generator: &'static str, pub fr: Localized, pub en: Localized, pub correct: usize }
+pub struct DuelQuestion { pub generator: &'static str, pub fr: Localized, pub en: Localized, pub ru: Localized, pub correct: usize }
 impl DuelQuestion { pub fn text(&self, lang: Lang) -> &Localized; }
 
 /// `None` = every subject. Same algorithm as the "défi" (pick a generator
 /// with `entier`, draw, decoys of the same shape first, shuffle), restricted
 /// to the subject instead of maths only. `Some(Subject::Maths)` reproduces
-/// the TypeScript `defi()` exactly, in both languages.
+/// the TypeScript `defi()` exactly, in every language.
 pub fn duel_questions(subject: Option<Subject>, seed: u32, count: usize) -> Vec<DuelQuestion>;
 ```
 
@@ -88,11 +94,16 @@ ignored. A client sends at most 20 frames per second (else close `4029`).
 
 - **Account**: the token is checked as in `auth-jwt.md` §5, its `jti` is
   single-use (Redis). Name = `name` claim, language = `locale` claim.
-- **Guest**: no token. The server names them `Invité 1234` / `Guest 1234`
-  (4 random digits) and returns a `resume` token (random, 32 bytes base64url)
-  valid while the guest has a live match. Guests never play ranked and earn
-  no XP. The client sends its language with `{"type": "auth", "guest": true,
-  "locale": "en"}`.
+- **Guest**: no token. The server names them `Invité 1234` / `Guest 1234` /
+  `Гость 1234` (4 random digits) and returns a `resume` token (random, 32
+  bytes base64url) valid while the guest has a live match. Guests never play
+  ranked and earn no XP. The client sends its language with `{"type": "auth",
+  "guest": true, "locale": "en"}`.
+- **Languages**: `fr`, `en`, `ru`. A locale starting with `en` is English,
+  one starting with `ru` is Russian (`ru`, `ru-RU`), anything else or none is
+  French. `auth.ok` returns the language retained as `player.locale`
+  (`"fr"`, `"en"` or `"ru"`); questions, series titles and choices are sent
+  in it.
 
 ```json
 {"type": "auth.ok", "player": {"user_id": "42", "name": "jikuji", "guest": false, "locale": "fr"}, "resume": null}

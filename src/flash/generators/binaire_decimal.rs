@@ -1,5 +1,5 @@
 use super::{card, meta};
-use crate::flash::i18n::t;
+use crate::flash::i18n::{t, tr};
 use crate::flash::{Card, Generator, Hasard, Lang};
 
 pub struct BinaireDecimal;
@@ -21,7 +21,10 @@ impl Generator for BinaireDecimal {
         let binary = format!("{value:08b}");
 
         match rng.entier(1, 3) {
-            1 => card(format!("{binary} (base 2)"), value.to_string()),
+            1 => card(
+                format!("{binary} ({})", tr(lang, "base 2")),
+                value.to_string(),
+            ),
             2 => card(
                 t(
                     lang,

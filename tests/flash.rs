@@ -4,8 +4,10 @@
 //! (`tests/fixtures/`, produced by the site's `outils/fixtures-flash.php`):
 //! `hasard.json` (raw draws), `generators/<key>.json` (every generator, eight
 //! seeds, both languages) and `defis.json` (the "défi" of `service.json`,
-//! all levels). `duels.json` comes from the TypeScript port itself, through
-//! `scripts/flash-fixtures.mjs`: the défi algorithm run on every subject.
+//! all levels). `duels.json` and `generators-ru.json` come from the
+//! TypeScript port itself, through `scripts/flash-fixtures.mjs`: the défi
+//! algorithm run on every subject (French, English, Russian), and every
+//! generator's walls in Russian (the site has no Russian to compare with).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -151,6 +153,31 @@ fn every_generator_matches_php_in_both_languages() {
 }
 
 #[test]
+fn every_generator_matches_typescript_in_russian() {
+    let all: Vec<GeneratorFixture> = serde_json::from_str(&fixture("generators-ru.json")).unwrap();
+    let lang = Lang::Ru;
+    let mut checked = HashSet::new();
+    for f in all {
+        let g = catalogue()
+            .iter()
+            .find(|g| g.key() == f.cle)
+            .unwrap_or_else(|| panic!("no generator {}", f.cle));
+        assert_eq!(g.title(lang), f.titre, "{} ru", f.cle);
+        assert_eq!(g.short_title(lang), f.titre_court, "{} ru", f.cle);
+        assert_eq!(g.description(lang), f.description, "{} ru", f.cle);
+        assert_eq!(g.subject().label(lang), f.matiere, "{} ru", f.cle);
+        assert_eq!(g.level().label(lang), f.niveau, "{} ru", f.cle);
+        assert!(f.series.len() >= 8, "{}", f.cle);
+        for s in &f.series {
+            let got = wall(*g, s.graine, s.cartes.len(), lang);
+            assert_eq!(got, s.cartes, "{} ru seed {}", f.cle, s.graine);
+        }
+        checked.insert(f.cle);
+    }
+    assert_eq!(checked.len(), 30);
+}
+
+#[test]
 fn catalogue_order_and_subjects() {
     let keys: Vec<&str> = catalogue().iter().map(|g| g.key()).collect();
     assert_eq!(keys.len(), 30);
@@ -178,6 +205,11 @@ fn subject_and_lang_keys() {
     assert_eq!(Lang::from_locale(Some("en")), Lang::En);
     assert_eq!(Lang::from_locale(Some("en-GB")), Lang::En);
     assert_eq!(Lang::from_locale(Some("fr")), Lang::Fr);
+    assert_eq!(Lang::from_locale(Some("ru")), Lang::Ru);
+    assert_eq!(Lang::from_locale(Some("ru-RU")), Lang::Ru);
+    assert_eq!(Lang::from_locale(Some("RU_ru")), Lang::Ru);
+    assert_eq!(Lang::from_locale(Some("r")), Lang::Fr);
+    assert_eq!(Lang::Ru.code(), "ru");
     assert_eq!(Lang::from_locale(Some("de")), Lang::Fr);
     assert_eq!(Lang::from_locale(Some("e")), Lang::Fr);
     assert_eq!(Lang::from_locale(None), Lang::Fr);
@@ -256,6 +288,7 @@ struct Duel {
     graine: u32,
     fr: Vec<DefiQuestion>,
     en: Vec<DefiQuestion>,
+    ru: Vec<DefiQuestion>,
 }
 
 #[test]
@@ -268,6 +301,7 @@ fn duel_matches_typescript_on_every_subject() {
         let mut padded = 0;
         assert_same(&got, &d.fr, Lang::Fr, &what, &mut padded);
         assert_same(&got, &d.en, Lang::En, &what, &mut padded);
+        assert_same(&got, &d.ru, Lang::Ru, &what, &mut padded);
     }
 }
 
@@ -282,7 +316,7 @@ fn duel_has_four_distinct_choices() {
     ] {
         for seed in [1, 2, 3, 500_000, 999_999] {
             for q in duel_questions(subject, seed, 240) {
-                for lang in [Lang::Fr, Lang::En] {
+                for lang in Lang::ALL {
                     let choices: HashSet<&String> = q.text(lang).choices.iter().collect();
                     assert_eq!(choices.len(), 4, "{subject:?} {seed} {}", q.generator);
                 }

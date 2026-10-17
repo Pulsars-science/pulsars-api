@@ -1,4 +1,5 @@
 use super::{card, dec, meta, pick};
+use crate::flash::i18n::tr;
 use crate::flash::{Card, Generator, Hasard, Lang};
 
 /// From unit, to unit, and the factor from one to the other.
@@ -42,8 +43,13 @@ impl Generator for ConversionsUnites {
         };
 
         card(
-            format!("{} {from} = ? {to}", dec(lang, value, 4)),
-            format!("{} {to}", dec(lang, value * factor, 6)),
+            format!(
+                "{} {} = ? {}",
+                dec(lang, value, 4),
+                tr(lang, from),
+                tr(lang, to)
+            ),
+            format!("{} {}", dec(lang, value * factor, 6), tr(lang, to)),
         )
     }
 }

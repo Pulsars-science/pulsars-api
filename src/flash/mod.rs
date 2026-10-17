@@ -3,9 +3,9 @@
 //! `app/QuestionsFlash/`), and the question list of a duel.
 //!
 //! Everything is drawn from a seed with [`Hasard`], PHP's Mt19937, so a seed
-//! gives exactly the cards of the site and of the game, in French and in
-//! English. `tests/flash.rs` checks it against fixtures produced by PHP and
-//! by the TypeScript port.
+//! gives exactly the cards of the site and of the game, in French, English
+//! and Russian. `tests/flash.rs` checks it against fixtures produced by PHP
+//! and by the TypeScript port.
 
 mod duel;
 pub mod generators;
@@ -18,19 +18,23 @@ pub use hasard::Hasard;
 
 use serde::{Deserialize, Serialize};
 
-/// The two languages of the game. French is the source language.
+/// The languages of the game. French is the source language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lang {
     Fr,
     En,
+    Ru,
 }
 
 impl Lang {
+    pub const ALL: [Lang; 3] = [Lang::Fr, Lang::En, Lang::Ru];
+
     /// English for a locale starting with `en` (`en`, `en-GB`, `en_US`),
-    /// French otherwise, as on the site.
+    /// Russian for one starting with `ru`, French otherwise, as on the site.
     pub fn from_locale(locale: Option<&str>) -> Lang {
-        match locale {
-            Some(l) if l.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("en")) => Lang::En,
+        match locale.and_then(|l| l.get(..2)) {
+            Some(p) if p.eq_ignore_ascii_case("en") => Lang::En,
+            Some(p) if p.eq_ignore_ascii_case("ru") => Lang::Ru,
             _ => Lang::Fr,
         }
     }
@@ -39,6 +43,7 @@ impl Lang {
         match self {
             Lang::Fr => "fr",
             Lang::En => "en",
+            Lang::Ru => "ru",
         }
     }
 }

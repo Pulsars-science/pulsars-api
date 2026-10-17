@@ -69,8 +69,10 @@ impl Generator for UnitesPhysique {
     fn draw(&self, rng: &mut Hasard, lang: Lang) -> Card {
         let (quantity, unit, symbol) = pick(rng, &QUANTITIES);
 
-        // Quantities and units are translated too: a card read in English
-        // must be entirely in English.
+        // Quantities, units and symbols are translated too: a card read in
+        // English or Russian must be entirely so (Russian writes the symbols
+        // in Cyrillic, `м`, `кг`, `Дж`; `tr` leaves them as they are in
+        // French and English).
         match rng.entier(1, 3) {
             1 => card(
                 t(
@@ -78,13 +80,13 @@ impl Generator for UnitesPhysique {
                     "En quelle unité SI mesure-t-on :grandeur ?",
                     &[("grandeur", tr(lang, quantity))],
                 ),
-                format!("{} ({symbol})", tr(lang, unit)),
+                format!("{} ({})", tr(lang, unit), tr(lang, symbol)),
             ),
             2 => card(
                 t(
                     lang,
                     "Que mesure-t-on en :symbole ?",
-                    &[("symbole", symbol)],
+                    &[("symbole", tr(lang, symbol))],
                 ),
                 ucfirst(tr(lang, quantity)),
             ),
@@ -92,7 +94,7 @@ impl Generator for UnitesPhysique {
                 t(
                     lang,
                     "Comment s’appelle l’unité notée :symbole ?",
-                    &[("symbole", symbol)],
+                    &[("symbole", tr(lang, symbol))],
                 ),
                 ucfirst(tr(lang, unit)),
             ),

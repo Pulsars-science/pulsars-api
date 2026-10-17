@@ -381,6 +381,10 @@ async fn guests_get_a_name_and_ping_works() {
     let (_, ok) = Client::guest(&server, "en", None).await;
     assert!(ok["player"]["name"].as_str().unwrap().starts_with("Guest "));
 
+    let (_, ok) = Client::guest(&server, "ru-RU", None).await;
+    assert_eq!(ok["player"]["locale"], "ru");
+    assert!(ok["player"]["name"].as_str().unwrap().starts_with("Гость "));
+
     fr.send(json!({"type": "ping"})).await;
     let pong = fr.until("pong").await;
     assert!(pong["server_time"].as_i64().unwrap() > 1_700_000_000_000);
@@ -481,6 +485,46 @@ async fn private_rooms_gather_players_and_the_host_starts() {
     // Back in the room, without the leaver.
     let state = host.until("room.state").await;
     assert_eq!(state["players"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_russian_guest_gets_the_questions_in_russian() {
+    let server = server(DEAD_POSTGRES, DEAD_REDIS, fast_settings()).await;
+    let (mut host, _) = Client::guest(&server, "ru", None).await;
+    let (mut friend, _) = Client::guest(&server, "fr", None).await;
+
+    host.send(json!({"type": "room.create", "subject": "chemistry", "rules": {"duration": 60, "penalty": false}}))
+        .await;
+    let code = host.until("room.state").await["code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    friend
+        .send(json!({"type": "room.join", "code": code}))
+        .await;
+    friend.until("room.state").await;
+    host.send(json!({"type": "room.start"})).await;
+    let start = host.until("match.start").await;
+
+    let q_host = host.until("question").await;
+    let q_friend = friend.until("question").await;
+    let match_id = uuid::Uuid::parse_str(start["match_id"].as_str().unwrap()).unwrap();
+    let seed = server
+        .state
+        .game
+        .match_seed(match_id)
+        .await
+        .expect("live match");
+    let expected = &flash::duel_questions(Some(flash::Subject::Chemistry), seed, 1)[0];
+    assert_eq!(q_host["question"], expected.ru.question.as_str());
+    assert_eq!(q_host["series"], "Символы химических элементов");
+    assert_eq!(
+        q_host["choices"],
+        json!(expected.ru.choices.as_slice()),
+        "the right answer at the same index as in French"
+    );
+    assert_eq!(q_friend["question"], expected.fr.question.as_str());
+    assert_eq!(q_friend["choices"], json!(expected.fr.choices.as_slice()));
 }
 
 #[tokio::test]

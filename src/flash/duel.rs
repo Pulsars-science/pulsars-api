@@ -1,5 +1,5 @@
 //! The questions of a duel: the TypeScript `defi()` (four choices per
-//! question, decoys drawn from the same generator), in both languages at
+//! question, decoys drawn from the same generator), in every language at
 //! once and for any subject.
 
 use super::{Generator, Hasard, Lang, Subject, catalogue};
@@ -20,13 +20,14 @@ pub struct Localized {
     pub choices: [String; CHOICES],
 }
 
-/// A question in both languages; the right answer is at the same index in
-/// both.
+/// A question in every language; the right answer is at the same index in
+/// all of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DuelQuestion {
     pub generator: &'static str,
     pub fr: Localized,
     pub en: Localized,
+    pub ru: Localized,
     pub correct: usize,
 }
 
@@ -35,6 +36,7 @@ impl DuelQuestion {
         match lang {
             Lang::Fr => &self.fr,
             Lang::En => &self.en,
+            Lang::Ru => &self.ru,
         }
     }
 }
@@ -45,12 +47,12 @@ impl DuelQuestion {
 /// subject instead of maths only: `Some(Subject::Maths)` reproduces the
 /// TypeScript `defi()` exactly, in both languages.
 ///
-/// Each question is drawn in French, then again in English from a copy of
-/// the generator taken before it. Both runs consume the same draws (checked
-/// for every subject in the tests), so the right answer lands at the same
-/// index. Should a translation ever make the English run diverge, the
-/// English choices follow the French decisions instead (see
-/// [`question`]), which keeps the two languages aligned.
+/// Each question is drawn in French, then again in English and in Russian,
+/// each from a copy of the generator taken before it. All runs consume the
+/// same draws (checked for every subject in the tests), so the right answer
+/// lands at the same index. Should a translation ever make a run diverge,
+/// that language's choices follow the French decisions instead (see
+/// [`question`]), which keeps the languages aligned.
 pub fn duel_questions(subject: Option<Subject>, seed: u32, count: usize) -> Vec<DuelQuestion> {
     let candidates = candidates(subject);
     if candidates.is_empty() {
@@ -61,25 +63,25 @@ pub fn duel_questions(subject: Option<Subject>, seed: u32, count: usize) -> Vec<
         .map(|_| {
             let start = rng.clone();
             let fr = question(&mut rng, &candidates, Lang::Fr, None);
-            let mut en_rng = start.clone();
-            let mut en = question(&mut en_rng, &candidates, Lang::En, None);
-            if en_rng != rng || en.correct != fr.correct || en.accepted != fr.accepted {
+            let translate = |lang: Lang| {
+                let mut lang_rng = start.clone();
+                let drawn = question(&mut lang_rng, &candidates, lang, None);
+                if lang_rng == rng && drawn.correct == fr.correct && drawn.accepted == fr.accepted {
+                    return drawn.text;
+                }
                 tracing::warn!(
                     seed,
                     generator = fr.generator,
+                    lang = lang.code(),
                     "flash question diverges between languages"
                 );
-                en = question(
-                    &mut start.clone(),
-                    &candidates,
-                    Lang::En,
-                    Some(&fr.accepted),
-                );
-            }
+                question(&mut start.clone(), &candidates, lang, Some(&fr.accepted)).text
+            };
             DuelQuestion {
                 generator: fr.generator,
+                en: translate(Lang::En),
+                ru: translate(Lang::Ru),
                 fr: fr.text,
-                en: en.text,
                 correct: fr.correct,
             }
         })
@@ -246,8 +248,8 @@ mod tests {
         ]
     }
 
-    /// The French and English runs of every question consume the same
-    /// draws and put the right answer at the same index, without the
+    /// The French, English and Russian runs of every question consume the
+    /// same draws and put the right answer at the same index, without the
     /// fallback.
     #[test]
     fn languages_consume_the_same_draws() {
@@ -256,12 +258,16 @@ mod tests {
             for seed in (1..=999_999).step_by(19_997).chain([2, 3, 42, 999_999]) {
                 let mut rng = Hasard::new(seed);
                 for _ in 0..240 {
-                    let mut en_rng = rng.clone();
+                    let start = rng.clone();
                     let fr = question(&mut rng, &candidates, Lang::Fr, None);
-                    let en = question(&mut en_rng, &candidates, Lang::En, None);
-                    assert_eq!(en_rng, rng, "{subject:?} seed {seed} {}", fr.generator);
-                    assert_eq!(en.correct, fr.correct, "{subject:?} seed {seed}");
-                    assert_eq!(en.accepted, fr.accepted, "{subject:?} seed {seed}");
+                    for lang in [Lang::En, Lang::Ru] {
+                        let mut lang_rng = start.clone();
+                        let other = question(&mut lang_rng, &candidates, lang, None);
+                        let what = format!("{lang:?} {subject:?} seed {seed} {}", fr.generator);
+                        assert_eq!(lang_rng, rng, "{what}");
+                        assert_eq!(other.correct, fr.correct, "{what}");
+                        assert_eq!(other.accepted, fr.accepted, "{what}");
+                    }
                 }
             }
         }
@@ -273,11 +279,14 @@ mod tests {
         let candidates = candidates(None);
         let mut rng = Hasard::new(77);
         for _ in 0..100 {
-            let mut copy = rng.clone();
+            let start = rng.clone();
             let fr = question(&mut rng, &candidates, Lang::Fr, None);
-            let en = question(&mut copy, &candidates, Lang::En, Some(&fr.accepted));
-            assert_eq!(copy, rng);
-            assert_eq!(en.correct, fr.correct);
+            for lang in [Lang::En, Lang::Ru] {
+                let mut copy = start.clone();
+                let other = question(&mut copy, &candidates, lang, Some(&fr.accepted));
+                assert_eq!(copy, rng);
+                assert_eq!(other.correct, fr.correct);
+            }
         }
     }
 
@@ -290,7 +299,7 @@ mod tests {
             '₆', '₇', '₈', '₉',
         ];
         for g in catalogue() {
-            for lang in [Lang::Fr, Lang::En] {
+            for lang in Lang::ALL {
                 let mut rng = Hasard::new(12_345);
                 for _ in 0..2_000 {
                     let card = g.draw(&mut rng, lang);

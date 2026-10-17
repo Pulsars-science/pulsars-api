@@ -1,9 +1,15 @@
 #!/usr/bin/env node
-// Writes tests/fixtures/flash/duels.json from the TypeScript port of the
-// flash questions (pulsars-game/src/flash/): the "défi" algorithm of
-// questionsFlash.ts, run on every subject and on all generators, in French
-// and in English. Nothing is installed: Node (>= 23, type stripping) loads
-// the game's TypeScript sources through the small loader below.
+// Writes, from the TypeScript port of the flash questions
+// (pulsars-game/src/flash/):
+//
+// - tests/fixtures/flash/duels.json: the "défi" algorithm of
+//   questionsFlash.ts, run on every subject and on all generators, in
+//   French, English and Russian;
+// - tests/fixtures/flash/generators-ru.json: every generator's walls
+//   (`serie()`) in Russian, which the site's PHP fixtures do not cover.
+//
+// Nothing is installed: Node (>= 23, type stripping) loads the game's
+// TypeScript sources through the small loader below.
 //
 // Usage: node scripts/flash-fixtures.mjs ../pulsars-game
 
@@ -42,6 +48,7 @@ register(`data:text/javascript,${encodeURIComponent(hooks)}`)
 const { GENERATEURS } = await import(`${src}flash/catalogue.ts`)
 const { Hasard } = await import(`${src}flash/hasard.ts`)
 const { changerLangue } = await import(`${src}i18n/index.ts`)
+const { serie } = await import(`${src}flash/questionsFlash.ts`)
 
 // questionsFlash.ts, `choix` and `silhouette` (not exported).
 const CHOIX_PAR_QUESTION = 4
@@ -89,7 +96,7 @@ for (const subject of [null, ...Object.values(SUBJECTS)]) {
   const candidats = GENERATEURS.filter((g) => subject === null || subjectOf.get(g) === subject)
   for (const graine of [1, 42, 31337, 999999]) {
     const duel = { subject, graine }
-    for (const langue of ['fr', 'en']) {
+    for (const langue of ['fr', 'en', 'ru']) {
       changerLangue(langue)
       duel[langue] = defi(candidats, graine, 60)
     }
@@ -100,3 +107,19 @@ for (const subject of [null, ...Object.values(SUBJECTS)]) {
 const out = new URL('../tests/fixtures/flash/duels.json', import.meta.url)
 writeFileSync(out, JSON.stringify(duels) + '\n')
 console.log(`${duels.length} duels written to ${out.pathname}`)
+
+// The walls of every generator in Russian, as the PHP fixtures give them in
+// French and English (same seeds and card count).
+changerLangue('ru')
+const walls = GENERATEURS.map((g) => ({
+  cle: g.cle(),
+  titre: g.titre(),
+  titreCourt: g.titreCourt(),
+  description: g.description(),
+  matiere: g.matiere(),
+  niveau: g.niveau(),
+  series: [1, 7, 42, 2024, 31337, 123456, 777777, 999999].map((graine) => ({ graine, cartes: serie(g, graine, 40) })),
+}))
+const outRu = new URL('../tests/fixtures/flash/generators-ru.json', import.meta.url)
+writeFileSync(outRu, JSON.stringify(walls) + '\n')
+console.log(`${walls.length} generators written to ${outRu.pathname}`)
