@@ -854,6 +854,93 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /v1/game/admin/stats:
+    get:
+      tags: [game]
+      operationId: getGameAdminStats
+      summary: Game statistics for the admin dashboard
+      description: |
+        What is live now (from the game server's memory) and the activity
+        of the last `days` UTC days (from the `game` schema), for the
+        Laravel admin dashboard, which calls it server to server and shows
+        the result (`game-protocol.md` §9.1).
+
+        The token's `roles` must contain `admin` or `super-admin`, else
+        `403` with `reason: insufficient_scope`. Restricted CORS like
+        `/v1/game/me`; a request without `Origin` is served as usual.
+        `Cache-Control: no-store`.
+
+        All times are UTC; days and hours without matches are zeros. A match
+        counts on the day and hour of its `started_at`, from the moment it
+        is created (running matches included). Today's `accounts` and
+        `guests` include the seats of the matches running now.
+      security:
+        - gameToken: []
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 90, default: 30 }
+          description: Days in `daily`, ending today; also the period of `subjects`, `rules` and `quality`.
+      responses:
+        '200':
+          description: The statistics
+          headers:
+            Cache-Control:
+              schema: { type: string, example: no-store }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GameAdminStats' }
+              example:
+                generated_at: '2026-10-17T13:40:00Z'
+                live:
+                  sessions: 12
+                  guests: 4
+                  queued: 2
+                  rooms_open: 1
+                  matches: { duel: 3, room: 1, ghost: 2 }
+                  players_in_matches: 9
+                today:
+                  matches_started: 41
+                  by_hour: [0, 0, 0, 0, 0, 0, 0, 1, 2, 4, 6, 5, 7, 9, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                  accounts: 17
+                  guests: 6
+                daily:
+                  - { date: '2026-10-16', duel: 30, room: 4, ghost: 6, ranked: 25, void: 2,
+                      forfeit: 3, accounts: 21, guests: 9 }
+                  - { date: '2026-10-17', duel: 31, room: 4, ghost: 6, ranked: 26, void: 1,
+                      forfeit: 2, accounts: 17, guests: 6 }
+                subjects:
+                  - { subject: maths, matches: 120 }
+                  - { subject: physics, matches: 31 }
+                  - { subject: all, matches: 12 }
+                  - { subject: chemistry, matches: 4 }
+                  - { subject: computer-science, matches: 0 }
+                rules:
+                  - { rules: { duration: 60, target: null, penalty: false }, matches: 80 }
+                  - { rules: { duration: null, target: 10, penalty: true }, matches: 41 }
+                quality: { avg_match_seconds: 64.2, avg_answers_per_player: 23.1, accuracy: 0.71 }
+                ratings:
+                  players: 25
+                  provisional: 18
+                  by_subject:
+                    - { subject: maths, players: 20 }
+                    - { subject: physics, players: 7 }
+                    - { subject: all, players: 3 }
+                    - { subject: chemistry, players: 1 }
+                    - { subject: computer-science, players: 0 }
+                webhook: { pending: 0, dead: 0 }
+                seasons:
+                  - { month: '2026-09', subject: maths, ranked_players: 6, closed_at: '2026-10-01T00:00:12Z' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/InsufficientScope' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503':
+          description: The database or the game server does not answer.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
 components:
   securitySchemes:
     gameToken:
@@ -953,6 +1040,21 @@ components:
             detail: The token has expired.
             instance: /v1/me
             reason: expired
+    InsufficientScope:
+      description: Valid token, but its `roles` do not allow this action
+      headers:
+        WWW-Authenticate:
+          schema: { type: string, example: 'Bearer realm="api.pulsars.science", error="insufficient_scope"' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/insufficient-scope
+            title: Insufficient scope
+            status: 403
+            detail: The game statistics need the admin or super-admin role.
+            instance: /v1/game/admin/stats
+            reason: insufficient_scope
     RateLimited:
       description: Too many requests
       headers:
@@ -1172,8 +1274,8 @@ components:
               detail: { type: string }
         reason:
           type: string
-          description: For 401 only. See `auth-jwt.md`.
-          enum: [missing, malformed, expired, not_yet_valid, bad_signature, unknown_kid, bad_issuer, bad_audience, bad_algorithm]
+          description: For 401, why the token was refused; for 403, `insufficient_scope`. See `auth-jwt.md`.
+          enum: [missing, malformed, expired, not_yet_valid, bad_signature, unknown_kid, bad_issuer, bad_audience, bad_algorithm, insufficient_scope]
         trace_id: { type: string }
       additionalProperties: false
 
@@ -1620,3 +1722,121 @@ components:
         opponents:
           type: array
           items: { type: string }
+
+    GameAdminStats:
+      type: object
+      description: See `game-protocol.md` §9.1. All times UTC.
+      required: [generated_at, live, today, daily, subjects, rules, quality, ratings, webhook, seasons]
+      properties:
+        generated_at: { type: string, format: date-time }
+        live:
+          type: object
+          description: The game server's memory, now.
+          required: [sessions, guests, queued, rooms_open, matches, players_in_matches]
+          properties:
+            sessions: { type: integer, minimum: 0, description: Open authenticated WebSocket sessions. }
+            guests: { type: integer, minimum: 0, description: Of the sessions, guests. }
+            queued: { type: integer, minimum: 0, description: Players waiting in matchmaking, every queue key. }
+            rooms_open: { type: integer, minimum: 0, description: Private rooms not started or between matches. }
+            matches:
+              type: object
+              description: Matches running now, by mode.
+              required: [duel, room, ghost]
+              properties:
+                duel: { type: integer, minimum: 0 }
+                room: { type: integer, minimum: 0 }
+                ghost: { type: integer, minimum: 0 }
+            players_in_matches: { type: integer, minimum: 0, description: Live players still seated in a running match. }
+        today:
+          type: object
+          required: [matches_started, by_hour, accounts, guests]
+          properties:
+            matches_started: { type: integer, minimum: 0 }
+            by_hour:
+              type: array
+              description: Matches started per UTC hour, 0 to 23.
+              minItems: 24
+              maxItems: 24
+              items: { type: integer, minimum: 0 }
+            accounts: { type: integer, minimum: 0, description: Distinct accounts with a seat in a match started today, running ones included. }
+            guests: { type: integer, minimum: 0, description: Guest seats in matches started today, running ones included. }
+        daily:
+          type: array
+          description: '`days` entries, oldest first, the last one today.'
+          items: { $ref: '#/components/schemas/GameAdminDay' }
+        subjects:
+          type: array
+          description: Matches of the period per subject key; all five, most played first.
+          items:
+            type: object
+            required: [subject, matches]
+            properties:
+              subject: { $ref: '#/components/schemas/GameSubject' }
+              matches: { type: integer, minimum: 0 }
+        rules:
+          type: array
+          description: Matches of the period per rules, most played first.
+          items:
+            type: object
+            required: [rules, matches]
+            properties:
+              rules: { $ref: '#/components/schemas/GameRules' }
+              matches: { type: integer, minimum: 1 }
+        quality:
+          type: object
+          description: Finished, non-void matches of the period; `null` without data.
+          required: [avg_match_seconds, avg_answers_per_player, accuracy]
+          properties:
+            avg_match_seconds: { type: [number, 'null'], description: 'Mean `ended_at − started_at`, one decimal.' }
+            avg_answers_per_player: { type: [number, 'null'], description: Mean answers per live seat (ghosts excluded), one decimal. }
+            accuracy: { type: [number, 'null'], minimum: 0, maximum: 1, description: Correct / answered over those seats, three decimals. }
+        ratings:
+          type: object
+          description: All time.
+          required: [players, provisional, by_subject]
+          properties:
+            players: { type: integer, minimum: 0, description: Accounts with a ranked match in some subject. }
+            provisional: { type: integer, minimum: 0, description: Of them, those whose every rating has RD above 110. }
+            by_subject:
+              type: array
+              description: Rated players per subject key; all five, most first.
+              items:
+                type: object
+                required: [subject, players]
+                properties:
+                  subject: { $ref: '#/components/schemas/GameSubject' }
+                  players: { type: integer, minimum: 0 }
+        webhook:
+          type: object
+          description: Results webhook outbox, now.
+          required: [pending, dead]
+          properties:
+            pending: { type: integer, minimum: 0 }
+            dead: { type: integer, minimum: 0 }
+        seasons:
+          type: array
+          description: The last 12 closed season rows, newest month first.
+          maxItems: 12
+          items:
+            type: object
+            required: [month, subject, ranked_players, closed_at]
+            properties:
+              month: { type: string, pattern: '^[0-9]{4}-(0[1-9]|1[0-2])$' }
+              subject: { $ref: '#/components/schemas/GameSubject' }
+              ranked_players: { type: integer, minimum: 0, description: Size of the standings. }
+              closed_at: { type: string, format: date-time }
+
+    GameAdminDay:
+      type: object
+      description: Matches started on a UTC day.
+      required: [date, duel, room, ghost, ranked, void, forfeit, accounts, guests]
+      properties:
+        date: { type: string, format: date }
+        duel: { type: integer, minimum: 0 }
+        room: { type: integer, minimum: 0 }
+        ghost: { type: integer, minimum: 0 }
+        ranked: { type: integer, minimum: 0, description: Still ranked at the end (or running ranked). }
+        void: { type: integer, minimum: 0 }
+        forfeit: { type: integer, minimum: 0 }
+        accounts: { type: integer, minimum: 0, description: Distinct accounts with a seat. }
+        guests: { type: integer, minimum: 0, description: Guest seats. }

@@ -1,6 +1,6 @@
-//! `/v1/game`: the match WebSocket, the leaderboard and the player's own
-//! ratings and matches (`docs/game-protocol.md` §3 and §9, `openapi.yaml`
-//! tag `game`).
+//! `/v1/game`: the match WebSocket, the leaderboard, the player's own
+//! ratings and matches, and the admin statistics (`docs/game-protocol.md`
+//! §3 and §9, `openapi.yaml` tag `game`).
 
 use axum::Json;
 use axum::extract::ws::rejection::WebSocketUpgradeRejection;
@@ -17,7 +17,7 @@ use crate::db::members;
 use crate::error::ApiError;
 use crate::game::glicko::PROVISIONAL_RD;
 use crate::game::rules::{SUBJECT_KEYS, SubjectKey};
-use crate::game::{session, store};
+use crate::game::{session, stats, store};
 use crate::links::encode;
 use crate::state::AppState;
 
@@ -206,6 +206,46 @@ pub async fn me(
             })
             .collect(),
     };
+    let mut response = Json(body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.append(header::VARY, HeaderValue::from_static("Authorization"));
+    Ok(response)
+}
+
+/// Roles of the game token that may read the admin statistics.
+const ADMIN_ROLES: &[&str] = &["admin", "super-admin"];
+
+/// `GET /v1/game/admin/stats?days=30`: live counters and the activity of
+/// the last `days` UTC days. Called by the Laravel admin dashboard, server
+/// to server.
+pub async fn admin_stats(
+    State(state): State<AppState>,
+    AuthUser(claims): AuthUser,
+    OriginalUri(uri): OriginalUri,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    if !claims
+        .roles
+        .iter()
+        .any(|role| ADMIN_ROLES.contains(&role.as_str()))
+    {
+        return Err(ApiError::InsufficientScope {
+            detail: "The game statistics need the admin or super-admin role.".to_owned(),
+            instance: Some(uri.path().to_owned()),
+        });
+    }
+    let mut params = Params::parse(query.as_deref());
+    let days = params.integer("days", 1, stats::MAX_DAYS, stats::DEFAULT_DAYS);
+    params.finish()?;
+
+    // The live snapshot first: see `game::stats`.
+    let live = state
+        .game
+        .live()
+        .await
+        .ok_or_else(|| ApiError::Unavailable("the game hub does not answer".to_owned()))?;
+    let body = stats::collect(&state.db, chrono::Utc::now(), days, &live).await?;
     let mut response = Json(body).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

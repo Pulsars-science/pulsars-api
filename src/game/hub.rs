@@ -98,6 +98,10 @@ pub enum HubCmd {
         command: Command,
     },
     Match(MatchEvent),
+    /// What is live right now, for the admin statistics.
+    Live {
+        reply: oneshot::Sender<LiveSnapshot>,
+    },
     #[cfg(any(test, feature = "test-util"))]
     Seed {
         match_id: Uuid,
@@ -129,9 +133,42 @@ struct Room {
 struct LiveMatch {
     commands: mpsc::UnboundedSender<MatchCmd>,
     seed: u32,
+    mode: Mode,
+    /// Unix ms of the first question (`game.matches.started_at`).
+    starts_at: i64,
     room: Option<String>,
     /// Live players, by seat (`None` for ghosts).
     seats: Vec<Option<PlayerId>>,
+}
+
+/// The hub's live state, counted on demand (`GET /v1/game/admin/stats`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveSnapshot {
+    /// Open authenticated sessions.
+    pub sessions: usize,
+    /// Of which guests.
+    pub guests: usize,
+    /// Players waiting in matchmaking, every queue key.
+    pub queued: usize,
+    /// Private rooms in their lobby (not started, or between matches).
+    pub rooms_open: usize,
+    /// Players still seated in a live match (forfeiters are released).
+    pub players_in_matches: usize,
+    pub matches: Vec<LiveMatchInfo>,
+}
+
+/// A match running now. Its seats are written to `game.match_players`
+/// only when it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveMatchInfo {
+    pub id: Uuid,
+    pub mode: Mode,
+    /// Unix ms (`game.matches.started_at`).
+    pub starts_at: i64,
+    /// Account seats, forfeiters included.
+    pub accounts: Vec<i64>,
+    /// Guest seats, forfeiters included.
+    pub guests: usize,
 }
 
 /// Room codes: no 0/O, 1/I/L.
@@ -224,10 +261,51 @@ impl Hub {
                 }
             }
             HubCmd::Match(MatchEvent::Ended { match_id }) => self.ended(match_id),
+            HubCmd::Live { reply } => {
+                let _ = reply.send(self.snapshot());
+            }
             #[cfg(any(test, feature = "test-util"))]
             HubCmd::Seed { match_id, reply } => {
                 let _ = reply.send(self.matches.get(&match_id).map(|m| m.seed));
             }
+        }
+    }
+
+    /// Counts what is live: one pass over the sessions and the matches,
+    /// no I/O.
+    fn snapshot(&self) -> LiveSnapshot {
+        LiveSnapshot {
+            sessions: self.sessions.len(),
+            guests: self
+                .sessions
+                .values()
+                .filter(|s| s.player.is_guest())
+                .count(),
+            queued: self.queued.len(),
+            rooms_open: self.rooms.values().filter(|r| r.playing.is_none()).count(),
+            players_in_matches: self.playing.len(),
+            matches: self
+                .matches
+                .iter()
+                .map(|(id, m)| LiveMatchInfo {
+                    id: *id,
+                    mode: m.mode,
+                    starts_at: m.starts_at,
+                    accounts: m
+                        .seats
+                        .iter()
+                        .filter_map(|p| match p {
+                            Some(PlayerId::Account(id)) => Some(*id),
+                            _ => None,
+                        })
+                        .collect(),
+                    guests: m
+                        .seats
+                        .iter()
+                        .filter(|p| matches!(p, Some(PlayerId::Guest(_))))
+                        .count(),
+                })
+                .collect(),
         }
     }
 
@@ -732,6 +810,7 @@ impl Hub {
         let id = Uuid::now_v7();
         let now = self.clock.now_ms();
         let countdown = i64::try_from(self.settings.countdown.as_millis()).unwrap_or(3_000);
+        let starts_at = now + countdown;
         let mut outboxes = Vec::with_capacity(seats.len());
         let mut players = Vec::with_capacity(seats.len());
         for (seat, setup) in seats.iter().enumerate() {
@@ -761,7 +840,7 @@ impl Hub {
                 key,
                 seed,
                 created_at: now,
-                starts_at: now + countdown,
+                starts_at,
                 seats,
             },
             outboxes,
@@ -777,6 +856,8 @@ impl Hub {
             LiveMatch {
                 commands,
                 seed,
+                mode,
+                starts_at,
                 room,
                 seats: players,
             },

@@ -8,6 +8,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `GET /v1/game/admin/stats?days=30` (`docs/game-protocol.md` §9.1), for
+  the Laravel admin dashboard: live counters from the hub (sessions,
+  guests, queued players, open rooms, running matches by mode, seated
+  players), today's matches per UTC hour with the accounts and guest
+  seats (running matches included), `days` (1–90) daily rows zero-filled,
+  matches per subject and per rules, match quality (mean duration,
+  answers per player, accuracy), rated players, webhook outbox backlog and
+  the last 12 closed seasons. Needs a game token whose `roles` contain
+  `admin` or `super-admin`, else `403` problem with
+  `reason: insufficient_scope` and an RFC 6750 `insufficient_scope`
+  challenge. Restricted CORS; `Cache-Control: no-store`. The queries run
+  in one read-only repeatable-read transaction; new migration with the
+  `game.matches (started_at)` index and a partial index on dead outbox
+  rows.
+
 - Brains (`docs/contract/brains.md`): monthly duel season close. At startup
   and every 10 minutes, the previous UTC month is closed for each subject
   key in one transaction: standings (at least 5 ranked duels ended in the

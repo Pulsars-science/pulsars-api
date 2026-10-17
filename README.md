@@ -107,6 +107,7 @@ not deployed yet: it needs the production PostgreSQL migration, the
 | 4 | Game (flash race): WebSocket, matchmaking, rooms, ghosts, Glicko-2, `game` schema | done; the 30 flash generators are ported to Rust (`src/flash/`) |
 | 5 | Results webhook to Laravel (outbox, signed delivery, retries) | done |
 | 5b | Brains: monthly duel season close (`season.ended`, rating decay), balance in `/v1/me` and `/v1/game/me` ([`brains.md`](docs/contract/brains.md)) | done |
+| 5c | Admin statistics of the game, `GET /v1/game/admin/stats` (`admin` / `super-admin` role), for the Laravel admin dashboard | done |
 | 6 | Code sandbox | not needed (no code mode) |
 | 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |
 

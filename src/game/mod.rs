@@ -17,6 +17,8 @@
 //! - [`webhook`]: the outbox delivery worker (`docs/contract/webhooks.md`).
 //! - [`season`]: the monthly season close (`docs/contract/brains.md` §3):
 //!   standings, `season.ended` event and rating decay.
+//! - [`stats`]: the admin statistics (`GET /v1/game/admin/stats`), from the
+//!   hub's live snapshot and the `game` schema.
 //!
 //! Everything lives in this process: one API instance serves the game
 //! (`game-protocol.md` §6).
@@ -31,6 +33,7 @@ pub mod rules;
 pub mod runner;
 pub mod season;
 pub mod session;
+pub mod stats;
 pub mod store;
 pub mod webhook;
 
@@ -238,6 +241,20 @@ impl Game {
 
     pub(crate) fn hub(&self) -> &mpsc::Sender<hub::HubCmd> {
         &self.hub
+    }
+
+    /// What is live now (sessions, queues, rooms, matches), or `None` when
+    /// the hub does not answer within 2 seconds.
+    pub async fn live(&self) -> Option<hub::LiveSnapshot> {
+        let ask = async {
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            self.hub.send(hub::HubCmd::Live { reply }).await.ok()?;
+            rx.await.ok()
+        };
+        tokio::time::timeout(Duration::from_secs(2), ask)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// The seed of a live match, so tests can compute the right answers.

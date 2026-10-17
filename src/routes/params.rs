@@ -129,13 +129,18 @@ impl Params {
 
     /// `limit`, between 1 and 100, `default` when absent.
     pub fn limit_or(&mut self, default: u32) -> u32 {
-        let Some(raw) = self.raw("limit") else {
+        self.integer("limit", 1, MAX_LIMIT, default)
+    }
+
+    /// An integer between `min` and `max`, `default` when absent.
+    pub fn integer(&mut self, name: &'static str, min: u32, max: u32, default: u32) -> u32 {
+        let Some(raw) = self.raw(name) else {
             return default;
         };
         match raw.parse::<u32>() {
-            Ok(n) if (1..=MAX_LIMIT).contains(&n) => n,
+            Ok(n) if (min..=max).contains(&n) => n,
             _ => {
-                self.error("limit", format!("must be between 1 and {MAX_LIMIT}"));
+                self.error(name, format!("must be between {min} and {max}"));
                 default
             }
         }
@@ -319,6 +324,24 @@ mod tests {
             let mut params = Params::parse(Some(&format!("limit={bad}")));
             params.limit();
             assert!(params.finish().is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn integers_have_bounds_and_a_default() {
+        let mut params = Params::parse(Some("days=90"));
+        assert_eq!(params.integer("days", 1, 90, 30), 90);
+        assert!(params.finish().is_ok());
+        let mut params = Params::parse(None);
+        assert_eq!(params.integer("days", 1, 90, 30), 30);
+        for bad in ["0", "91", "-3", "7.5", "x"] {
+            let mut params = Params::parse(Some(&format!("days={bad}")));
+            params.integer("days", 1, 90, 30);
+            assert_eq!(
+                errors(params.finish()),
+                vec![("days".to_owned(), "must be between 1 and 90".to_owned())],
+                "{bad}"
+            );
         }
     }
 

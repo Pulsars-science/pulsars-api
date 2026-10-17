@@ -191,8 +191,9 @@ A `429` adds `Retry-After: <seconds>`.
 - `traceparent` (W3C Trace Context) is accepted and propagated; responses
   carry `X-Request-Id`.
 - CORS: content endpoints and `/v1/game/leaderboard` allow any origin
-  without credentials (`Access-Control-Allow-Origin: *`); `/v1/me` and
-  `/v1/game/me` allow only `CORS_ALLOWED_ORIGINS` (default
+  without credentials (`Access-Control-Allow-Origin: *`); `/v1/me`,
+  `/v1/game/me` and `/v1/game/admin/stats` allow only `CORS_ALLOWED_ORIGINS`
+  (requests without `Origin`, server to server, are served as usual) (default
   `https://game.pulsars.science`, plus `http://localhost:5173` in
   development). The match WebSocket `/v1/game/ws` refuses (`403`, before the
   upgrade) any `Origin` outside that list.

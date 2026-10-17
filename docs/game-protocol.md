@@ -265,9 +265,62 @@ The outbox row is written in the same transaction as the match end
 |---|---|---|
 | `GET /v1/game/leaderboard?subject=maths&limit=50` | public | `{"subject", "data": [{rank, user_id, pseudo, avatar_url, rating, provisional, games, wins, losses, draws}]}` — players with at least one ranked match, best rating first. Pseudo and avatar from `api_read.members`; deleted accounts are skipped. |
 | `GET /v1/game/me` | Bearer | `{"brains": <balance>, "ratings": [{subject, rating, provisional, games, wins, losses, draws, rank}], "recent": [{match_id, mode, ranked, subject, rules, ended_at, outcome, score, rating_before, rating_after, opponents: [name]}]}` (last 20 matches) |
+| `GET /v1/game/admin/stats?days=30` | Bearer, `roles` with `admin` or `super-admin` | Live counters and the activity of the last `days` UTC days (below). |
 
-Both are JSON, `Cache-Control: no-store` for `/me`, `max-age=30` for the
-leaderboard.
+All are JSON, `Cache-Control: no-store` for `/me` and the statistics,
+`max-age=30` for the leaderboard.
+
+### 9.1 Admin statistics
+
+For the Laravel admin dashboard, which calls it server to server (no
+`Origin`) and shows the result. `days` is 1–90 (default 30). A token
+without the `admin` or `super-admin` role gets `403` with
+`reason: "insufficient_scope"` (and `WWW-Authenticate: Bearer …,
+error="insufficient_scope"`); no or a bad token, `401` as everywhere.
+Restricted CORS like `/v1/game/me`. All times are UTC; missing days and
+hours are zeros.
+
+```json
+{
+  "generated_at": "2026-10-17T13:40:00Z",
+  "live": {"sessions": 12, "guests": 4, "queued": 2, "rooms_open": 1,
+           "matches": {"duel": 3, "room": 1, "ghost": 2}, "players_in_matches": 9},
+  "today": {"matches_started": 41, "by_hour": [0, 0, …24 integers], "accounts": 17, "guests": 6},
+  "daily": [{"date": "2026-09-18", "duel": 0, "room": 0, "ghost": 0, "ranked": 0,
+             "void": 0, "forfeit": 0, "accounts": 0, "guests": 0}, …],
+  "subjects": [{"subject": "maths", "matches": 120}, …],
+  "rules": [{"rules": {"duration": 60, "target": null, "penalty": false}, "matches": 80}, …],
+  "quality": {"avg_match_seconds": 64.2, "avg_answers_per_player": 23.1, "accuracy": 0.71},
+  "ratings": {"players": 25, "provisional": 18, "by_subject": [{"subject": "maths", "players": 20}, …]},
+  "webhook": {"pending": 0, "dead": 0},
+  "seasons": [{"month": "2026-09", "subject": "maths", "ranked_players": 0, "closed_at": "2026-10-01T00:00:12Z"}]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `live` | From the hub's memory, now. `sessions`: open authenticated WebSockets, `guests` of them; `queued`: players waiting in matchmaking (every key); `rooms_open`: private rooms in their lobby (not started, or between matches); `matches`: matches running, by mode; `players_in_matches`: live players still seated (ghosts and forfeiters excluded). |
+| `today` | The current UTC day: `matches_started` (= the sum of `by_hour`, = `duel + room + ghost` of the last `daily` entry), `accounts`: distinct accounts with a seat in a match started today, `guests`: guest seats. |
+| `daily` | `days` entries, oldest first, the last one today. Matches by `started_at` day: per mode, `ranked` (as stored: a match made unranked by the anti-cheat or void is not counted), `void` and `forfeit` (end reasons), `accounts` (distinct) and `guests` (seats). |
+| `subjects` | Matches of the period per subject key, all five listed, most played first (ties in the order `maths`, `physics`, `chemistry`, `computer-science`, `all`). |
+| `rules` | Matches of the period per rules, most played first (ties by their JSON text). |
+| `quality` | Finished non-void matches of the period: mean `ended_at − started_at` in seconds (one decimal), mean answers per live seat (one decimal, ghost seats excluded), `accuracy` = correct / answered over those seats (three decimals). Each is `null` without data. |
+| `ratings` | All time: `players` with at least one ranked match in some subject, `provisional` = those whose every rating has RD > 110, `by_subject`: players per subject key (all five, most first). |
+| `webhook` | Outbox rows `pending` and `dead` now. |
+| `seasons` | The last 12 `game.seasons` rows, newest month first (subjects in key order); `ranked_players` = size of the standings. |
+
+**Counting started matches.** The `game.matches` row is written as a
+match is created (the runner inserts it a few milliseconds after
+`match.start`, and the end updates it), so running matches already count
+in `today` and `daily`; a start row that could not be written (database
+down) appears at the end. Seats reach `game.match_players` only at the
+end: today's `accounts` and `guests` add the seats of the live matches
+started today, from the hub's snapshot. The snapshot is taken before the
+queries, which run in one repeatable-read, read-only transaction: a match
+that ends in between is counted once (distinct account ids; the database
+seats of live matches are left out of the guest count). Indexes:
+`matches_started` on `game.matches (started_at)` and the partial
+`webhook_outbox_dead` (migration `20261019000000_admin_stats.sql`).
 
 ## 10. Implementation notes
 
