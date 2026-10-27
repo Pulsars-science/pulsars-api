@@ -337,7 +337,7 @@ async fn admin_stats_need_a_token_with_an_admin_role() {
                 "type": "https://api.pulsars.science/problems/insufficient-scope",
                 "title": "Insufficient scope",
                 "status": 403,
-                "detail": "The game statistics need the admin or super-admin role.",
+                "detail": "This endpoint needs the admin or super-admin role.",
                 "instance": STATS,
                 "reason": "insufficient_scope",
             })
