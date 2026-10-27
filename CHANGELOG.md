@@ -6,6 +6,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `extract::Json<T>`, the extractor for JSON request bodies of the write
+  endpoints to come. Its rejections are problems in this API's vocabulary:
+  415 `unsupported-media-type` for a `Content-Type` other than
+  `application/json`, 413 `payload-too-large`, and 400 `invalid-body`, whose
+  `errors` names the field at fault by JSON Pointer (`docs/contract/README.md`,
+  "Errors" and "Request bodies").
+- `auth::Admin` and `auth::Moderator` extractors: a verified token whose
+  `roles` include `admin`/`super-admin` (or also `moderateur`), else 403
+  `insufficient-scope`. `GET /v1/game/admin/stats` uses `Admin`; its 403
+  detail is now "This endpoint needs the admin or super-admin role.".
+- `scripts/site-schema-snapshot.sh`: regenerates `dev/db/20-site-schema.sql`
+  from the Laravel migrations, run on a throwaway PostgreSQL 17.
+
+### Changed
+
+- `dev/db/20-site-schema.sql` is the real Laravel `site` schema (48 tables,
+  generated), no longer a hand-written stand-in with only the columns the
+  views read. Local and CI databases now have every table and constraint the
+  site has; the demo data gained the forum theme a question requires.
+
+### Fixed
+
+- A 405 lists the methods of the path it answers for (`Allow: GET,HEAD`),
+  instead of the same `GET, HEAD, OPTIONS` everywhere.
+- CI and release workflows no longer set `SQLX_OFFLINE`: no query uses the
+  checked macros, so it did nothing.
+
 ## [0.2.0] - 2026-10-17
 
 ### Added
