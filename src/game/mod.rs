@@ -12,11 +12,10 @@
 //! - [`hub`]: one task for the process: sessions, matchmaking queues,
 //!   private rooms, and which player is in which match. It never awaits I/O.
 //! - [`runner`]: one task per match around the pure [`engine::Match`],
-//!   which persists the result, the ratings and the webhook outbox row in
-//!   one transaction at the end.
-//! - [`webhook`]: the outbox delivery worker (`docs/contract/webhooks.md`).
+//!   which persists the result, the ratings, the players' `site.game_results`
+//!   rows and their brains in one transaction at the end.
 //! - [`season`]: the monthly season close (`docs/contract/brains.md` §3):
-//!   standings, `season.ended` event and rating decay.
+//!   standings, rating decay and brain rewards.
 //! - [`stats`]: the admin statistics (`GET /v1/game/admin/stats`), from the
 //!   hub's live snapshot and the `game` schema.
 //!
@@ -35,7 +34,6 @@ pub mod season;
 pub mod session;
 pub mod stats;
 pub mod store;
-pub mod webhook;
 
 use std::sync::Arc;
 use std::time::Duration;

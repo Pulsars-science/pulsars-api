@@ -63,7 +63,7 @@ commits you already made: `git rebase --signoff origin/main`.
 ## Changing the contract
 
 `docs/contract/` is the source of truth for the public API, the JWT, the
-webhooks and the database views. It is shared with the Laravel site and the
+brains and the database views. It is shared with the Laravel site and the
 game front end, so it changes **before** the code:
 
 1. Open an issue with the "Contract change" template: what changes, why, and

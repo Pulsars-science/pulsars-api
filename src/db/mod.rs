@@ -12,6 +12,7 @@ pub mod sources;
 
 pub mod accounts;
 pub mod admin_stats;
+pub mod brains;
 pub mod conversations;
 pub mod courses;
 pub mod email_tokens;
@@ -22,8 +23,10 @@ pub mod forum;
 pub mod friends;
 pub mod language_stats;
 pub mod languages;
+pub mod learning;
 pub mod members;
 pub mod news;
+pub mod practice;
 pub mod resources;
 pub mod rooms;
 pub mod sessions;

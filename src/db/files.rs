@@ -56,3 +56,15 @@ pub async fn read(
     .fetch_one(pool)
     .await
 }
+
+/// The correction PDF of the published exam `slug`.
+pub async fn exam_correction(pool: &PgPool, slug: &str) -> Result<Option<FileMeta>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "SELECT file_id, size, mime, updated_at FROM ",
+        exam_correction_files!(),
+        " f WHERE f.slug = $1"
+    ))
+    .bind(slug)
+    .fetch_optional(pool)
+    .await
+}

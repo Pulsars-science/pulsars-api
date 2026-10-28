@@ -12,7 +12,7 @@ generators. The front end is `pulsars-game` (`pulsars.science/jeux/duels`).
 | **subject** | `maths`, `physics`, `chemistry`, `computer-science`, or `all`. Selects the flash generators a match draws from. |
 | **rules** | `{"duration": 60 \| 300 \| null, "target": 10 \| null, "penalty": bool}`. Exactly one of `duration` and `target` is set. `penalty`: a wrong answer is −1 (else 0). |
 | **queue key** | `subject` + `rules`. Matchmaking only pairs players with the same key. |
-| **mode** | `duel` (1 vs 1 matchmaking), `room` (private room, 2–8 players, by invitation code), `ghost` (against the recorded run of another player). Sent as `flash-duel`, `flash-room`, `flash-ghost` in the webhook. |
+| **mode** | `duel` (1 vs 1 matchmaking), `room` (private room, 2–8 players, by invitation code), `ghost` (against the recorded run of another player). Stored as `flash-duel`, `flash-room`, `flash-ghost` in `site.game_results`. |
 | **ranked** | Only `duel` between two accounts. Its rating is per subject (`all` has its own). |
 | **seat** | A player's position in a match, 0-based. |
 
@@ -183,7 +183,7 @@ created ──(starts_at, 3 s countdown)──▶ running ──▶ finished
   `outcome`: `win` for rank 1 alone, `draw` when rank 1 is shared, `loss`
   otherwise, `forfeit` for leavers (who rank last).
 - **Void match**: if nobody answered anything, the match is stored with
-  `end_reason = "void"`, no rating change, no webhook.
+  `end_reason = "void"`, no rating change, no result, no brains.
 - **Anti-cheat**: a correct answer under 300 ms after its question was sent is
   suspicious. More than 3 in a match → the match becomes unranked
   (`ranked: false`, no rating change; it still counts as played).
@@ -223,11 +223,10 @@ Ranked forfeit: the leaver loses, the other wins.
 **Monthly season** (`docs/contract/brains.md` §3): at the start of each UTC
 month the API closes the previous one, per subject key, in one transaction:
 standings of the accounts with at least 5 ranked duels ended in the month
-(by rating, then ranked duels in the month, then lower `user_id`), a
-`season.ended` webhook when they are not empty, then the decay of every
-rating of the subject: `rating = 1500 + 0.8 × (rating − 1500)`,
-`rd = min(350, rd + 50)`. `games`/`wins`/`losses`/`draws` are all-time and
-stay. Laravel turns the standings into brains.
+(by rating, then ranked duels in the month, then lower `user_id`), the
+decay of every rating of the subject: `rating = 1500 + 0.8 × (rating − 1500)`,
+`rd = min(350, rd + 50)`, then the brain rewards of the standings.
+`games`/`wins`/`losses`/`draws` are all-time and stay.
 
 ## 8. `game` schema
 
@@ -253,22 +252,18 @@ game.ratings (
   volatility double precision, games int, wins int, losses int, draws int,
   updated_at timestamptz, PRIMARY KEY (user_id, subject)
 )
-game.webhook_outbox (
-  event_id uuid PK, type text, body jsonb, status text,  -- pending | sent | dead
-  attempts int, next_attempt_at timestamptz, last_error text null,
-  created_at timestamptz, sent_at timestamptz null
-)
 game.seasons (                  -- one row per closed month and subject key
   month text, subject text, closed_at timestamptz,
-  standings jsonb,              -- the `standings` of `season.ended`, [] if none
-  event_id uuid null,           -- the outbox row, when one was written
+  standings jsonb,              -- [{user_id, rank, rating, ranked_matches}], [] if none
   PRIMARY KEY (month, subject)
 )
 ```
 
-The outbox row is written in the same transaction as the match end
-(`webhooks.md` §7) when at least one account played. Without
-`LARAVEL_WEBHOOK_URL` the rows stay `pending`.
+The same transaction as the match end writes, for each account player of a
+match that is not void, a `site.game_results` row (`match_id`, `user_id`,
+`mode`, `ranked`, `outcome`, `ended_at`; XP is computed from it by
+`site.member_xp`) and the brains of the match (`brains.md` §2). An account
+deleted during the match is skipped.
 
 ## 9. HTTP
 
@@ -303,7 +298,6 @@ hours are zeros.
   "rules": [{"rules": {"duration": 60, "target": null, "penalty": false}, "matches": 80}, …],
   "quality": {"avg_match_seconds": 64.2, "avg_answers_per_player": 23.1, "accuracy": 0.71},
   "ratings": {"players": 25, "provisional": 18, "by_subject": [{"subject": "maths", "players": 20}, …]},
-  "webhook": {"pending": 0, "dead": 0},
   "seasons": [{"month": "2026-09", "subject": "maths", "ranked_players": 0, "closed_at": "2026-10-01T00:00:12Z"}]
 }
 ```
@@ -317,7 +311,6 @@ hours are zeros.
 | `rules` | Matches of the period per rules, most played first (ties by their JSON text). |
 | `quality` | Finished non-void matches of the period: mean `ended_at − started_at` in seconds (one decimal), mean answers per live seat (one decimal, ghost seats excluded), `accuracy` = correct / answered over those seats (three decimals). Each is `null` without data. |
 | `ratings` | All time: `players` with at least one ranked match in some subject, `provisional` = those whose every rating has RD > 110, `by_subject`: players per subject key (all five, most first). |
-| `webhook` | Outbox rows `pending` and `dead` now. |
 | `seasons` | The last 12 `game.seasons` rows, newest month first (subjects in key order); `ranked_players` = size of the standings. |
 
 **Counting started matches.** The `game.matches` row is written as a
@@ -330,8 +323,7 @@ started today, from the hub's snapshot. The snapshot is taken before the
 queries, which run in one repeatable-read, read-only transaction: a match
 that ends in between is counted once (distinct account ids; the database
 seats of live matches are left out of the guest count). Indexes:
-`matches_started` on `game.matches (started_at)` and the partial
-`webhook_outbox_dead` (migration `20261019000000_admin_stats.sql`).
+`matches_started` on `game.matches (started_at)`.
 
 ## 10. Implementation notes
 

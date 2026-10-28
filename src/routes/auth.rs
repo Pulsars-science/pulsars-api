@@ -506,7 +506,7 @@ pub(crate) async fn limit(
 // --- Validation (Laravel's CreateNewUser and Password::defaults) ------------
 
 /// 3 to 30 letters, digits, `_` or `-` (`/^[\pL\pN_-]+$/u`).
-fn check_pseudo(pseudo: &str, errors: &mut Vec<ParameterError>) -> bool {
+pub(crate) fn check_pseudo(pseudo: &str, errors: &mut Vec<ParameterError>) -> bool {
     let chars = pseudo.chars().count();
     let error = if pseudo.is_empty() {
         Some(("required", "is required"))

@@ -140,6 +140,32 @@ async fn ranked_in_march(conn: &mut PgConnection, user_id: i64, subject: &str, n
     }
 }
 
+/// An account of the site, for the rewards (the others are like accounts
+/// deleted since: skipped).
+async fn account(conn: &mut PgConnection, user_id: i64) {
+    sqlx::query(
+        "INSERT INTO site.users (id, pseudo, name, email, created_at, updated_at)
+         VALUES ($1, 's' || $1, 's' || $1, 's' || $1 || '@example.invalid',
+                 now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')",
+    )
+    .bind(user_id)
+    .execute(conn)
+    .await
+    .unwrap();
+}
+
+/// The brain movements of `user_id`: key, amount, details.
+async fn brains_of(conn: &mut PgConnection, user_id: i64) -> Vec<(String, i32, Value)> {
+    sqlx::query_as(
+        "SELECT cle::text, montant, details::jsonb FROM site.cerveaux_mouvements
+          WHERE user_id = $1 ORDER BY cle",
+    )
+    .bind(user_id)
+    .fetch_all(conn)
+    .await
+    .unwrap()
+}
+
 fn line(user_id: i64, rank: i64, rating: i64, ranked_matches: i64) -> Standing {
     Standing {
         user_id: user_id.to_string(),
@@ -156,6 +182,9 @@ async fn standings_order_threshold_ties_and_utc_month() {
     let mut tx = pool.begin().await.unwrap();
     let cs = "computer-science";
     let u = fresh_users(8);
+    for &id in &u[..3] {
+        account(&mut tx, id).await;
+    }
 
     // Rating order.
     rating(&mut tx, u[0], cs, 1700.4, 320.0).await;
@@ -231,7 +260,7 @@ async fn standings_order_threshold_ties_and_utc_month() {
         .unwrap();
     let Close::Closed {
         standings,
-        event_id,
+        rewarded,
     } = close
     else {
         panic!("not closed: {close:?}")
@@ -248,45 +277,32 @@ async fn standings_order_threshold_ties_and_utc_month() {
         ]
     );
 
-    // The outbox row is the contract's event.
-    let event_id = event_id.expect("an event for a non-empty standing");
-    let (kind, status, body): (String, String, Value) =
-        sqlx::query_as("SELECT type, status, body FROM game.webhook_outbox WHERE event_id = $1")
-            .bind(event_id)
-            .fetch_one(&mut *tx)
-            .await
-            .unwrap();
+    // The rewards (Laravel's `Cerveaux::crediterSaison`): accounts only.
+    assert_eq!(rewarded, 3);
+    let key = "saison:2001-03:computer-science".to_owned();
     assert_eq!(
-        (kind.as_str(), status.as_str()),
-        ("season.ended", "pending")
+        brains_of(&mut tx, u[0]).await,
+        vec![(
+            key.clone(),
+            300,
+            json!({"season": "2001-03", "subject": cs, "rank": 1})
+        )]
     );
-    assert_eq!(
-        body,
-        json!({
-            "event_id": event_id.to_string(),
-            "type": "season.ended",
-            "version": 1,
-            "occurred_at": "2001-04-01T00:00:04Z",
-            "data": {
-                "season": "2001-03",
-                "subject": "computer-science",
-                "standings": serde_json::to_value(&standings).unwrap(),
-            },
-        })
-    );
-    assert_eq!(body["data"]["standings"][0]["user_id"], u[0].to_string());
-    assert_eq!(body["data"]["standings"][0]["rating"], 1700);
+    assert_eq!(brains_of(&mut tx, u[2]).await[0].1, 200);
+    assert_eq!(brains_of(&mut tx, u[1]).await[0].1, 200);
+    assert!(brains_of(&mut tx, u[3]).await.is_empty());
 
     // The season row.
-    let (stored, stored_event, closed_at): (Value, Option<Uuid>, DateTime<Utc>) = sqlx::query_as(
-        "SELECT standings, event_id, closed_at FROM game.seasons
+    let (stored, closed_at): (Value, DateTime<Utc>) = sqlx::query_as(
+        "SELECT standings, closed_at FROM game.seasons
               WHERE month = '2001-03' AND subject = 'computer-science'",
     )
     .fetch_one(&mut *tx)
     .await
     .unwrap();
-    assert_eq!(stored, body["data"]["standings"]);
-    assert_eq!(stored_event, Some(event_id));
+    assert_eq!(stored, serde_json::to_value(&standings).unwrap());
+    assert_eq!(stored[0]["user_id"], u[0].to_string());
+    assert_eq!(stored[0]["rating"], 1700);
     assert_eq!(closed_at, now);
 
     // Decay of every rating of the subject, ranked or not; other subjects
@@ -302,27 +318,19 @@ async fn standings_order_threshold_ties_and_utc_month() {
     assert_eq!(rating_of(&mut tx, u[6], cs).await, (1420.0, 150.0));
     assert_eq!(rating_of(&mut tx, u[5], "maths").await, (1900.0, 60.0));
 
-    // Closing again changes nothing: no second event, no second decay.
+    // Closing again changes nothing: no second reward, no second decay.
     let again = season::close_month(&mut tx, march, subject(cs), now)
         .await
         .unwrap();
     assert_eq!(again, Close::AlreadyClosed);
-    let events: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM game.webhook_outbox
-          WHERE type = 'season.ended' AND body->'data'->>'season' = '2001-03'
-            AND body->'data'->>'subject' = 'computer-science'",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .unwrap();
-    assert_eq!(events, 1);
+    assert_eq!(brains_of(&mut tx, u[0]).await.len(), 1);
     assert_eq!(rating_of(&mut tx, u[6], cs).await, (1420.0, 150.0));
 
     tx.rollback().await.unwrap();
 }
 
 #[tokio::test]
-async fn an_empty_month_is_closed_without_an_event_and_still_decays() {
+async fn an_empty_month_is_closed_without_rewards_and_still_decays() {
     let Some(url) = database_url() else { return };
     let pool = migrated(&url).await;
     let mut tx = pool.begin().await.unwrap();
@@ -337,24 +345,16 @@ async fn an_empty_month_is_closed_without_an_event_and_still_decays() {
         close,
         Close::Closed {
             standings: vec![],
-            event_id: None
+            rewarded: 0
         }
     );
-    let events: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM game.webhook_outbox
-          WHERE type = 'season.ended' AND body->'data'->>'season' = '2001-05'",
+    let standings: Value = sqlx::query_scalar(
+        "SELECT standings FROM game.seasons WHERE month = '2001-05' AND subject = 'physics'",
     )
     .fetch_one(&mut *tx)
     .await
     .unwrap();
-    assert_eq!(events, 0);
-    let (standings, event_id): (Value, Option<Uuid>) = sqlx::query_as(
-        "SELECT standings, event_id FROM game.seasons WHERE month = '2001-05' AND subject = 'physics'",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .unwrap();
-    assert_eq!((standings, event_id), (json!([]), None));
+    assert_eq!(standings, json!([]));
     assert_eq!(rating_of(&mut tx, u[0], "physics").await, (1340.0, 350.0));
 
     tx.rollback().await.unwrap();
@@ -366,6 +366,7 @@ async fn close_due_closes_the_previous_utc_month_of_every_subject_once() {
     let pool = migrated(&url).await;
     let mut tx = pool.begin().await.unwrap();
     let u = fresh_users(1);
+    account(&mut tx, u[0]).await;
     rating(&mut tx, u[0], "all", 1700.0, 100.0).await;
     ranked_in_march(&mut tx, u[0], "all", 5).await;
 
@@ -402,7 +403,7 @@ async fn close_due_closes_the_previous_utc_month_of_every_subject_once() {
         .unwrap();
     let Close::Closed {
         standings,
-        event_id: Some(_),
+        rewarded: 1,
     } = all
     else {
         panic!("{all:?}")

@@ -133,13 +133,13 @@ pub async fn show(
 }
 
 /// A positive decimal id without sign or leading zero.
-fn parse_id(raw: &str) -> Option<i64> {
+pub(crate) fn parse_id(raw: &str) -> Option<i64> {
     let canonical =
         !raw.is_empty() && !raw.starts_with('0') && raw.bytes().all(|b| b.is_ascii_digit());
     if canonical { raw.parse().ok() } else { None }
 }
 
-fn to_exercise(row: ExerciseRow, lang: Lang) -> Exercise {
+pub(crate) fn to_exercise(row: ExerciseRow, lang: Lang) -> Exercise {
     let (title, is_tr) = translated(row.title, row.tr_title);
     let (chapter_title, chapter_tr) = translated(row.chapter_title, row.tr_chapter_title);
     let (course_title, course_tr) = translated(row.course_title, row.tr_course_title);

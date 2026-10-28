@@ -93,7 +93,7 @@ For the chosen format:
 - **Minimum**: a match where nobody answers anything: counted or void?
 
 Impact: the state machine of a match in `docs/game-protocol.md`, the
-`end_reason` and `outcome` values of the webhook.
+`end_reason` and `outcome` values of `game.match_players` and `site.game_results`.
 
 Decision: **Decided 2026-10-17: the rules are options chosen when starting a match** ("filters" of the game mode):
 

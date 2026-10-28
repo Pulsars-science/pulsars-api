@@ -19,8 +19,6 @@ chrono = { version = "0.4.45", features = ["serde"] }
 ed25519-dalek = "3.0.0"
 # Query string decoding (already used by axum).
 form_urlencoded = "1.2.2"
-# HMAC-SHA256 of the webhook signature (already used by sqlx).
-hmac = "0.13.0"
 fred = { version = "10.1.0", default-features = false, features = ["i-std", "enable-rustls-ring"] }
 metrics = { version = "0.24.6", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }

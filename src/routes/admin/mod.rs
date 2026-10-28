@@ -26,8 +26,6 @@ pub mod requests;
 pub mod roles;
 
 use axum::body::Body;
-use axum::extract::multipart::{Multipart, MultipartError};
-use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use serde::Serialize;
@@ -252,81 +250,8 @@ pub(crate) async fn unique_slug(
     Ok(slug)
 }
 
-/// Laravel's `local` disk, stored in `contenu.fichiers`.
-pub(crate) const DISK: &str = "local";
-
-/// A `multipart/form-data` body (the uploads). Any other `Content-Type` is a
-/// 415, like a non-JSON body elsewhere.
-pub struct Form(pub Multipart);
-
-impl<S: Send + Sync> FromRequest<S> for Form {
-    type Rejection = ApiError;
-
-    async fn from_request(request: Request, state: &S) -> Result<Self, ApiError> {
-        Multipart::from_request(request, state)
-            .await
-            .map(Self)
-            .map_err(|_| ApiError::UnsupportedMediaType)
-    }
-}
-
-/// A multipart body that cannot be read: 413 over the route's limit, 400
-/// otherwise.
-pub(crate) fn multipart_error(error: MultipartError) -> ApiError {
-    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        ApiError::PayloadTooLarge
-    } else {
-        ApiError::InvalidBody(Vec::new())
-    }
-}
-
-/// `count` random letters and digits, as Laravel's `Str::random()` names
-/// stored files.
-pub(crate) fn random_name(count: usize) -> Result<String, ApiError> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut bytes = vec![0u8; count];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| ApiError::Internal(format!("no randomness for a file name: {e}")))?;
-    // 248 = 4 × 62: no modulo bias.
-    let mut name = String::with_capacity(count);
-    let mut pool = bytes.into_iter();
-    while name.len() < count {
-        let byte = match pool.next() {
-            Some(b) => b,
-            None => {
-                let mut one = [0u8; 1];
-                getrandom::fill(&mut one)
-                    .map_err(|e| ApiError::Internal(format!("no randomness: {e}")))?;
-                one[0]
-            }
-        };
-        if byte < 248 {
-            name.push(char::from(ALPHABET[usize::from(byte % 62)]));
-        }
-    }
-    Ok(name)
-}
-
-/// Stores `content` at `path` on the `local` disk.
-pub(crate) async fn store_file(
-    db: impl sqlx::PgExecutor<'_>,
-    path: &str,
-    content: &[u8],
-    mime: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO contenu.fichiers (disque, chemin, contenu, type_mime, taille, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, date_trunc('second', now() AT TIME ZONE 'UTC'), date_trunc('second', now() AT TIME ZONE 'UTC'))",
-    )
-    .bind(DISK)
-    .bind(path)
-    .bind(content)
-    .bind(mime)
-    .bind(i64::try_from(content.len()).unwrap_or(i64::MAX))
-    .execute(db)
-    .await?;
-    Ok(())
-}
+// The upload helpers are shared with the members' uploads.
+pub(crate) use super::upload::{DISK, Form, multipart_error, random_name, store_file};
 
 /// The whole PDF at `path` on the `local` disk, shown in the browser under
 /// `file_name`, or `None` when it is not stored.

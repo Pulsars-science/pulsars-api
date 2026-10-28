@@ -8,7 +8,6 @@ use fred::prelude::ClientLike as _;
 use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
 use pulsars_api::game::season;
-use pulsars_api::game::webhook::{self, WebhookSettings};
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::mail::Mailer;
 use pulsars_api::state::AppState;
@@ -44,8 +43,7 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    // `pulsars-api migrate`, `create-admin`, `import-content`,
-    // `webhooks replay <event_id>` (docs/contract/webhooks.md §7).
+    // `pulsars-api migrate`, `create-admin`, `import-content`.
     if !args.is_empty() {
         return command(&config, &args).await;
     }
@@ -61,7 +59,7 @@ async fn main() -> ExitCode {
 
 const USAGE: &str = "usage: pulsars-api [migrate | create-admin <pseudo> <email> \
                      | import-content <old database url> <author pseudo> \
-                     | webhooks replay <event_id> | jwt-keygen <kid> <dir> \
+                     | jwt-keygen <kid> <dir> \
                      | content check [--lang en] | content fix <file.json> [--dry-run] \
                      | content translate [--lang en] [--force] [--limit N]]";
 
@@ -105,8 +103,7 @@ fn jwt_keygen(kid: &str, dir: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// One-off commands: `migrate`, `create-admin`, `import-content` and
-/// `webhooks replay <event_id>`.
+/// One-off commands: `migrate`, `create-admin` and `import-content`.
 async fn command(config: &Config, args: &[String]) -> ExitCode {
     match args {
         [command] if command == "migrate" => return migrate_command(config).await,
@@ -119,39 +116,8 @@ async fn command(config: &Config, args: &[String]) -> ExitCode {
         [command, rest @ ..] if command == "content" => return content_command(config, rest).await,
         _ => {}
     }
-    let [group, action, event_id] = args else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(EXIT_USAGE);
-    };
-    if group != "webhooks" || action != "replay" {
-        eprintln!("usage: pulsars-api [webhooks replay <event_id>]");
-        return ExitCode::from(EXIT_USAGE);
-    }
-    let Ok(event_id) = uuid::Uuid::parse_str(event_id) else {
-        eprintln!("not a UUID: {event_id}");
-        return ExitCode::from(EXIT_USAGE);
-    };
-    let pool = match db::connect_lazy(config) {
-        Ok(pool) => pool,
-        Err(error) => {
-            eprintln!("invalid DATABASE_URL: {error}");
-            return ExitCode::from(EXIT_CONFIG);
-        }
-    };
-    match webhook::replay(&pool, event_id).await {
-        Ok(true) => {
-            println!("event {event_id} queued for delivery");
-            ExitCode::SUCCESS
-        }
-        Ok(false) => {
-            eprintln!("no webhook event {event_id}");
-            ExitCode::FAILURE
-        }
-        Err(error) => {
-            eprintln!("database error: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    eprintln!("{USAGE}");
+    ExitCode::from(EXIT_USAGE)
 }
 
 /// `EX_USAGE` from sysexits.h.
@@ -457,22 +423,6 @@ async fn run(config: Config) -> Result<(), String> {
             season::run_closer(db).await;
         }
     });
-    let webhooks = match &config.webhook {
-        Some(settings) => Some(webhook::spawn_worker(
-            db.clone(),
-            WebhookSettings::new(
-                settings.url.clone(),
-                settings.secret.clone(),
-                settings.host.clone(),
-            ),
-        )?),
-        None => {
-            tracing::warn!(
-                "LARAVEL_WEBHOOK_URL is not set: match results stay in the outbox, unsent"
-            );
-            None
-        }
-    };
     let game = Game::start(db.clone(), GameSettings::default());
 
     let public = TcpListener::bind(config.bind_addr)
@@ -545,9 +495,6 @@ async fn run(config: Config) -> Result<(), String> {
     upkeep.abort();
     jwks_refresh.abort();
     migrations.abort();
-    if let Some(webhooks) = webhooks {
-        webhooks.abort();
-    }
     if redis.is_connected()
         && let Err(error) = redis.quit().await
     {

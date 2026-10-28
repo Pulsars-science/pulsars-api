@@ -162,3 +162,113 @@ pub async fn facets(pool: &PgPool) -> Result<(Vec<String>, Vec<String>), sqlx::E
     .await?;
     Ok((levels, countries))
 }
+
+/// What the exam page shows besides the statement: the counters of a
+/// published exam, and whether its correction PDF is stored.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ExamCounters {
+    pub id: i64,
+    pub views: i64,
+    pub downloads: i64,
+    /// Distinct people who took the statement or the correction away.
+    pub downloaders: i64,
+    pub has_correction_pdf: bool,
+}
+
+pub async fn counters(pool: &PgPool, slug: &str) -> Result<Option<ExamCounters>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "SELECT x.id, e.vues AS views, e.telechargements AS downloads,
+                (SELECT count(*) FROM contenu.telechargements t
+                  WHERE t.telechargeable_type = 'exam' AND t.telechargeable_id = x.id) AS downloaders,
+                EXISTS (SELECT 1 FROM ",
+        exam_correction_files!(),
+        " f WHERE f.slug = x.slug) AS has_correction_pdf
+           FROM ",
+        published_exams!(),
+        " x JOIN contenu.exams e ON e.id = x.id
+          WHERE x.slug = $1"
+    ))
+    .bind(slug)
+    .fetch_optional(pool)
+    .await
+}
+
+/// The model answer of each part of a published exam, in `tr` when
+/// translated.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CorrectionRow {
+    pub id: i64,
+    pub position: i32,
+    pub correction_md: String,
+    pub tr_correction_md: Option<String>,
+}
+
+pub async fn corrections(
+    pool: &PgPool,
+    exam_id: i64,
+    tr: Option<&str>,
+) -> Result<Vec<CorrectionRow>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "SELECT c.id, c.position::int AS position, c.correction_md,
+                t.correction_md AS tr_correction_md
+           FROM ",
+        exam_corrections!(),
+        " c LEFT JOIN ",
+        exam_correction_translations!(),
+        " t ON t.exam_part_id = c.id AND t.lang = $2
+          WHERE c.exam_id = $1
+          ORDER BY c.position, c.id"
+    ))
+    .bind(exam_id)
+    .bind(tr)
+    .fetch_all(pool)
+    .await
+}
+
+/// The id of the published exam `slug`.
+pub async fn published_id(pool: &PgPool, slug: &str) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar(concat!(
+        "SELECT x.id FROM ",
+        published_exams!(),
+        " x WHERE x.slug = $1"
+    ))
+    .bind(slug)
+    .fetch_optional(pool)
+    .await
+}
+
+/// One more view, as `CompteurVues::compter` (the caller dedups).
+pub async fn add_view(pool: &PgPool, exam_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE contenu.exams SET vues = vues + 1 WHERE id = $1")
+        .bind(exam_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// One more download, and the visitor among the distinct downloaders
+/// (`Telechargeable::enregistrerTelechargement`).
+pub async fn add_download(
+    pool: &PgPool,
+    exam_id: i64,
+    visitor_hash: &str,
+    user_id: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE contenu.exams SET telechargements = telechargements + 1 WHERE id = $1")
+        .bind(exam_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO contenu.telechargements
+                (telechargeable_type, telechargeable_id, visiteur_hash, user_id, created_at)
+         VALUES ('exam', $1, $2, $3, now() AT TIME ZONE 'UTC')
+         ON CONFLICT (telechargeable_type, telechargeable_id, visiteur_hash) DO NOTHING",
+    )
+    .bind(exam_id)
+    .bind(visitor_hash)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
