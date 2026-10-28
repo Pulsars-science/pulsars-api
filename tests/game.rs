@@ -157,6 +157,7 @@ async fn server_with(
     jwks.refresh().await.expect("JWKS loads");
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
+        mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), settings),
         db,
         redis: redis::connect(&config).unwrap(),

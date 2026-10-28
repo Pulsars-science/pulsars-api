@@ -104,7 +104,24 @@ pub struct Config {
     /// The key the API signs game tokens with (`JWT_SIGNING_KEY_FILE`,
     /// `JWT_SIGNING_KID`). `None`: `POST /v1/auth/token` answers 503.
     pub token_signer: Option<TokenSigner>,
+    /// Where account mails go (`MAIL_SMTP_URL`, `MAIL_FROM`). `None`: they
+    /// are only logged, without their link.
+    pub mail: Option<MailConfig>,
 }
+
+/// The SMTP server of account mails (`docs/contract/auth-sessions.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailConfig {
+    /// `smtp://host:port` or `smtps://user:password@host:port`, as lettre
+    /// reads it.
+    pub smtp_url: Secret,
+    /// `Pulsars <noreply@blackenium.com>`.
+    pub from: String,
+}
+
+/// Sender of account mails when `MAIL_FROM` is not set, as in the site's
+/// `docs/EMAIL.md`.
+pub const MAIL_FROM: &str = "Pulsars <noreply@blackenium.com>";
 
 /// What the API needs to issue game tokens (`docs/contract/auth-jwt.md`).
 #[derive(Clone)]
@@ -246,6 +263,26 @@ impl Config {
             &mut reader.problems,
         );
         let bcrypt_cost = reader.optional("BCRYPT_COST", "12", |v| parse_range(v, 4, 31));
+        let mail_from = reader.optional("MAIL_FROM", MAIL_FROM, |v| {
+            v.parse::<lettre::message::Mailbox>()
+                .map(|_| v.to_owned())
+                .map_err(|e| format!("must be a mailbox such as `{MAIL_FROM}`: {e}"))
+        });
+        let mail = match reader.optional_raw("MAIL_SMTP_URL") {
+            None => None,
+            Some(url) if url.starts_with("smtp://") || url.starts_with("smtps://") => {
+                mail_from.clone().map(|from| MailConfig {
+                    smtp_url: Secret::new(url),
+                    from,
+                })
+            }
+            Some(_) => {
+                reader
+                    .problems
+                    .push("MAIL_SMTP_URL: must start with smtp:// or smtps://".to_owned());
+                None
+            }
+        };
         let signer_file = reader.optional_raw("JWT_SIGNING_KEY_FILE");
         let signer_kid = reader.optional_raw("JWT_SIGNING_KID");
         let own_issuer = reader.optional("JWT_OWN_ISSUER", API_ISSUER, |v| Ok(v.to_owned()));
@@ -414,6 +451,7 @@ impl Config {
                 service_key,
                 bcrypt_cost: bcrypt_cost.unwrap_or(12),
                 token_signer,
+                mail,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
@@ -957,6 +995,31 @@ mod tests {
         assert!(problems[0].ends_with("is not base64"), "{problems:?}");
         assert!(with(&[]).unwrap().token_signer.is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mail_needs_an_smtp_url_and_a_mailbox() {
+        assert_eq!(with(&[]).unwrap().mail, None);
+        let config = with(&[("MAIL_SMTP_URL", "smtp://127.0.0.1:1025")]).unwrap();
+        assert_eq!(
+            config.mail,
+            Some(MailConfig {
+                smtp_url: Secret::new("smtp://127.0.0.1:1025"),
+                from: MAIL_FROM.to_owned(),
+            })
+        );
+        let problems = with(&[
+            ("MAIL_SMTP_URL", "http://x"),
+            ("MAIL_FROM", "not a mailbox"),
+        ])
+        .unwrap_err()
+        .problems;
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("MAIL_FROM: "), "{problems:?}");
+        assert_eq!(
+            problems[1],
+            "MAIL_SMTP_URL: must start with smtp:// or smtps://"
+        );
     }
 
     #[test]

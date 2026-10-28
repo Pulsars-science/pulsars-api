@@ -4,7 +4,7 @@
 //! remember token (column grants of `20261029000000_auth_sessions`).
 
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 /// The login columns of an account.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -86,17 +86,66 @@ pub async fn create(
     .bind(locale)
     .fetch_one(pool)
     .await;
-    result.map_err(|error| {
-        let constraint = error
-            .as_database_error()
-            .and_then(|e| e.constraint())
-            .map(str::to_owned);
-        match constraint.as_deref() {
-            Some("users_pseudo_unique") => CreateError::PseudoTaken,
-            Some("users_email_unique") => CreateError::EmailTaken,
-            _ => CreateError::Database(error),
-        }
-    })
+    result.map_err(create_error)
+}
+
+fn create_error(error: sqlx::Error) -> CreateError {
+    let constraint = error
+        .as_database_error()
+        .and_then(|e| e.constraint())
+        .map(str::to_owned);
+    match constraint.as_deref() {
+        Some("users_pseudo_unique") => CreateError::PseudoTaken,
+        Some("users_email_unique") => CreateError::EmailTaken,
+        _ => CreateError::Database(error),
+    }
+}
+
+/// The account whose e-mail is `email`, ignoring case; the exact spelling
+/// first, then the lowest id.
+pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<AccountRow>, sqlx::Error> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {ACCOUNT_COLUMNS} FROM site.users
+          WHERE lower(email) = lower($1)
+          ORDER BY (email = $1) DESC, id
+          LIMIT 1"
+    )))
+    .bind(email)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Which of `pseudos` are already used, ignoring case: their lower case.
+pub async fn taken_pseudos(pool: &PgPool, pseudos: &[String]) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT lower(pseudo)::text FROM site.users WHERE lower(pseudo) = ANY($1::text[])",
+    )
+    .bind(pseudos.iter().map(|p| p.to_lowercase()).collect::<Vec<_>>())
+    .fetch_all(pool)
+    .await
+}
+
+/// Creates an account for a provider identity, as the site's
+/// `ConnexionSociale::creer`: no password, the address verified only if the
+/// provider says so.
+pub async fn create_social(
+    tx: &mut Transaction<'_, Postgres>,
+    pseudo: &str,
+    email: &str,
+    verified: bool,
+) -> Result<AccountRow, CreateError> {
+    let result = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO site.users (pseudo, name, email, password, email_verified_at, created_at, updated_at)
+         VALUES ($1, $1, $2, NULL, CASE WHEN $3 THEN now() AT TIME ZONE 'UTC' END,
+                 now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')
+         RETURNING {ACCOUNT_COLUMNS}"
+    )))
+    .bind(pseudo)
+    .bind(email)
+    .bind(verified)
+    .fetch_one(&mut **tx)
+    .await;
+    result.map_err(create_error)
 }
 
 pub async fn set_password(pool: &PgPool, id: i64, hash: &str) -> Result<(), sqlx::Error> {

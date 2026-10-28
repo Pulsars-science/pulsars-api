@@ -22,15 +22,18 @@ BEGIN;
 
 DROP TABLE IF EXISTS contenu.licences, contenu.matieres, contenu.sources_officielles;
 DROP FUNCTION IF EXISTS contenu.slugify(text);
--- Les sessions de l'API (migration 20261029000000_auth_sessions) : le site
+-- Les sessions et les liens envoyes par mail de l'API (migrations
+-- 20261029000000_auth_sessions, 20261031000000_email_tokens) : le site
 -- d'avant ne les connait pas. Les droits de pulsars_api sur site.users,
--- site.roles et site.role_user (20261030000000_auth_roles) partent a l'etape 3.
-DROP TABLE IF EXISTS site.auth_sessions;
+-- site.roles, site.role_user (20261030000000_auth_roles) et
+-- site.comptes_sociaux partent a l'etape 3.
+DROP TABLE IF EXISTS site.auth_sessions, site.email_tokens;
 DO $$
 BEGIN
     IF to_regclass('game._sqlx_migrations') IS NOT NULL THEN
         DELETE FROM game._sqlx_migrations
-         WHERE version IN (20261028000000, 20261029000000, 20261030000000);
+         WHERE version IN (20261028000000, 20261029000000, 20261030000000,
+                           20261031000000);
     END IF;
 END $$;
 

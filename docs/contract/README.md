@@ -98,6 +98,8 @@ Every error response has the media type `application/problem+json`:
 | `unauthorized` | 401 | Missing, invalid or expired token. Also sets `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750). See `auth-jwt.md`. |
 | `token-unavailable` | 503 | `POST /v1/auth/token` without a signing key configured (`JWT_SIGNING_KEY_FILE`). |
 | `session-invalid` | 401 | `Pulsars-Session` missing, unknown, expired or revoked. Sets `WWW-Authenticate: Session realm="api.pulsars.science"`. |
+| `invalid-token` | 422 | A link sent by mail (`/v1/auth/email/verify`, `/v1/auth/password/reset-with-token`) that is unknown, used, expired, or was sent to another address. `errors` names `token`, code `invalid`. |
+| `conflict` | 409 | The request conflicts with an account's state; `reason` says how: `taken` (a provider identity linked to another account), `email_unverified` (an existing address the provider does not vouch for), `last_login_method` (unlinking the only way to log in). |
 | `forbidden` | 403 | Valid token, but not allowed; or an endpoint reserved to the service key. |
 | `not-found` | 404 | Unknown, unpublished or hidden resource. **Unpublished content answers 404, never 403**, so its existence does not leak. |
 | `method-not-allowed` | 405 | Sets `Allow` to the methods of that path, e.g. `GET,HEAD,OPTIONS`. |

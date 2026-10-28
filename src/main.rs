@@ -10,6 +10,7 @@ use pulsars_api::config::Config;
 use pulsars_api::game::season;
 use pulsars_api::game::webhook::{self, WebhookSettings};
 use pulsars_api::game::{Game, GameSettings, store};
+use pulsars_api::mail::Mailer;
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes, telemetry};
 use tokio::net::TcpListener;
@@ -313,7 +314,9 @@ async fn run(config: Config) -> Result<(), String> {
     );
 
     let grace = config.shutdown_grace;
+    let mailer = Mailer::from_config(config.mail.as_ref())?;
     let state = AppState {
+        mailer,
         config: Arc::new(config),
         db: db.clone(),
         redis: redis.clone(),

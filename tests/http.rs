@@ -92,6 +92,7 @@ async fn app(config: Config) -> (Router, AppState) {
 fn app_with(config: Config, jwks: Jwks) -> (Router, AppState) {
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
+        mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), GameSettings::default()),
         db,
         redis: redis::connect(&config).unwrap(),
@@ -417,9 +418,9 @@ async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
         "SELECT 1 FROM site.passkeys LIMIT 1",
         "SELECT 1 FROM site.personal_access_tokens LIMIT 1",
         "SELECT 1 FROM site.password_reset_tokens LIMIT 1",
-        "SELECT 1 FROM site.comptes_sociaux LIMIT 1",
         "UPDATE site.users SET email = email WHERE false",
-        "UPDATE site.users SET email_verified_at = now() WHERE false",
+        "UPDATE site.users SET pseudo = pseudo WHERE false",
+        "UPDATE site.users SET onboarding_at = now() WHERE false",
         "DELETE FROM site.users WHERE false",
         "SELECT description FROM site.roles LIMIT 1",
         "INSERT INTO site.role_user (role_id, user_id) SELECT 1, 1 WHERE false",
@@ -437,6 +438,19 @@ async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
         .execute(&mut *tx)
         .await
         .expect("pulsars_api reads sessions");
+    // Links sent by mail, verified addresses, Google accounts.
+    sqlx::query("SELECT count(*) FROM site.email_tokens")
+        .execute(&mut *tx)
+        .await
+        .expect("pulsars_api reads mailed links");
+    sqlx::query("UPDATE site.users SET email_verified_at = email_verified_at WHERE false")
+        .execute(&mut *tx)
+        .await
+        .expect("pulsars_api marks addresses verified");
+    sqlx::query("DELETE FROM site.comptes_sociaux WHERE false")
+        .execute(&mut *tx)
+        .await
+        .expect("pulsars_api links Google accounts");
     // Permission roles, for the `roles` claim of the game tokens it signs.
     sqlx::query(
         "SELECT r.slug FROM site.role_user ru JOIN site.roles r ON r.id = ru.role_id

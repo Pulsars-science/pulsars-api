@@ -69,6 +69,17 @@ pub enum ApiError {
     /// A `Pulsars-Session` that is missing, unknown, expired or revoked.
     #[error("session invalid")]
     SessionInvalid,
+    /// A link token sent by mail that is unknown, used, expired, or was
+    /// sent to another address: 422 on `token`.
+    #[error("invalid token")]
+    InvalidToken,
+    /// The request conflicts with an account's state; `reason` says how
+    /// (`taken`, `email_unverified`, `last_login_method`).
+    #[error("conflict: {reason}")]
+    Conflict {
+        reason: &'static str,
+        detail: String,
+    },
     /// A `cursor` that cannot be decoded, or was issued for another endpoint
     /// or another set of filters.
     #[error("invalid cursor")]
@@ -158,7 +169,10 @@ impl ApiError {
             Self::InvalidParameter(_) | Self::InvalidBody(_) | Self::InvalidCursor => {
                 StatusCode::BAD_REQUEST
             }
-            Self::InvalidFields(_) | Self::InvalidCredentials => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::InvalidFields(_) | Self::InvalidCredentials | Self::InvalidToken => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            Self::Conflict { .. } => StatusCode::CONFLICT,
             Self::Unauthorized { .. } | Self::SessionInvalid => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } | Self::InsufficientScope { .. } => StatusCode::FORBIDDEN,
             Self::UpgradeRequired => StatusCode::UPGRADE_REQUIRED,
@@ -183,6 +197,8 @@ impl ApiError {
             Self::InvalidBody(_) | Self::InvalidFields(_) => ("invalid-body", "Invalid body"),
             Self::InvalidCredentials => ("invalid-credentials", "Invalid credentials"),
             Self::SessionInvalid => ("session-invalid", "Invalid session"),
+            Self::InvalidToken => ("invalid-token", "Invalid link"),
+            Self::Conflict { .. } => ("conflict", "Conflict"),
             Self::InvalidCursor => ("invalid-cursor", "Invalid cursor"),
             Self::Unauthorized { .. } => ("unauthorized", "Invalid token"),
             Self::Forbidden { .. } => ("forbidden", "Forbidden"),
@@ -219,6 +235,11 @@ impl ApiError {
             Self::SessionInvalid => {
                 Some("The session is missing, unknown, expired or revoked.".to_owned())
             }
+            Self::InvalidToken => Some(
+                "This link is unknown, already used, expired, or was sent to another address."
+                    .to_owned(),
+            ),
+            Self::Conflict { detail, .. } => Some(detail.clone()),
             Self::TokenUnavailable => Some("Game tokens are temporarily unavailable.".to_owned()),
             Self::TooManyAttempts { retry_after } => Some(format!(
                 "Too many attempts. Try again in {retry_after} seconds."
@@ -262,11 +283,17 @@ impl ApiError {
                 Self::InvalidParameter(errors) => Some(errors.clone()),
                 Self::InvalidBody(errors) if !errors.is_empty() => Some(errors.clone()),
                 Self::InvalidFields(errors) => Some(errors.clone()),
+                Self::InvalidToken => Some(vec![ParameterError::field(
+                    "token",
+                    "invalid",
+                    "is unknown, used, expired or for another address",
+                )]),
                 _ => None,
             },
             reason: match self {
                 Self::Unauthorized { reason, .. } => Some(reason.code()),
                 Self::InsufficientScope { .. } => Some(INSUFFICIENT_SCOPE),
+                Self::Conflict { reason, .. } => Some(reason),
                 _ => None,
             },
             trace_id: match self {

@@ -126,6 +126,16 @@ created_at, updated_at`; `UPDATE` of `password, updated_at`; the sequence of
 `users.id`. Never the two-factor secrets or `remember_token`, nothing else
 of `site`. Details: `auth-sessions.md`.
 
+### 2.4 Phase 2: mails and Google accounts
+
+The migration `20261031000000_email_tokens` creates `site.email_tokens`
+(links sent by mail, token hashes only) and gives `pulsars_api`: all rights
+on it; `UPDATE` of `email_verified_at, updated_at` and `INSERT` of
+`email_verified_at` on `site.users`; all rights on `site.comptes_sociaux`
+and its sequence (Google links). Still never the two-factor secrets,
+`remember_token`, `sessions`, `password_reset_tokens` or private messages.
+Details: `auth-sessions.md` §2b, §4b, §4c.
+
 ### Isolation tested
 
 `views.sql` was run on PostgreSQL 16 (PGlite) with Laravel-equivalent tables

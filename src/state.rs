@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use crate::auth::Jwks;
 use crate::config::Config;
 use crate::game::Game;
+use crate::mail::Mailer;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,4 +18,6 @@ pub struct AppState {
     pub jwks: Jwks,
     /// The game server (matchmaking, rooms, matches).
     pub game: Game,
+    /// Account mails (verification, password reset).
+    pub mailer: Mailer,
 }
