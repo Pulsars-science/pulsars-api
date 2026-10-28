@@ -1365,6 +1365,7 @@ components:
             official_url: null
             source_url: null
             published_at: '2026-08-13T09:32:04Z'
+            description: Sujet de spécialité mathématiques du baccalauréat général, session 2026, épreuve du 16 juin (sujet 26-MATJ1ME1).
             web_url: https://pulsars.science/examens/baccalaureat-general-2026-mathematiques-specialite-jour-1
           - id: 5
             slug: centrale-supelec-2026-mathematiques-1-mp-mpi
@@ -1384,6 +1385,7 @@ components:
             official_url: https://www.concours-centrale-supelec.fr/sites/default/files/documents/M098.pdf
             source_url: https://www.concours-centrale-supelec.fr/sujets-rapports
             published_at: '2026-08-13T11:03:10Z'
+            description: Sujet officiel de Mathématiques 1 du Concours Centrale-Supélec 2026, filières MP, MPI.
             web_url: https://pulsars.science/examens/centrale-supelec-2026-mathematiques-1-mp-mpi
         next_cursor: null
     ResourcesPage:
@@ -1733,7 +1735,7 @@ components:
 
     ExamSummary:
       type: object
-      required: [id, slug, lang, title, type, competition, subject, country, level, tracks, session, duration_minutes, total_points, part_count, pdf_url, official_url, source_url, published_at, web_url]
+      required: [id, slug, lang, title, type, competition, subject, country, level, tracks, session, duration_minutes, total_points, part_count, pdf_url, official_url, source_url, published_at, description, web_url]
       properties:
         id: { type: integer }
         slug: { type: string }
@@ -1774,15 +1776,15 @@ components:
           format: uri
           description: The organiser's page listing papers, cited as the source.
         published_at: { type: string, format: date-time }
+        description: { type: [string, 'null'] }
         web_url: { type: string, format: uri }
 
     ExamDetail:
       allOf:
         - $ref: '#/components/schemas/ExamSummary'
         - type: object
-          required: [description, parts]
+          required: [parts]
           properties:
-            description: { type: [string, 'null'] }
             parts:
               type: array
               items:

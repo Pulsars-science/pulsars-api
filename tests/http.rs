@@ -1564,8 +1564,11 @@ async fn exams_filters() {
         assert_eq!(field(&body, "id"), expected, "{query}");
     }
     let (_, _, body) = get_json(&app, "/v1/exams").await;
-    // Summaries carry neither description nor parts.
-    assert!(body["data"][0].get("description").is_none());
+    // Summaries carry the description, not the parts.
+    assert_eq!(
+        body["data"][0]["description"],
+        "Sujet officiel de Mathématiques 1 du Concours Centrale-Supélec 2026, filières MP, MPI."
+    );
     assert!(body["data"][0].get("parts").is_none());
 }
 
