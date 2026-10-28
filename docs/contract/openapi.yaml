@@ -52,6 +52,15 @@ tags:
       The languages taught on `pulsars.science/langues` (`docs/languages.md`):
       their levels and the words of each level. Written by the API itself
       (schema `langues`), not by Laravel.
+  - name: forum
+    description: |
+      The questions and answers forum (Laravel's `/forum`). Read by
+      everyone; written by verified members who are not muted. Bodies are
+      Markdown with LaTeX (`body_md`), rendered by the site.
+  - name: forum-moderation
+    description: |
+      Hiding, locking, pinning, deleting and restoring forum messages, and
+      muting members. Moderators only (`site.roles.niveau` ≥ 1, verified).
   - name: game
     description: |
       Flash duels (`docs/game-protocol.md`). Matches themselves run over the
@@ -1764,6 +1773,586 @@ paths:
         '401': { description: Missing or invalid token. }
         '403': { description: '`insufficient-scope`: not an admin.' }
 
+  /v1/forum/themes:
+    get:
+      tags: [forum]
+      operationId: listForumThemes
+      summary: The forum's themes, in order, with their question counts
+      description: |
+        Also the choices of the « ask a question » form (Laravel's
+        `/forum/poser`). Deleted questions are not counted, hidden ones are.
+        `Cache-Control: no-store`.
+      responses:
+        '200':
+          description: Every theme
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ForumTheme' }
+
+  /v1/forum/themes/{slug}:
+    get:
+      tags: [forum]
+      operationId: getForumTheme
+      summary: One theme (the header of `/forum/theme/{slug}`)
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The theme
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ForumTheme' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/questions:
+    get:
+      tags: [forum]
+      operationId: listForumQuestions
+      summary: Questions, pinned first, by page
+      description: |
+        Laravel's `/forum` and `/forum/theme/{theme}`. Pinned questions come
+        first whatever `sort`. Numbered pages only: `total` is always there,
+        `next_cursor` always null. With a session, `voted` says whether the
+        member voted; a hidden question has a null `excerpt` except for
+        moderators. `Cache-Control: no-store`.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - name: theme
+          in: query
+          description: The slug of a theme; an unknown slug answers 404.
+          schema: { type: string, maxLength: 255 }
+        - name: sort
+          in: query
+          description: |
+            `recent` (newest first), `popular` (most votes, then newest) or
+            `unanswered` (only questions without an answer, newest first).
+          schema: { type: string, enum: [recent, popular, unanswered], default: recent }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor, total]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ForumQuestionSummary' }
+                  next_cursor: { type: 'null' }
+                  total: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [forum]
+      operationId: askForumQuestion
+      summary: Ask a question
+      description: |
+        A verified member who finished the welcome steps; 403 while muted
+        (checked first). Fields are trimmed, then: `theme` the slug of a
+        theme (`required`, `invalid`), `title` 8 to 150 characters and
+        `body` 15 to 10 000 (`required`, `too_short`, `too_long`). The slug
+        is the title's first 60 characters in ASCII, plus `-` and 6 random
+        characters.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                theme: { type: string, example: mathematiques }
+                title: { type: string, minLength: 8, maxLength: 150 }
+                body: { type: string, minLength: 15, maxLength: 10000, description: Markdown with LaTeX. }
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id, slug]
+                    properties:
+                      id: { type: integer }
+                      slug: { type: string, example: comment-factoriser-un-trinome-x7k2qa }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/forum/questions/{slug}:
+    get:
+      tags: [forum]
+      operationId: getForumQuestion
+      summary: A question and its answers, as a tree
+      description: |
+        Counts a view once per reader (the member, or else the address)
+        every two hours, as Laravel did once per session. A hidden message
+        keeps its title and `hidden_reason` but its `body_md` is null,
+        except for moderators. Replies to a deleted answer are left out with
+        it. `Cache-Control: no-store`.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The thread
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ForumQuestion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/questions/{question}/answers:
+    post:
+      tags: [forum]
+      operationId: answerForumQuestion
+      summary: Answer a question, or reply to one of its answers
+      description: |
+        A verified member. 404 for an unknown question, then 403 while muted,
+        then 409 `locked` on a locked thread. `body` is 2 to 10 000
+        characters; `parent_id` must be an answer of the same question
+        (`invalid` otherwise).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                body: { type: string, minLength: 2, maxLength: 10000 }
+                parent_id: { type: [integer, 'null'] }
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: integer }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`locked`: the thread takes no more answers.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/forum/questions/{question}/answers/{id}/accept:
+    post:
+      tags: [forum]
+      operationId: acceptForumAnswer
+      summary: Mark an answer as accepted, or take the mark back
+      description: |
+        Only the question's author (403). An answer of another question
+        answers 404. No body. A toggle, as in Laravel: accepting the
+        accepted answer again takes the mark back.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: The accepted answer afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [accepted_answer_id]
+                    properties:
+                      accepted_answer_id: { type: [integer, 'null'] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/questions/{question}/vote:
+    post:
+      tags: [forum]
+      operationId: toggleForumQuestionVote
+      summary: Vote for a question, or take the vote back
+      description: A verified member, muted or not. No body.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+      responses:
+        '200':
+          description: The vote afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [voted, votes]
+                    properties:
+                      voted: { type: boolean }
+                      votes: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/answers/{id}/vote:
+    post:
+      tags: [forum]
+      operationId: toggleForumAnswerVote
+      summary: Vote for an answer, or take the vote back
+      description: A verified member, muted or not. No body.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: The vote afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [voted, votes]
+                    properties:
+                      voted: { type: boolean }
+                      votes: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/reports:
+    post:
+      tags: [forum]
+      operationId: reportForumMessage
+      summary: Report a question or an answer to the moderators
+      description: |
+        A verified member; 20 a minute, counted before the body is read. The
+        report joins the moderators' queue (`site.signalements`, `statut`
+        `nouveau`). `type` keeps Laravel's values.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                target_type: { type: string, enum: [question, answer] }
+                target_id: { type: integer }
+                type: { type: string, enum: [spam, abus, hors_sujet] }
+                message: { type: [string, 'null'], maxLength: 2000 }
+      responses:
+        '201':
+          description: Reported
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: integer }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/forum/questions/{question}/translations:
+    post:
+      tags: [forum]
+      operationId: translateForumQuestion
+      summary: The title and body of a question, translated by DeepL
+      description: |
+        Open to everyone; 10 a minute per reader (the member, or else the
+        address), counted first. The translation is stored and served again
+        while the question's text is unchanged (`cached`). A hidden question
+        is only translated for moderators (403). Without `DEEPL_API_KEY`:
+        503 `not_configured`; when DeepL fails: 503 `upstream_failed`.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+      requestBody: { $ref: '#/components/requestBodies/ForumTranslate' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumTranslation' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/TranslationUnavailable' }
+
+  /v1/forum/answers/{id}/translations:
+    post:
+      tags: [forum]
+      operationId: translateForumAnswer
+      summary: The body of an answer, translated by DeepL
+      description: As for a question; `title` is null.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody: { $ref: '#/components/requestBodies/ForumTranslate' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumTranslation' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/TranslationUnavailable' }
+
+  /v1/moderation/forum/questions/{id}:
+    delete:
+      tags: [forum-moderation]
+      operationId: deleteForumQuestion
+      summary: Soft delete a question
+      description: Its page answers 404 until it is restored. 404 when already deleted.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/questions/{id}/hide:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumQuestionHidden
+      summary: Hide a question behind a notice, or show it again
+      description: |
+        Hiding records the moderator and an optional `reason` (at most 300
+        characters, shown to readers); showing again clears them, and the
+        body is then ignored. Send `{}` without a reason.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      requestBody: { $ref: '#/components/requestBodies/ForumHide' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumHidden' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/moderation/forum/questions/{id}/lock:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumQuestionLocked
+      summary: Lock a thread (no more answers), or unlock it
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '200':
+          description: The state afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [locked]
+                    properties:
+                      locked: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/questions/{id}/pin:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumQuestionPinned
+      summary: Pin a question first in every list, or unpin it
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '200':
+          description: The state afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [pinned]
+                    properties:
+                      pinned: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/questions/{id}/restore:
+    post:
+      tags: [forum-moderation]
+      operationId: restoreForumQuestion
+      summary: Bring a deleted question back
+      description: 404 only when no question has this id, deleted or not.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Restored }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/answers/{id}:
+    delete:
+      tags: [forum-moderation]
+      operationId: deleteForumAnswer
+      summary: Soft delete an answer (and hide its replies with it)
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/answers/{id}/hide:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumAnswerHidden
+      summary: Hide an answer behind a notice, or show it again
+      description: As for a question.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      requestBody: { $ref: '#/components/requestBodies/ForumHide' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumHidden' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/moderation/forum/answers/{id}/restore:
+    post:
+      tags: [forum-moderation]
+      operationId: restoreForumAnswer
+      summary: Bring a deleted answer back
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Restored }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/members/{id}/mute:
+    put:
+      tags: [forum-moderation]
+      operationId: muteMember
+      summary: Keep a member from posting for some days
+      description: |
+        The member still reads, but may not ask, answer, nor post messages
+        while `muted_until` is ahead. Nobody mutes themselves or a member of
+        an equal or higher permission level (403): a moderator mutes
+        members, an admin also moderators, a super admin also admins.
+        `days` 1 to 365 (`required`, `out_of_range`), `reason` at most 300
+        characters (`required`, `too_long`). Muting again replaces the mute.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: string, example: '42' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                days: { type: integer, minimum: 1, maximum: 365 }
+                reason: { type: string, maxLength: 300 }
+      responses:
+        '200':
+          description: Muted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [user_id, muted_until, reason]
+                    properties:
+                      user_id: { type: string, example: '42' }
+                      muted_until: { type: string, format: date-time }
+                      reason: { type: string }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+    delete:
+      tags: [forum-moderation]
+      operationId: unmuteMember
+      summary: Lift a member's mute
+      description: The same permission rule as muting.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: string, example: '42' } }
+      responses:
+        '204': { description: Lifted, or there was none }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     gameToken:
@@ -1775,6 +2364,22 @@ components:
         See `auth-jwt.md`.
 
   parameters:
+    OptionalSessionToken:
+      name: Pulsars-Session
+      in: header
+      description: A session token, to read as that member (votes, moderation view).
+      schema: { type: string, minLength: 43, maxLength: 43 }
+    ForumQuestionKey:
+      name: question
+      in: path
+      required: true
+      description: The question's id or slug (a slug always holds a `-` and letters).
+      schema: { type: string, example: comment-factoriser-un-trinome-x7k2qa }
+    ForumMessageId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
     SessionToken:
       name: Pulsars-Session
       in: header
@@ -1846,7 +2451,60 @@ components:
     RetryAfter:
       schema: { type: integer, example: 12 }
 
+  requestBodies:
+    ForumTranslate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            properties:
+              lang: { type: string, enum: [en, fr, ru] }
+    ForumHide:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            properties:
+              reason: { type: [string, 'null'], maxLength: 300 }
+
   responses:
+    ForumTranslation:
+      description: The translation
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data: { $ref: '#/components/schemas/ForumTranslation' }
+    ForumHidden:
+      description: The state afterwards
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [hidden]
+                properties:
+                  hidden: { type: boolean }
+    TranslationUnavailable:
+      description: '`not_configured` (no DeepL key) or `upstream_failed` (DeepL did not answer properly)'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/unavailable
+            title: Service unavailable
+            status: 503
+            detail: The translation service is not configured.
+            reason: not_configured
     Opened:
       description: A new session and its account
       headers:
@@ -2923,3 +3581,101 @@ components:
         reading: { type: [string, 'null'], description: In the language's reading system., example: nǐ }
         meaning: { type: string, description: In the requested interface language. }
         lang: { $ref: '#/components/schemas/LangCode' }
+    ForumTheme:
+      type: object
+      required: [slug, name, description, color, question_count]
+      properties:
+        slug: { type: string, example: mathematiques }
+        name: { type: string, example: Mathematiques }
+        description: { type: [string, 'null'] }
+        color: { type: string, example: '#4f7df0' }
+        question_count: { type: integer, minimum: 0 }
+    ForumThemeRef:
+      type: object
+      required: [slug, name, color]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        color: { type: string }
+    ForumQuestionSummary:
+      type: object
+      required: [id, slug, title, excerpt, theme, author, author_id, votes, answer_count, views, solved, has_voted, is_hidden, is_locked, is_pinned, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        title: { type: string }
+        excerpt:
+          type: [string, 'null']
+          description: The body without HTML tags, cut at 160 characters with `...`; null when hidden, except for moderators.
+        theme: { $ref: '#/components/schemas/ForumThemeRef' }
+        author: { type: [string, 'null'], description: The author's pseudo; null once the account is deleted. }
+        author_id: { type: [string, 'null'], example: '42' }
+        votes: { type: integer, minimum: 0 }
+        answer_count: { type: integer, minimum: 0 }
+        views: { type: integer, minimum: 0 }
+        solved: { type: boolean, description: An answer is accepted. }
+        has_voted: { type: boolean, description: The reader voted for it. }
+        is_hidden: { type: boolean }
+        is_locked: { type: boolean }
+        is_pinned: { type: boolean }
+        created_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: [string, 'null'], format: date-time }
+    ForumQuestion:
+      type: object
+      required: [id, slug, title, body_md, theme, author, author_id, votes, views, has_voted, accepted_answer_id, is_hidden, hidden_reason, is_locked, is_pinned, created_at, updated_at, answer_count, answers, viewer]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        title: { type: string }
+        body_md: { type: [string, 'null'], description: Null when hidden, except for moderators. }
+        theme: { $ref: '#/components/schemas/ForumThemeRef' }
+        author: { type: [string, 'null'] }
+        author_id: { type: [string, 'null'] }
+        votes: { type: integer, minimum: 0 }
+        views: { type: integer, minimum: 0 }
+        has_voted: { type: boolean }
+        accepted_answer_id: { type: [integer, 'null'] }
+        is_hidden: { type: boolean }
+        hidden_reason: { type: [string, 'null'], description: The moderator's reason, shown to everyone. }
+        is_locked: { type: boolean }
+        is_pinned: { type: boolean }
+        created_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: [string, 'null'], format: date-time }
+        answer_count: { type: integer, minimum: 0, description: Every answer, replies included. }
+        answers:
+          type: array
+          description: Answers to the question, oldest first, each with its replies.
+          items: { $ref: '#/components/schemas/ForumAnswer' }
+        viewer:
+          type: object
+          required: [is_author, can_participate, is_moderator]
+          properties:
+            is_author: { type: boolean }
+            can_participate: { type: boolean, description: A member who is not muted, on a thread that is not locked. }
+            is_moderator: { type: boolean }
+    ForumAnswer:
+      type: object
+      required: [id, body_md, author, author_id, votes, has_voted, is_hidden, hidden_reason, created_at, children]
+      properties:
+        id: { type: integer }
+        body_md: { type: [string, 'null'], description: Null when hidden, except for moderators. }
+        author: { type: [string, 'null'] }
+        author_id: { type: [string, 'null'] }
+        votes: { type: integer, minimum: 0 }
+        has_voted: { type: boolean }
+        is_hidden: { type: boolean }
+        hidden_reason: { type: [string, 'null'] }
+        created_at: { type: [string, 'null'], format: date-time }
+        children:
+          type: array
+          description: Replies, oldest first.
+          items: { $ref: '#/components/schemas/ForumAnswer' }
+    ForumTranslation:
+      type: object
+      required: [title, body_md, source_lang, target_lang, cached]
+      properties:
+        title: { type: [string, 'null'], description: Null for an answer. }
+        body_md: { type: string }
+        source_lang: { type: [string, 'null'], description: What DeepL detected, lower case., example: en }
+        target_lang: { type: string, enum: [en, fr, ru] }
+        cached: { type: boolean, description: Served from the stored translation of the same text. }
