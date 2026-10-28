@@ -11,7 +11,7 @@ publish = false
 # Private messages at rest (`src/crypto.rs`). Pinned: a change of the format
 # would leave stored messages unreadable.
 aes-gcm = { version = "=0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 ed25519-dalek = "3.0.0"
