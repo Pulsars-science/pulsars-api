@@ -59,6 +59,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   private messages between friends, polled with `?after={id}`. Private
   messages are sealed with AES-256-GCM under `MESSAGES_KEY` (required in
   production). Migration `20261104000000_social`.
+- The members' routes of the site (step B, `openapi.yaml` tags
+  `progress`, `practice`, `dashboard`, `profile`, `feedback`): course
+  progress and lesson completion (`/v1/me/progress`,
+  `/v1/me/courses/{slug}/progress`, `PUT /v1/me/lessons/{id}/completion`),
+  exercises graded by the API with their solution after an attempt
+  (`/v1/me/exercises/{id}`, `POST /v1/exercises/{id}/attempts`,
+  `/v1/exercises/catalog`, `/random`, `/facets`), the dashboard, brains
+  history and XP leaderboards (`/v1/me/dashboard`, `/v1/me/brains`,
+  `/v1/leaderboard/xp`, `/v1/leaderboard/top`, `/v1/rewards`), the
+  profile, welcome steps, language and avatar (`/v1/me/profile`,
+  `/v1/me/onboarding`, `/v1/me/locale`, `/v1/me/avatar`,
+  `/v1/storage/{path}`, `/v1/roles`), reports with their captcha,
+  suggestions and proposed resources (`/v1/captcha`, `/v1/reports`,
+  `/v1/suggestions`, `/v1/resource-requests`, `/v1/licenses`), the
+  donations goal (`/v1/settings/donation-goal`), and the exam page's
+  corrections, counters and correction PDF
+  (`/v1/exams/{slug}/corrections`, `/v1/exams/{slug}/correction-pdf`).
+- `GET /v1/me` also answers the site's session, with the owner's
+  `email`, `email_verified`, `onboarded`, `locale` and
+  `forum_muted_until`.
+- Exam downloads (`disposition=attachment`) are counted, per visitor
+  fingerprint (`site.reglages`, `sel_visiteurs`), robots excepted.
 
 ### Removed
 

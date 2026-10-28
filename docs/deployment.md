@@ -350,7 +350,7 @@ variable the API reads is in the file:
 | `MESSAGES_KEY` | `openssl rand -base64 32` | **required in production**: the AES-256-GCM key of private messages, 32 bytes in base64; secret, keep a copy with the backups' secrets (without it, stored messages cannot be read); unset in development: the `/v1/conversations` routes answer 503 |
 | `MESSAGES_KEY_VERSION` | `1` | stored with each private message, 1 to 32767, for a later key rotation |
 | `REQUEST_TIMEOUT_SECS` | `10` | below nginx's `proxy_read_timeout` (30 s) |
-| `BODY_LIMIT_BYTES` | `65536` | below nginx's `client_max_body_size` (256k); two admin routes have their own limits, Laravel's (`POST /v1/admin/exams`, a PDF of 20 MiB: 21 MiB; `POST /v1/admin/exams/{slug}/import`: 16 MiB), so the proxy in front of the site must let 21 MiB through on those paths |
+| `BODY_LIMIT_BYTES` | `65536` | below nginx's `client_max_body_size` (256k); the uploads have their own limits, Laravel's (`mw::body_limit`): 21 MiB for `POST /v1/admin/exams` (a 20 MiB PDF) and the members' `PUT /v1/me/avatar`, `POST /v1/suggestions` and `POST /v1/resource-requests` (§4.9), 16 MiB for `POST /v1/admin/exams/{slug}/import`; the proxy in front of the site must let 21 MiB through on those paths |
 | `LOG_FORMAT` | `json` | |
 | `RUST_LOG` | `info,sqlx=warn,tower_http=info` | |
 | `SHUTDOWN_GRACE_SECS` | `20` | below the unit's `TimeoutStopSec` (30) |
@@ -399,6 +399,34 @@ sudo systemctl reload nginx
 
 `reload`, not `restart`: connections to the other sites are not cut. Until
 the API runs, `https://api.pulsars.science/` answers 502.
+
+**Uploads and public files go through the site.** The browser sends its
+uploads to `pulsars.science`, whose relay (pulsars-web, `/api/v1/**`)
+passes them to the API on the loopback. Three routes take
+`multipart/form-data` with their own limit of 21 MiB (a 20 MiB PDF and
+the form; `upload::UPLOAD_BODY_LIMIT`, applied by `mw::body_limit` above
+`BODY_LIMIT_BYTES`, as for the admin's exam uploads):
+`PUT /v1/me/avatar` (4 MiB image), `POST /v1/suggestions` (4 MiB image)
+and `POST /v1/resource-requests` (20 MiB PDF). A file a little over its
+limit gets a 422 `too_large`, a body over 21 MiB a 413. So, in the
+`pulsars.science` server block:
+
+```nginx
+location ~ ^/api/v1/(me/avatar|suggestions|resource-requests|admin/exams(/[^/]+/import)?)$ {
+    client_max_body_size 21m;
+    client_body_timeout 60s;
+    proxy_request_buffering on;   # the API gets the whole body at once
+    proxy_pass http://127.0.0.1:3000;
+}
+location /storage/ {             # PUBLIC_STORAGE_URL: avatars, images
+    proxy_pass http://127.0.0.1:8080/v1/storage/;
+}
+```
+
+The relay must forward these bodies as they are (no JSON parsing, at
+least 21 MiB), with `User-Agent` and `X-Forwarded-For`: downloads and
+views are counted per visitor fingerprint. `api.pulsars.science` keeps
+its 256 KiB: uploads are not offered there.
 
 ### 4.10 systemd
 

@@ -69,6 +69,19 @@ tags:
       no CORS, every answer `Cache-Control: no-store`. Lists are numbered
       pages with `page`, `per_page`, `total` and per-status `counters`.
       News, courses and exams are addressed by slug, as Laravel did.
+  - name: progress
+    description: |
+      A member's progress on the courses (Laravel's `Progression`). Routes
+      of the site's members take `Pulsars-Session`; their answers are never
+      cached.
+  - name: practice
+    description: Exercises as members do them, graded by the API (`CorrecteurExercice`).
+  - name: dashboard
+    description: The member's dashboard, brains (`brains.md`) and the XP leaderboards.
+  - name: profile
+    description: The member's settings, welcome steps, language and avatar.
+  - name: feedback
+    description: Reports (with their captcha), suggestions, proposed resources, the donations goal.
   - name: game
     description: |
       Flash duels (`docs/game-protocol.md`). Matches themselves run over the
@@ -694,8 +707,11 @@ paths:
       summary: The statement PDF of a published exam
       description: |
         The file itself, read from the site's storage. Never the correction,
-        never a draft's file. `pdf_url` in the exam still points to the
-        site, which counts downloads. Supports `Range` (one range), `If-Range`,
+        never a draft's file (the correction is `…/correction-pdf`). With
+        `disposition=attachment` it is a download: counted (the counters are
+        in `GET /v1/exams/{slug}/corrections`; robots excepted, by
+        `User-Agent`; a resumed range not again) and `Cache-Control:
+        private, no-store`; `inline` is the preview. Supports `Range` (one range), `If-Range`,
         `If-None-Match` and `HEAD`; `Accept` is not checked.
       parameters:
         - name: slug
@@ -1333,12 +1349,20 @@ paths:
         anyone, minus school level and class (see `game-design.md` /
         decisions): pseudo, avatar, bio, roles, membership date, XP and level,
         plus the member's brains balance (`brains.md` §4; always shown to its
-        owner, whatever `cerveaux_publics` says). Never e-mail, locale, social
-        logins or moderation state.
+        owner, whatever `cerveaux_publics` says). With a game token, never
+        e-mail, locale, social logins or moderation state.
+
+        With the site's session (`Pulsars-Session`, tried first) the owner's
+        account state is added, for the site's header: `email`,
+        `email_verified`, `onboarded`, `locale`, `forum_muted_until` (the
+        mute of `PUT /v1/moderation/members/{id}/mute`, while it holds).
 
         `Cache-Control: private, no-store`.
       security:
         - gameToken: []
+        - {}
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
       responses:
         '200':
           description: The profile
@@ -4003,6 +4027,768 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/InvalidFields' }
 
+  # --- Members (step B): called by pulsars-web, from its server or its relay.
+
+  /v1/me/progress:
+    get:
+      tags: [progress]
+      operationId: getMyProgress
+      summary: The gauge of every course the member started
+      description: |
+        `{slug: {done, total, percent}}` for each published course with at
+        least one lesson completed (Laravel's `progressionsPour`): the
+        library cards and the sidebar. Any session. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The gauges
+          content:
+            application/json:
+              example:
+                data: { les-bases-du-calcul: { done: 3, total: 4, percent: 75 } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/me/courses/{slug}/progress:
+    get:
+      tags: [progress]
+      operationId: getMyCourseProgress
+      summary: The member's progress on a course
+      description: |
+        What the course and lesson pages show for the member
+        (`Progression::resume`, `lessonDeReprise`): completed lessons (ids of
+        `/v1/courses/{slug}`), percentage (`round`), and the lesson to resume
+        at, the first one not completed, else the first. Any session;
+        published courses only. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The progress
+          content:
+            application/json:
+              example:
+                data:
+                  enrolled: true
+                  completed_lesson_ids: [1, 3]
+                  done: 2
+                  total: 4
+                  percent: 50
+                  completed: false
+                  resume_lesson: { slug: les-fractions, title: Les fractions, lang: fr }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/lessons/{id}/completion:
+    put:
+      tags: [progress]
+      operationId: setLessonCompletion
+      summary: Mark a lesson completed, or to do again
+      description: |
+        Laravel's toggle (`POST cours/{course}/lecon/{slug}/termine`) with
+        the wanted state in the body, so that a retried request does not undo
+        itself. `completed: true`: the progress row (idempotent), the
+        enrollment, its last lesson, its completion at 100 %, and 5 brains the
+        first time the lesson is ever completed (`lecon:{id}`), in one
+        transaction. `rewards.xp` is 10 when the lesson was not completed.
+        `completed: false`: the row goes and the course is no longer
+        completed; brains stay. Verified members (`auth`, `verified`,
+        `onboarding`).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [completed]
+              additionalProperties: false
+              properties:
+                completed: { type: boolean }
+      responses:
+        '200':
+          description: Done
+          content:
+            application/json:
+              example:
+                data: { completed: true, progress: { done: 1, total: 4, percent: 25 }, course_completed: false }
+                rewards: { xp: 10, brains: 5 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/exercises/{id}:
+    get:
+      tags: [practice]
+      operationId: getMyExercise
+      summary: The member's attempts at an exercise, and its solution once tried
+      description: |
+        The statement is `GET /v1/exercises/{id}`. `solution_md` is `null`
+        until the member made an attempt (Laravel's rule: it would otherwise
+        be read before answering); in `lang` when translated. The expected
+        answers (`correctes`, `acceptees`) are never sent. Any session.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The member's state
+          content:
+            application/json:
+              example:
+                data:
+                  attempt_count: 1
+                  solved: false
+                  last_attempt: { answer: { options: [a] }, correct: false, at: '2026-11-02T10:00:00Z' }
+                  solution_md: La réponse est **7**.
+                  lang: fr
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/exercises/{id}/attempts:
+    post:
+      tags: [practice]
+      operationId: postAttempt
+      summary: Answer an exercise
+      description: |
+        Graded here, as `CorrecteurExercice`: a QCM is right with exactly the
+        right option ids (any order, duplicates ignored); a short answer when,
+        normalized (case, accents, Cyrillic, spaces, final punctuation; `,` is
+        `.`), it is one of the accepted answers of the exercise or of any of
+        its translations; a free answer is never graded (`correct: null`).
+        Every attempt is kept and enrolls on the course. `rewards.xp` is 8 on
+        the first success only. The solution comes with the result. Verified
+        members.
+
+        Body: `{"options": [...]}` (QCM: at least one, each at most 50
+        characters) or `{"text": "..."}` (short answer: at most 500; free
+        answer: at most 5000), trimmed.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/Lang'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                options: { type: array, minItems: 1, items: { type: string, maxLength: 50 } }
+                text: { type: string, maxLength: 5000 }
+      responses:
+        '201':
+          description: Graded
+          content:
+            application/json:
+              example:
+                data: { correct: true, attempt_count: 1, solution_md: La réponse est `3/4`., lang: fr }
+                rewards: { xp: 8, brains: null }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/exercises/catalog:
+    get:
+      tags: [practice]
+      operationId: getExerciseCatalog
+      summary: The catalogue of exercises, with the member's state
+      description: |
+        Laravel's `/exercices`: published exercises by course, chapter and
+        position, 24 a page (`page`, `total`). `q` searches the title and the
+        statement; `subject` is a slug of `/v1/exercises/facets`; `state`
+        (`todo`: never solved, `new`: never tried, `solved`) only applies to a
+        member and is ignored for a visitor. `solved` is `null` when never
+        tried. Not cached (`no-store`): it changes with the reader; the
+        public, cached list is `GET /v1/exercises`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: subject, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string, enum: [qcm, reponse_courte, reponse_libre] } }
+        - { name: difficulty, in: query, schema: { type: string, enum: [debutant, intermediaire, avance] } }
+        - { name: state, in: query, schema: { type: string, enum: [todo, new, solved] } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              example:
+                data:
+                  - id: 1
+                    title: Appliquer les priorités
+                    lang: fr
+                    type: qcm
+                    auto_corrected: true
+                    course: { slug: les-bases-du-calcul, title: Les bases du calcul, lang: fr }
+                    theme: Mathématiques
+                    difficulty: debutant
+                    xp: 8
+                    solved: true
+                    web_url: https://pulsars.science/cours/les-bases-du-calcul/exercice/1
+                next_cursor: null
+                total: 5
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/exercises/random:
+    get:
+      tags: [practice]
+      operationId: getRandomExercise
+      summary: One exercise drawn among the catalogue's filters
+      description: |
+        Same filters as the catalogue (`/exercices/aleatoire`). The exercise
+        as `GET /v1/exercises/{id}`; 404 when none matches.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200': { description: 'The exercise: `{"data": Exercise}`' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/exercises/facets:
+    get:
+      tags: [practice]
+      operationId: getExerciseFacets
+      summary: The subjects of the catalogue
+      description: The start of the published courses' themes, with exercises only.
+      responses:
+        '200':
+          description: The subjects
+          content:
+            application/json:
+              example:
+                data: { subjects: [{ slug: mathematiques, name: Mathématiques, exercise_count: 5 }] }
+
+  /v1/me/dashboard:
+    get:
+      tags: [dashboard]
+      operationId: getDashboard
+      summary: The member's dashboard
+      description: |
+        `TableauDeBordController`: enrollments in progress and completed
+        (latest first, the course's own title as Laravel showed it, the last
+        lesson completed to resume at), distinct exercises tried and solved,
+        the brains balance and its last 20 movements (lesson titles in
+        `lang`), and the 4 latest published courses not started. Verified
+        members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The dashboard
+          content:
+            application/json:
+              example:
+                data:
+                  in_progress:
+                    - title: Les bases du calcul
+                      slug: les-bases-du-calcul
+                      difficulty: debutant
+                      progress: { done: 1, total: 4, percent: 25 }
+                      resume_lesson: { slug: les-fractions, title: Les fractions }
+                  completed: []
+                  stats: { courses_started: 1, courses_completed: 0, exercises_attempted: 2, exercises_solved: 1 }
+                  brains:
+                    balance: 5
+                    movements:
+                      - { id: 12, date: '2026-11-02T10:00:00Z', reason: lecon, amount: 5, lesson_title: Les fractions, season: null, subject: null, rank: null }
+                  suggestions: [{ title: Le tableau périodique des éléments, slug: chimie-le-tableau-periodique, description: '…', difficulty: intermediaire }]
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+
+  /v1/me/brains:
+    get:
+      tags: [dashboard]
+      operationId: getMyBrains
+      summary: The member's brain movements, newest first
+      description: The movements of the dashboard, paginated by cursor. Any session.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': { description: '`{"data": [BrainMovement], "next_cursor"}`' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/leaderboard/xp:
+    get:
+      tags: [dashboard]
+      operationId: getXpLeaderboard
+      summary: Every member by XP
+      description: |
+        `ClassementController`: every account, XP 0 included, most XP first
+        then pseudo; followers, whether the reader follows, roles. Laravel
+        sent the whole list; here pages of `limit` (default 50) by cursor,
+        and `me`, the reader's own line wherever it is. Verified members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              example:
+                data:
+                  - { rank: 1, pseudo: ada, avatar_url: null, xp: 102, level: 2, followers: 0, followed: false, me: false, roles: [] }
+                next_cursor: null
+                me: { rank: 4, pseudo: jikuji, avatar_url: null, xp: 0, level: 1, followers: 1, followed: false, me: true, roles: [] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+
+  /v1/leaderboard/top:
+    get:
+      tags: [dashboard]
+      operationId: getXpTop
+      summary: The home page's best members
+      description: '`Experience::meilleurs`: members with some XP only. Public.'
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10, default: 5 } }
+      responses:
+        '200':
+          description: The best
+          content:
+            application/json:
+              example:
+                data: [{ rank: 1, pseudo: ada, avatar_url: null, xp: 102, level: 2 }]
+
+  /v1/rewards:
+    get:
+      tags: [dashboard]
+      operationId: getRewards
+      summary: What actions earn, in XP and brains
+      responses:
+        '200':
+          description: The scale
+          content:
+            application/json:
+              example:
+                data:
+                  xp: { lesson: 10, exercise: 8, course: 40, question: 4, answer: 4, accepted_answer: 12, game: 3, game_win: 5, game_daily_cap: 30 }
+                  brains: { lesson: 5, game: 2, victory: 3, game_daily_cap: 20 }
+
+  /v1/me/profile:
+    get:
+      tags: [profile]
+      operationId: getProfile
+      summary: The member's profile form
+      description: Verified members. The goals and school levels are Laravel's `Support\Onboarding` keys.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The profile
+          content:
+            application/json:
+              example:
+                data:
+                  pseudo: ada
+                  email: ada@example.org
+                  bio: Mathématiques et café.
+                  avatar_url: null
+                  goals: [curiosite]
+                  school_level: lycee
+                  class: Terminale
+                  locale: fr
+                  member_since: '2026-08-10T09:00:00Z'
+                  roles: [{ slug: mathematiques, name: Mathematiques, category: matiere, color: '#4f7df0' }]
+                  interests: [mathematiques]
+                  has_password: true
+                  brains_public: true
+                  linked_accounts: [{ provider: google, email: ada@gmail.com }]
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+    patch:
+      tags: [profile]
+      operationId: updateProfile
+      summary: Save the profile form
+      description: |
+        As Laravel's form, the body is the whole form: a field left out is
+        cleared (`interests` too: the subject roles become exactly the list),
+        except `brains_public`, kept when absent. `pseudo`: required, 3 to
+        30 letters, digits, `_` or `-`, free (ignoring case); it is also the
+        `name`. `bio` at most 280, `class` at most 60; `goals` and
+        `school_level` known keys. `interests` touch subject roles only,
+        unknown slugs are ignored. Answers the new profile.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                pseudo: { type: string }
+                bio: { type: [string, 'null'], maxLength: 280 }
+                goals: { type: array, items: { type: string, enum: [reviser-examen, rattraper, approfondir, curiosite, enseigner] } }
+                school_level: { type: [string, 'null'], enum: [college, lycee, superieur, adulte, null] }
+                class: { type: [string, 'null'], maxLength: 60 }
+                interests: { type: array, items: { type: string } }
+                brains_public: { type: boolean }
+      responses:
+        '200': { description: The new profile, as `GET`. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/me/onboarding:
+    post:
+      tags: [profile]
+      operationId: postOnboarding
+      summary: Answer the welcome questions
+      description: |
+        `goals` (at least one) and `school_level` are required, `class` (at
+        most 60) and `interests` optional; the subjects are added to the
+        member's, never removed. Sets `onboarding_at`, which `Verified`
+        routes need. Any session, before the address is verified too.
+        Replayable, as Laravel's.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                goals: { type: array, minItems: 1, items: { type: string } }
+                school_level: { type: string, enum: [college, lycee, superieur, adulte] }
+                class: { type: [string, 'null'], maxLength: 60 }
+                interests: { type: array, items: { type: string } }
+      responses:
+        '204': { description: Done. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/me/locale:
+    put:
+      tags: [profile]
+      operationId: putLocale
+      summary: The account's language
+      description: '`LangueController`: for a member, `users.locale`. A visitor''s choice stays in the site''s cookie. Any session.'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locale]
+              additionalProperties: false
+              properties:
+                locale: { type: string, enum: [fr, en, ru] }
+      responses:
+        '204': { description: Saved. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/me/avatar:
+    put:
+      tags: [profile]
+      operationId: putAvatar
+      summary: Upload an avatar
+      description: |
+        `multipart/form-data`, field `avatar`: a JPEG, PNG, WebP or GIF
+        recognised by its content, at most 4 MiB and 6000 px a side (the
+        rules of a suggestion's image: Laravel had no avatar upload). Stored
+        in `contenu.fichiers` (disk `public`, `avatars/<random>.<ext>`), the
+        previous one deleted. Codes: `required`, `too_large`,
+        `invalid_image`, `too_large_dimensions`. Verified members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [avatar]
+              properties:
+                avatar: { type: string, format: binary }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              example:
+                data: { avatar_url: 'https://pulsars.science/storage/avatars/Xq3….png' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '413': { description: Body over 21 MiB. }
+        '415': { description: Not `multipart/form-data`. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+    delete:
+      tags: [profile]
+      operationId: deleteAvatar
+      summary: Remove the avatar
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Removed. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/storage/{path}:
+    get:
+      tags: [profile]
+      operationId: getPublicFile
+      summary: A file of the public disk (avatars, suggestion images)
+      description: |
+        Laravel's `/storage/{chemin}` (`FichierPublicController`):
+        `PUBLIC_STORAGE_URL` points here through the site. Random names that
+        never change content: `Cache-Control: public, max-age=31536000,
+        immutable`; `Content-Security-Policy: default-src 'none'; sandbox`.
+      parameters:
+        - { name: path, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: The file. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/roles:
+    get:
+      tags: [profile]
+      operationId: getRoles
+      summary: The roles, by category
+      description: E.g. `?category=matiere`, the subjects the forms offer.
+      parameters:
+        - { name: category, in: query, schema: { type: string, enum: [permission, matiere, distinction] } }
+      responses:
+        '200':
+          description: The roles
+          content:
+            application/json:
+              example:
+                data: [{ slug: physique, name: Physique, category: matiere, color: '#6a5acd' }]
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/captcha:
+    get:
+      tags: [feedback]
+      operationId: getCaptcha
+      summary: A captcha question for a visitor's report
+      description: |
+        `CaptchaArithmetique`: the sum of two digits from 1 to 9; `a` and
+        `b` for a question in another language. The answer stays on the
+        server, under the token, 10 minutes. 30 a minute per address.
+      responses:
+        '200':
+          description: The question
+          content:
+            application/json:
+              example:
+                data: { token: 3q2v…, question: Combien font 3 + 4 ?, a: 3, b: 4 }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { description: Redis is down. }
+
+  /v1/reports:
+    post:
+      tags: [feedback]
+      operationId: postReport
+      summary: Report a mistake, or suggest an improvement, on a content
+      description: |
+        `SignalementController`, open to visitors. `target_type`: `course`,
+        `lesson`, `exercise` or `exam`, `target_id` its id; `type` one of
+        `faute`, `amelioration`, `spam`, `abus`, `hors_sujet`; `message` 10 to
+        2000 characters, `location` at most 300. A visitor sends
+        `captcha_token` and `captcha_answer`: wrong (`incorrect`, the token
+        stays usable) or already used (`used`). A content that does not exist
+        is a 422 on `message` (`target_missing`). The same message on the
+        same content (by the same member) again is a success with no new
+        report. At most 30 an hour per member, 5 per visitor (`too_many` on
+        `message`), and 20 a minute (429).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [target_type, target_id, type, message]
+              properties:
+                target_type: { type: string, enum: [course, lesson, exercise, exam] }
+                target_id: { type: integer }
+                type: { type: string, enum: [faute, amelioration, spam, abus, hors_sujet] }
+                message: { type: string, minLength: 10, maxLength: 2000 }
+                location: { type: [string, 'null'], maxLength: 300 }
+                captcha_token: { type: string }
+                captcha_answer: { type: string }
+      responses:
+        '204': { description: Received. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/suggestions:
+    post:
+      tags: [feedback]
+      operationId: postSuggestion
+      summary: Send an idea to the team
+      description: |
+        `multipart/form-data`: `title` (at most 150), `message` (10 to 4000),
+        an optional `image` (JPEG, PNG, WebP or GIF by content, at most
+        4 MiB and 6000 px a side), stored on the public disk
+        (`suggestions/<random>.<ext>`). At most 10 an hour (`too_many` on
+        `message`) and 20 a minute (429). Verified members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                title: { type: string, maxLength: 150 }
+                message: { type: string, minLength: 10, maxLength: 4000 }
+                image: { type: string, format: binary }
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              example: { data: { id: 7 } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '413': { description: Body over 21 MiB. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/resource-requests:
+    post:
+      tags: [feedback]
+      operationId: postResourceRequest
+      summary: Propose a resource to publish
+      description: |
+        `DemandeRessourceController`, `multipart/form-data`: `title` and
+        `author_name` (at most 200), `license` (a key of `/v1/licenses`;
+        `autre` needs `license_custom`, at most 200, ignored otherwise),
+        `description` (4000), `category` (120), `lang` (`fr`, `en`, `ru`),
+        and `file`: a PDF (by content) of at most 20 MiB, stored on the
+        private disk (`demandes-ressources/<random>.pdf`) with its original
+        name and size. Pending (`en_attente`) until an admin decides. At most
+        8 an hour (`too_many` on `file`) and 20 a minute (429). Verified
+        members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [title, author_name, license, file]
+              properties:
+                title: { type: string }
+                author_name: { type: string }
+                license: { type: string }
+                license_custom: { type: string }
+                description: { type: string }
+                category: { type: string }
+                lang: { type: string, enum: [fr, en, ru] }
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Proposed
+          content:
+            application/json:
+              example: { data: { id: 3, status: en_attente } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '413': { description: Body over 21 MiB. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/licenses:
+    get:
+      tags: [feedback]
+      operationId: getLicenses
+      summary: The licences a resource may have
+      responses:
+        '200':
+          description: The licences, `autre` last
+          content:
+            application/json:
+              example:
+                data: [{ key: cc-by-4.0, name: CC BY 4.0, url: 'https://creativecommons.org/licenses/by/4.0/', free: false }, { key: autre, name: Autre (à préciser), url: null, free: true }]
+
+  /v1/settings/donation-goal:
+    get:
+      tags: [feedback]
+      operationId: getDonationGoal
+      summary: The donations goal of the site's header
+      description: |
+        `ObjectifDons`, read side: `null` until a goal above 0 is set
+        (`site.reglages`, `objectif_dons`). `percent` is
+        `floor(raised / goal × 100)`, at most 100; amounts are numbers, for
+        the site to format.
+      responses:
+        '200':
+          description: The goal
+          content:
+            application/json:
+              example:
+                data: { percent: 24, raised: 120.5, goal: 500.0, currency: EUR }
+
+  /v1/exams/{slug}/corrections:
+    get:
+      tags: [exams]
+      operationId: getExamCorrections
+      summary: What the exam page adds to the statement
+      description: |
+        `ExamenController::show`: the model answer of each part (in `lang`
+        when translated), whether a correction PDF is stored, and the
+        counters. Laravel showed corrections to everyone for a published
+        exam: so does this route, for published exams only. The page calls
+        it on every display: it counts the view, not again for the same
+        member or visitor fingerprint within 20 seconds (`CompteurVues`).
+        `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The corrections
+          content:
+            application/json:
+              example:
+                data:
+                  parts: [{ part_id: 46, position: 1, lang: fr, correction_md: '…' }]
+                  has_correction_pdf: true
+                  views: 120
+                  downloads: 45
+                  downloaders: 31
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/exams/{slug}/correction-pdf:
+    get:
+      tags: [exams]
+      operationId: getExamCorrectionPdf
+      summary: The correction PDF of a published exam
+      description: |
+        As `/v1/exams/{slug}/pdf` (ranges, ETag), named `{slug}-corrige.pdf`.
+        With `disposition=attachment` it is a download of the exam: counted
+        (robots excepted, by `User-Agent`), `Cache-Control: private,
+        no-store`.
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/Disposition'
+      responses:
+        '200': { $ref: '#/components/responses/File' }
+        '206': { $ref: '#/components/responses/FilePart' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     gameToken:
@@ -5105,6 +5891,11 @@ components:
       required: [id, pseudo, avatar_url, bio, member_since, roles, xp, brains, profile_url]
       properties:
         id: { type: string, description: Same value as the JWT `sub`. }
+        email: { type: string, description: With a session only. }
+        email_verified: { type: boolean, description: With a session only. }
+        onboarded: { type: boolean, description: With a session only. }
+        locale: { type: [string, 'null'], description: With a session only. }
+        forum_muted_until: { type: [string, 'null'], format: date-time, description: With a session only. }
         pseudo: { type: string }
         avatar_url: { type: [string, 'null'], format: uri }
         bio: { type: [string, 'null'], maxLength: 280 }
