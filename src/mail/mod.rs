@@ -49,11 +49,13 @@ pub struct Mail {
 #[derive(Clone)]
 pub struct Mailer(Arc<Inner>);
 
+struct Smtp {
+    transport: AsyncSmtpTransport<Tokio1Executor>,
+    from: Mailbox,
+}
+
 enum Inner {
-    Smtp {
-        transport: AsyncSmtpTransport<Tokio1Executor>,
-        from: Mailbox,
-    },
+    Smtp(Box<Smtp>),
     /// No SMTP server configured.
     Log,
     /// Tests: mails are kept, in order.
@@ -71,7 +73,10 @@ impl Mailer {
             .timeout(Some(SEND_TIMEOUT))
             .build();
         let from = config.from.parse().map_err(|e| format!("MAIL_FROM: {e}"))?;
-        Ok(Self(Arc::new(Inner::Smtp { transport, from })))
+        Ok(Self(Arc::new(Inner::Smtp(Box::new(Smtp {
+            transport,
+            from,
+        })))))
     }
 
     pub fn log_only() -> Self {
@@ -104,7 +109,8 @@ impl Mailer {
                 user_id = mail.user_id,
                 "account mail not sent: MAIL_SMTP_URL is not set"
             ),
-            Inner::Smtp { transport, from } => {
+            Inner::Smtp(smtp) => {
+                let Smtp { transport, from } = smtp.as_ref();
                 let message = match message(from, &mail) {
                     Ok(message) => message,
                     Err(error) => {
