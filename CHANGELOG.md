@@ -6,7 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-29
+
 ### Upgrading
+
+- From 0.2.0 (0.3.0 and 0.4.0 were never installed): `deploy/sql/README.md`,
+  phase 1 (steps 1 to 7), then phase 2 (steps 8 to 10).
 
 - Two migrations (`20261029000000_auth_sessions`,
   `20261030000000_auth_roles`): `deploy-api` applies them as
@@ -56,7 +61,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Game tokens are accepted from two issuers: the API's own (verified with
   its key, no network) and the site's (its JWKS), as before.
 
-## [0.4.0] - 2026-10-28
+## [0.4.0] - 2026-10-28 (never tagged: its changes ship in 0.5.0)
 
 ### Upgrading
 
@@ -324,7 +329,8 @@ archive's `sql/`), `pg_hba.conf` and `/etc/pulsars-api/migrate.env`, then
 - `GET /healthz` answers 503 (`down`) until Laravel's JWKS has been loaded
   once.
 
-[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.5.0
 [0.4.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.1.0...v0.2.0
