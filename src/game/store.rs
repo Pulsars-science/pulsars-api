@@ -316,14 +316,8 @@ async fn record_result(
     // `timestamp(0)`, as Laravel stored the event's `ended_at`.
     let ended_at = timestamp(result.ended_at - result.ended_at.rem_euclid(1000));
     let match_id = m.id.to_string();
-    let Some(_) = brains::credit_match(
-        tx,
-        user_id,
-        &match_id,
-        outcome == Outcome::Win,
-        ended_at,
-    )
-    .await?
+    let Some(_) =
+        brains::credit_match(tx, user_id, &match_id, outcome == Outcome::Win, ended_at).await?
     else {
         return Ok(());
     };

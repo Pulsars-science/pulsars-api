@@ -175,8 +175,10 @@ pub fn client_ip(parts: &Parts) -> Option<IpAddr> {
     })
 }
 
-/// The body limit of a request: `BODY_LIMIT_BYTES`, except for the two
-/// admin uploads, which have Laravel's (`routes::admin::exams`). A declared
+/// The body limit of a request: `BODY_LIMIT_BYTES`, except for the
+/// uploads, which have Laravel's: the two admin ones
+/// (`routes::admin::exams`) and the members' avatar, suggestion and
+/// proposed resource (`routes::upload::UPLOAD_BODY_LIMIT`). A declared
 /// length over it is refused before reading; a body that grows over it
 /// fails while it is read (413 either way).
 pub async fn body_limit(
@@ -185,8 +187,15 @@ pub async fn body_limit(
     next: Next,
 ) -> Response {
     use crate::routes::admin::exams;
+    use crate::routes::upload;
     let path = request.uri().path();
-    let limit = if request.method() != axum::http::Method::POST {
+    let method = request.method();
+    let limit = if (method == axum::http::Method::PUT && path == "/v1/me/avatar")
+        || (method == axum::http::Method::POST
+            && (path == "/v1/suggestions" || path == "/v1/resource-requests"))
+    {
+        upload::UPLOAD_BODY_LIMIT
+    } else if method != axum::http::Method::POST {
         state.config.body_limit_bytes
     } else if path == "/v1/admin/exams" {
         exams::UPLOAD_BODY_LIMIT

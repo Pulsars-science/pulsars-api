@@ -186,10 +186,12 @@ pub struct Movement {
     pub created_at: DateTime<Utc>,
 }
 
-/// The last `limit` movements of `user_id`, newest first.
+/// The movements of `user_id`, newest first, after `after` (a
+/// `(created_at, id)` of the previous page), at most `limit`.
 pub async fn history(
     pool: &PgPool,
     user_id: i64,
+    after: Option<(DateTime<Utc>, i64)>,
     limit: i64,
 ) -> Result<Vec<Movement>, sqlx::Error> {
     sqlx::query_as(
@@ -197,10 +199,14 @@ pub async fn history(
                 created_at AT TIME ZONE 'UTC' AS created_at
            FROM site.cerveaux_mouvements
           WHERE user_id = $1
+            AND ($2::timestamptz IS NULL
+                 OR (created_at AT TIME ZONE 'UTC', id) < ($2::timestamptz, $3::bigint))
           ORDER BY created_at DESC, id DESC
-          LIMIT $2",
+          LIMIT $4",
     )
     .bind(user_id)
+    .bind(after.map(|a| a.0))
+    .bind(after.map(|a| a.1))
     .bind(limit)
     .fetch_all(pool)
     .await

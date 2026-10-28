@@ -247,6 +247,8 @@ pub struct Call {
     method: &'static str,
     path: String,
     body: Option<Value>,
+    multipart: Option<Vec<Part>>,
+    user_agent: Option<String>,
     session: Option<String>,
     service: bool,
     origin: Option<String>,
@@ -259,6 +261,8 @@ impl Call {
             method,
             path: path.into(),
             body: None,
+            multipart: None,
+            user_agent: None,
             session: None,
             service: false,
             origin: None,
@@ -283,6 +287,16 @@ impl Call {
     /// A JSON body.
     pub fn json(mut self, body: Value) -> Self {
         self.body = Some(body);
+        self
+    }
+    /// A `multipart/form-data` body.
+    pub fn multipart(mut self, parts: Vec<Part>) -> Self {
+        self.multipart = Some(parts);
+        self
+    }
+    /// Another browser than the tests' default one.
+    pub fn user_agent(mut self, agent: &str) -> Self {
+        self.user_agent = Some(agent.to_owned());
         self
     }
     /// As `member` (`Pulsars-Session`).
@@ -316,7 +330,10 @@ impl Call {
         let mut request = Request::builder()
             .method(self.method)
             .uri(&self.path)
-            .header(header::USER_AGENT, "integration-tests")
+            .header(
+                header::USER_AGENT,
+                self.user_agent.as_deref().unwrap_or("integration-tests"),
+            )
             .header("x-forwarded-for", self.ip.unwrap_or_else(fresh_ip));
         if let Some(token) = &self.session {
             request = request.header("pulsars-session", token);
@@ -327,11 +344,43 @@ impl Call {
         if let Some(origin) = &self.origin {
             request = request.header(header::ORIGIN, origin);
         }
-        let request = match self.body {
-            Some(body) => request
+        let request = match (self.body, self.multipart) {
+            (_, Some(parts)) => {
+                let boundary = "pulsars-test-boundary-7f3a";
+                let mut body = Vec::new();
+                for part in parts {
+                    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+                    match &part.file_name {
+                        Some(file) => body.extend_from_slice(
+                            format!(
+                                "Content-Disposition: form-data; name=\"{}\"; filename=\"{file}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+                                part.name
+                            )
+                            .as_bytes(),
+                        ),
+                        None => body.extend_from_slice(
+                            format!(
+                                "Content-Disposition: form-data; name=\"{}\"\r\n\r\n",
+                                part.name
+                            )
+                            .as_bytes(),
+                        ),
+                    }
+                    body.extend_from_slice(&part.bytes);
+                    body.extend_from_slice(b"\r\n");
+                }
+                body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+                request
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(body))
+            }
+            (Some(body), None) => request
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string())),
-            None => request.body(Body::empty()),
+            (None, None) => request.body(Body::empty()),
         }
         .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
@@ -346,6 +395,39 @@ impl Call {
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
     }
+}
+
+/// A part of a multipart body: a text field, or a file.
+pub struct Part {
+    pub name: String,
+    pub file_name: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+impl Part {
+    pub fn text(name: &str, value: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            file_name: None,
+            bytes: value.as_bytes().to_vec(),
+        }
+    }
+    pub fn file(name: &str, file_name: &str, bytes: &[u8]) -> Self {
+        Self {
+            name: name.to_owned(),
+            file_name: Some(file_name.to_owned()),
+            bytes: bytes.to_vec(),
+        }
+    }
+}
+
+/// A PNG header of `width` x `height`: enough for the API's checks.
+pub fn png(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+    bytes
 }
 
 /// The `code`s of a 422's `errors`, as (parameter, code) pairs.

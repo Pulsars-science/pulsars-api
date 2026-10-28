@@ -477,6 +477,43 @@ async fn no_answer_or_private_data_reaches_the_content_sources() {
             "`{marker}` leaked into a content source"
         );
     }
+
+    // The answers and corrections have their own sources, read only by the
+    // member routes that apply Laravel's rules (`db::sources`): published
+    // content only, never a draft's answer or a private column.
+    let mut answers = String::new();
+    for &(name, source) in pulsars_api::db::sources::ANSWER_SOURCES {
+        let rows: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT string_agg(row_to_json(t)::text, '\n') FROM {source} t"
+        )))
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+        answers.push_str(&rows.unwrap_or_default());
+    }
+    for expected in [
+        "SOLUTION-MARKER-1",
+        "CORRIGE-MARKER-46",
+        "CORRIGE-MARKER-EN-46",
+    ] {
+        assert!(answers.contains(expected), "`{expected}` missing");
+    }
+    for marker in [
+        "SOLUTION-MARKER-6",
+        "CORRIGE-MARKER-10",
+        "CORRIGE-MARKER-EN-10",
+        "FILE-CORRIGE-MARKER",
+        "FILE-DRAFT-MARKER",
+        "PROMPT-MARKER",
+        "example.invalid",
+        "demo-draft-course",
+        "dnb-2026",
+    ] {
+        assert!(
+            !answers.contains(marker),
+            "`{marker}` leaked into an answer source"
+        );
+    }
 }
 
 // --- Authentication (in-process JWKS, no database needed) -----------------

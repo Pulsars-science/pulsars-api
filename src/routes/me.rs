@@ -2,8 +2,13 @@
 //! schema `Me`).
 //!
 //! What `https://pulsars.science/membres/{pseudo}` shows to anyone, minus
-//! school level and class. Never e-mail, locale, social logins or moderation
-//! state.
+//! school level and class. With a game token, never e-mail, locale, social
+//! logins or moderation state.
+//!
+//! With the site's session (`Pulsars-Session`, what replaces Laravel's
+//! shared `auth.user` props for the header), the owner's own account state
+//! is added: `email`, `email_verified`, `onboarded`, `locale` and
+//! `forum_muted_until`.
 
 use axum::Json;
 use axum::extract::{OriginalUri, State};
@@ -12,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::SecondsFormat;
 use serde::Serialize;
 
+use crate::auth::member::MaybeMember;
 use crate::auth::{AuthUser, user_id as parse_user_id};
 use crate::db::members::{self, Member, MemberRole};
 use crate::error::ApiError;
@@ -35,6 +41,20 @@ pub struct Me {
     /// Brains balance (`brains.md` §4): the token's owner always sees it.
     pub brains: i64,
     pub profile_url: String,
+    /// With a session only.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub account: Option<Account>,
+}
+
+/// The owner's account state, for the site's header.
+#[derive(Debug, Serialize)]
+pub struct Account {
+    pub email: String,
+    pub email_verified: bool,
+    pub onboarded: bool,
+    pub locale: Option<String>,
+    /// Muted by a moderator until then (forum, messages).
+    pub forum_muted_until: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,23 +91,42 @@ impl Xp {
 
 pub async fn me(
     State(state): State<AppState>,
-    AuthUser(claims): AuthUser,
+    MaybeMember(session): MaybeMember,
+    token: Result<AuthUser, ApiError>,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, ApiError> {
     let gone = || ApiError::NotFound {
         detail: "The account of this token no longer exists.".to_owned(),
         instance: Some(uri.path().to_owned()),
     };
-    // `sub` is Laravel's numeric `users.id` written in decimal; anything else
-    // cannot name an account.
-    let id = parse_user_id(&claims.sub).ok_or_else(gone)?;
+    let (id, account) = match session {
+        Some(member) => {
+            let account = Account {
+                email: member.account.email.clone(),
+                email_verified: member.account.email_verified_at.is_some(),
+                onboarded: member.account.onboarding_at.is_some(),
+                locale: member.account.locale.clone(),
+                forum_muted_until: member
+                    .muted_until
+                    .filter(|_| member.is_muted())
+                    .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            };
+            (member.id(), Some(account))
+        }
+        None => {
+            let AuthUser(claims) = token?;
+            // `sub` is the numeric `users.id` written in decimal; anything
+            // else cannot name an account.
+            (parse_user_id(&claims.sub).ok_or_else(gone)?, None)
+        }
+    };
 
     let member = members::find(&state.db, id).await?.ok_or_else(gone)?;
     let roles = members::roles(&state.db, id).await?;
 
-    let body = MeResponse {
-        data: to_me(member, roles, &state.config.public_storage_url)?,
-    };
+    let mut me = to_me(member, roles, &state.config.public_storage_url)?;
+    me.account = account;
+    let body = MeResponse { data: me };
     let mut response = Json(body).into_response();
     let headers = response.headers_mut();
     headers.insert(
@@ -95,6 +134,7 @@ pub async fn me(
         HeaderValue::from_static("private, no-store"),
     );
     headers.append(header::VARY, HeaderValue::from_static("Authorization"));
+    headers.append(header::VARY, HeaderValue::from_static("Pulsars-Session"));
     Ok(response)
 }
 
@@ -125,6 +165,7 @@ fn to_me(member: Member, roles: Vec<MemberRole>, storage_url: &str) -> Result<Me
             .collect(),
         xp: Xp::new(member.xp_total, member.xp_level),
         brains: i64::from(member.brains),
+        account: None,
     })
 }
 

@@ -4,17 +4,23 @@
 //! `contenu.fichiers`.
 //!
 //! Never a correction, never a draft's file, never a storage path: the file
-//! is found through the published content's slug only. Downloads are still
-//! counted by Laravel (`pdf_url`, `download_url` point to the site) until
-//! the site writes through the API.
+//! is found through the published content's slug only. The exam's
+//! correction PDF has its own route, `GET /v1/exams/{slug}/correction-pdf`.
+//!
+//! An exam file asked with `disposition=attachment` is a download, counted
+//! as Laravel's `/examens/{exam}/telecharger` and `/corrige` counted them
+//! (`super::corrections::count_download`), and is never cached; `inline`
+//! is the preview (`apercu-pdf`), not counted.
 
 use axum::body::Body;
 use axum::extract::{OriginalUri, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
 
+use super::auth::Caller;
 use super::params::Params;
 use super::public::{self, PublicResult};
+use crate::auth::member::{MaybeMember, Member};
 use crate::db::files::{self, FileMeta};
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -31,6 +37,8 @@ const FILE_CSP: &str = "default-src 'none'; sandbox";
 
 pub async fn exam_pdf(
     State(state): State<AppState>,
+    MaybeMember(member): MaybeMember,
+    caller: Caller,
     Path(slug): Path<String>,
     RawQuery(query): RawQuery,
     OriginalUri(uri): OriginalUri,
@@ -45,16 +53,83 @@ pub async fn exam_pdf(
                 uri.path(),
             )
         })?;
-    // Exam statements are PDF whatever was recorded at upload.
-    serve(
+    exam_file(
         &state,
+        member,
+        &caller,
         meta,
-        "application/pdf",
+        &slug,
         &slug,
         disposition,
         &headers,
     )
     .await
+}
+
+/// `GET /v1/exams/{slug}/correction-pdf`: the correction written by
+/// Pulsars, public like the corrections of the exam page.
+pub async fn exam_correction_pdf(
+    State(state): State<AppState>,
+    MaybeMember(member): MaybeMember,
+    caller: Caller,
+    Path(slug): Path<String>,
+    RawQuery(query): RawQuery,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> PublicResult {
+    let disposition = disposition(query.as_deref())?;
+    let meta = files::exam_correction(&state.db, &slug)
+        .await?
+        .ok_or_else(|| {
+            public::not_found(
+                format!("No published exam '{slug}' has a correction PDF."),
+                uri.path(),
+            )
+        })?;
+    let name = format!("{slug}-corrige");
+    exam_file(
+        &state,
+        member,
+        &caller,
+        meta,
+        &slug,
+        &name,
+        disposition,
+        &headers,
+    )
+    .await
+}
+
+/// Serves an exam PDF; a download (`attachment`) is counted, unless it
+/// resumes a partial one, and never cached.
+#[allow(clippy::too_many_arguments)]
+async fn exam_file(
+    state: &AppState,
+    member: Option<Member>,
+    caller: &Caller,
+    meta: FileMeta,
+    slug: &str,
+    name: &str,
+    disposition: &str,
+    headers: &HeaderMap,
+) -> PublicResult {
+    let download = disposition == "attachment";
+    let resumed = headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| !v.trim().starts_with("bytes=0-"));
+    if download && !resumed {
+        super::corrections::count_download(state, slug, member.map(|m| m.id()), caller).await?;
+    }
+    // Exam files are PDF whatever was recorded at upload.
+    let mut response = serve(state, meta, "application/pdf", name, disposition, headers).await?;
+    if download {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+    }
+    Ok(response)
 }
 
 pub async fn resource_file(

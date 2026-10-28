@@ -3,24 +3,32 @@
 pub mod account;
 pub mod admin;
 pub mod auth;
+pub mod corrections;
 pub mod courses;
 pub mod cursor;
+pub mod dashboard;
 pub mod exams;
 pub mod exercises;
+pub mod feedback;
 pub mod files;
 pub mod forum;
 pub mod forum_moderation;
 pub mod game;
 pub mod health;
 pub mod languages;
+pub mod learning;
 pub mod me;
 pub mod news;
 pub mod oauth;
 pub mod params;
+pub mod practice;
+pub mod profile;
 pub mod public;
 pub mod resources;
+pub mod site;
 pub mod social;
 pub mod token;
+pub mod upload;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
@@ -96,8 +104,16 @@ pub fn router(state: AppState) -> Router {
             get(files::exam_pdf).options(preflight),
         )
         .route(
+            "/v1/exams/{slug}/correction-pdf",
+            get(files::exam_correction_pdf).options(preflight),
+        )
+        .route(
             "/v1/resources/{slug}/file",
             get(files::resource_file).options(preflight),
+        )
+        .route(
+            "/v1/storage/{*path}",
+            get(profile::storage).options(preflight),
         )
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
@@ -234,6 +250,51 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // What the site's pages need about its members and from them, called by
+    // pulsars-web from its server or through its `/api` relay (no CORS
+    // layer: never straight from a browser).
+    let site = Router::new()
+        .route("/v1/me/progress", get(learning::started))
+        .route("/v1/me/courses/{slug}/progress", get(learning::progress))
+        .route("/v1/me/lessons/{id}/completion", put(learning::complete))
+        .route("/v1/me/exercises/{id}", get(practice::mine))
+        .route("/v1/exercises/{id}/attempts", post(practice::attempt))
+        .route("/v1/exercises/catalog", get(practice::catalog))
+        .route("/v1/exercises/random", get(practice::random))
+        .route("/v1/exercises/facets", get(practice::facets))
+        .route("/v1/me/dashboard", get(dashboard::dashboard))
+        .route("/v1/me/brains", get(dashboard::brains_history))
+        .route("/v1/leaderboard/xp", get(dashboard::leaderboard))
+        .route("/v1/leaderboard/top", get(dashboard::top))
+        .route("/v1/rewards", get(dashboard::rewards))
+        .route("/v1/me/profile", get(profile::show).patch(profile::update))
+        .route("/v1/me/onboarding", post(profile::onboarding))
+        .route("/v1/me/locale", put(profile::locale))
+        .route("/v1/roles", get(profile::roles))
+        .route("/v1/captcha", get(feedback::captcha))
+        .route("/v1/reports", post(feedback::report))
+        .route("/v1/licenses", get(feedback::licenses))
+        .route("/v1/settings/donation-goal", get(feedback::donation_goal))
+        .route(
+            "/v1/exams/{slug}/corrections",
+            get(corrections::corrections),
+        )
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
+    // The members' uploads (`multipart/form-data`): their body limit is
+    // `upload::UPLOAD_BODY_LIMIT` (`mw::body_limit`).
+    let uploads = Router::new()
+        .route(
+            "/v1/me/avatar",
+            put(profile::put_avatar).delete(profile::delete_avatar),
+        )
+        .route("/v1/suggestions", post(feedback::suggestion))
+        .route("/v1/resource-requests", post(feedback::resource_request))
+        .layer(DefaultBodyLimit::max(upload::UPLOAD_BODY_LIMIT))
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     // The game token, asked by the game front end with the session cookie:
     // its own origin check and credentialed CORS (`token::browser_guard`).
     let game_token = Router::new()
@@ -360,6 +421,8 @@ pub fn router(state: AppState) -> Router {
         .merge(authenticated)
         .merge(social::router(&state))
         .merge(admin_uploads)
+        .merge(site)
+        .merge(uploads)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.
