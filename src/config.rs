@@ -870,7 +870,10 @@ mod tests {
             ),
             ("REDIS_URL", "redis://localhost:6379"),
             ("JWKS_URL", "https://pulsars.science/.well-known/jwks.json"),
-            ("MESSAGES_KEY", "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="),
+            (
+                "MESSAGES_KEY",
+                "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+            ),
         ]
     }
 
@@ -1218,7 +1221,10 @@ mod tests {
         let config = with(&[]).unwrap();
         let key = config.messages_key.expect("a key");
         assert_eq!((key.version, key.key), (1, [7u8; 32]));
-        assert!(!format!("{key:?}").contains('7'), "the key never shows in Debug");
+        assert!(
+            !format!("{key:?}").contains('7'),
+            "the key never shows in Debug"
+        );
 
         let config = with(&[("MESSAGES_KEY_VERSION", "3")]).unwrap();
         assert_eq!(config.messages_key.map(|k| k.version), Some(3));
@@ -1233,7 +1239,9 @@ mod tests {
             problems,
             ["MESSAGES_KEY: must decode to 32 bytes, not 5 (openssl rand -base64 32)"]
         );
-        let problems = with(&[("MESSAGES_KEY", "not base64!")]).unwrap_err().problems;
+        let problems = with(&[("MESSAGES_KEY", "not base64!")])
+            .unwrap_err()
+            .problems;
         assert_eq!(problems, ["MESSAGES_KEY: is not base64"]);
 
         // Required in production, optional in development.

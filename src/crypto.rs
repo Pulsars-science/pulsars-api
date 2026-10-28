@@ -111,10 +111,7 @@ mod tests {
         // Another key, another conversation, another version: nothing.
         assert_eq!(open(&key(8, 1), 42, &stored, 1), Err(SealError::Corrupt));
         assert_eq!(open(&k, 43, &stored, 1), Err(SealError::Corrupt));
-        assert_eq!(
-            open(&k, 42, &stored, 2),
-            Err(SealError::UnknownVersion(2))
-        );
+        assert_eq!(open(&k, 42, &stored, 2), Err(SealError::UnknownVersion(2)));
         assert_eq!(open(&k, 42, "not base64!", 1), Err(SealError::Corrupt));
         assert_eq!(open(&k, 42, "AAAA", 1), Err(SealError::Corrupt));
     }

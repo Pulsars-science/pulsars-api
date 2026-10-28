@@ -146,6 +146,9 @@ pub enum ApiError {
     /// `POST /v1/auth/token` without a signing key configured.
     #[error("token unavailable")]
     TokenUnavailable,
+    /// A private message route without `MESSAGES_KEY` (development only).
+    #[error("private messages unavailable")]
+    MessagesUnavailable,
     /// The message is logged, never sent.
     #[error("internal error: {0}")]
     Internal(String),
@@ -194,7 +197,10 @@ impl ApiError {
                 StatusCode::TOO_MANY_REQUESTS
             }
             Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Unavailable(_) | Self::TokenUnavailable | Self::ServiceUnavailable { .. } => {
+            Self::Unavailable(_)
+            | Self::TokenUnavailable
+            | Self::ServiceUnavailable { .. }
+            | Self::MessagesUnavailable => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -228,6 +234,7 @@ impl ApiError {
                 ("unavailable", "Service unavailable")
             }
             Self::TokenUnavailable => ("token-unavailable", "Game tokens unavailable"),
+            Self::MessagesUnavailable => ("messages-unavailable", "Private messages unavailable"),
             Self::Internal(_) => ("internal", "Internal error"),
         };
         let detail = match self {
@@ -255,6 +262,10 @@ impl ApiError {
                 Some(detail.clone())
             }
             Self::TokenUnavailable => Some("Game tokens are temporarily unavailable.".to_owned()),
+            Self::MessagesUnavailable => Some(
+                "MESSAGES_KEY is not set on this server: private messages are unavailable."
+                    .to_owned(),
+            ),
             Self::TooManyAttempts { retry_after } => Some(format!(
                 "Too many attempts. Try again in {retry_after} seconds."
             )),
