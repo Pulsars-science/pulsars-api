@@ -1,11 +1,15 @@
 //! PostgreSQL access.
 //!
-//! The API's role (`pulsars_api`) reads the `api_read` views and `contenu`,
-//! reads and writes the rows of `game` and `langues`, and has no right on
-//! `site`; it creates, alters or drops nothing (`deploy/sql/phase-1.sql`,
-//! `docs/contract/database.md` §2.1). Its `search_path` is
-//! `game, langues, api_read, contenu`: `api_read` before `contenu`, so a name
-//! without schema finds the filtered view. Queries name their schema anyway.
+//! The API's role (`pulsars_api`) reads `contenu` and the `api_read.member*`
+//! views, reads and writes the rows of `game` and `langues`, and has no right
+//! on `site`; it creates, alters or drops nothing (`deploy/sql/phase-1.sql`,
+//! `docs/contract/database.md` §2.1). Queries name their schema.
+//!
+//! Content is read through the macros of `sources`, never from a `contenu`
+//! table directly: they keep the published rows and the allowed columns.
+
+#[macro_use]
+pub mod sources;
 
 pub mod courses;
 pub mod exams;

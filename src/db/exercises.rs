@@ -1,13 +1,15 @@
-//! Exercises of published courses, from `api_read.exercises` and the
-//! translation views (`docs/contract/database.md` §4). The views carry no
-//! answer: no `solution_md`, no `donnees`, no `correctes`, no `acceptees`.
+//! Exercises of published courses, from `contenu` through
+//! `published_exercises!()` and the translation sources (`super::sources`,
+//! `docs/contract/database.md` §4). They carry no answer: no `solution_md`,
+//! no `donnees`, no `correctes`, no `acceptees`.
 
 use sqlx::PgPool;
 use sqlx::types::Json;
 
 macro_rules! exercise_select {
     () => {
-        "SELECT e.id, e.type::text AS type, e.title, e.question_md,
+        concat!(
+            "SELECT e.id, e.type::text AS type, e.title, e.question_md,
                 e.position::int AS position,
                 -- Translated options when the translation has them (same ids,
                 -- same order), else the original ones.
@@ -17,12 +19,25 @@ macro_rules! exercise_select {
                 c.difficulty::text AS course_difficulty,
                 et.title AS tr_title, et.question_md AS tr_question_md,
                 cht.title AS tr_chapter_title, ct.title AS tr_course_title
-           FROM api_read.exercises e
-           JOIN api_read.chapters ch ON ch.id = e.chapter_id
-           JOIN api_read.courses c ON c.id = e.course_id
-           LEFT JOIN api_read.exercise_translations et ON et.exercise_id = e.id AND et.lang = $1
-           LEFT JOIN api_read.chapter_translations cht ON cht.chapter_id = ch.id AND cht.lang = $1
-           LEFT JOIN api_read.course_translations ct ON ct.course_id = c.id AND ct.lang = $1"
+           FROM ",
+            published_exercises!(),
+            " e
+           JOIN ",
+            published_chapters!(),
+            " ch ON ch.id = e.chapter_id
+           JOIN ",
+            published_courses!(),
+            " c ON c.id = e.course_id
+           LEFT JOIN ",
+            exercise_translations!(),
+            " et ON et.exercise_id = e.id AND et.lang = $1
+           LEFT JOIN ",
+            chapter_translations!(),
+            " cht ON cht.chapter_id = ch.id AND cht.lang = $1
+           LEFT JOIN ",
+            course_translations!(),
+            " ct ON ct.course_id = c.id AND ct.lang = $1"
+        )
     };
 }
 

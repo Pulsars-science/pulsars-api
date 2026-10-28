@@ -509,6 +509,72 @@ async fn no_answer_or_private_data_reaches_the_views() {
     }
 }
 
+/// What the API reads of `contenu` (src/db/sources.rs) is, row for row,
+/// what the `api_read` views showed: same published rows, same columns.
+#[tokio::test]
+async fn the_content_sources_read_exactly_what_the_views_show() {
+    let Some((database_url, _)) = integration_urls() else {
+        return;
+    };
+    // contenu.matieres, contenu.licences.
+    apply_migrations(&database_url).await;
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    let comparisons = pulsars_api::db::sources::compare_with_views(&pool)
+        .await
+        .unwrap();
+    assert_eq!(comparisons.len(), pulsars_api::db::sources::SOURCES.len());
+    for c in &comparisons {
+        assert!(c.is_same(), "{c:?}");
+    }
+    let courses = comparisons.iter().find(|c| c.view == "courses").unwrap();
+    assert!(courses.rows > 0, "demo data is loaded");
+}
+
+#[tokio::test]
+async fn no_answer_or_private_data_reaches_the_content_sources() {
+    let Some((database_url, _)) = integration_urls() else {
+        return;
+    };
+    apply_migrations(&database_url).await;
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    let mut dump = String::new();
+    for &(view, source) in pulsars_api::db::sources::SOURCES {
+        // The sources are constants of the API, not user input.
+        let rows: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT string_agg(row_to_json(t)::text, '\n') FROM {source} t"
+        )))
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("{view}: {error}"));
+        dump.push_str(&rows.unwrap_or_default());
+    }
+    assert!(!dump.is_empty(), "demo data is loaded");
+
+    // Markers planted in dev/db/30-demo-data.sql.
+    for marker in [
+        "SOLUTION-MARKER",
+        "CORRIGE-MARKER",
+        "PROMPT-MARKER",
+        "example.invalid",
+        "demofriendtoken",
+        "not-a-real-hash",
+        "Terminale B (private)",
+        "correctes",
+        "acceptees",
+        "solution_md",
+        "corrige_md",
+        "demo-draft-course",
+        "demo-future-course",
+        "demo-pending-resource",
+        "-corrige.pdf",
+    ] {
+        assert!(
+            !dump.contains(marker),
+            "`{marker}` leaked into a content source"
+        );
+    }
+}
+
 // --- Authentication (in-process JWKS, no database needed) -----------------
 
 #[tokio::test]

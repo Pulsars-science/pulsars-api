@@ -13,6 +13,22 @@
 \set ON_ERROR_STOP 1
 BEGIN;
 
+-- 0. Ce que les migrations de l'API ont cree dans `contenu` --------------------
+--
+-- Les tables de reference (migration 20261028000000_contenu_reference) n'ont
+-- pas d'equivalent dans `site` : elles partent, avec leur ligne dans
+-- game._sqlx_migrations, pour que `pulsars-api migrate` les recree apres un
+-- nouveau phase-1.sql. La release d'avant ne les lit pas.
+
+DROP TABLE IF EXISTS contenu.licences, contenu.matieres, contenu.sources_officielles;
+DROP FUNCTION IF EXISTS contenu.slugify(text);
+DO $$
+BEGIN
+    IF to_regclass('game._sqlx_migrations') IS NOT NULL THEN
+        DELETE FROM game._sqlx_migrations WHERE version = 20261028000000;
+    END IF;
+END $$;
+
 -- 1. Le contenu revient dans `site` ------------------------------------------
 
 DO $$

@@ -86,6 +86,35 @@ curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
 - Toutes les tables doivent appartenir à `pulsars_owner`.
 - L'API et le site doivent répondre normalement.
 
+### 6. L'API qui lit `contenu` elle-même (phase 1, 2/2)
+
+Seulement **après** les étapes 1 à 5. La release suivante lit `contenu`
+directement, sans les vues `api_read` du contenu. Elle se déploie comme
+d'habitude :
+
+```
+./pulsars-api-vX.Y.Z-x86_64-unknown-linux-gnu/deploy-api
+```
+
+- L'étape « Migrations » crée `contenu.licences`, `contenu.matieres` et
+  `contenu.sources_officielles`. Si `phase-1.sql` n'a pas tourné, elle
+  échoue (« schema contenu does not exist ») et le déploiement s'arrête
+  avant la bascule : rien ne change.
+- L'étape « Content check » lance `pulsars-api check-content` : pour chaque
+  ressource, la nouvelle release doit lire exactement les lignes que montre
+  la vue `api_read` correspondante. Une seule ligne de différence arrête le
+  déploiement avant la bascule.
+
+On peut relancer la comparaison à la main :
+
+```
+sudo systemd-run --quiet --wait --pipe --collect --property=EnvironmentFile=/etc/pulsars-api/pulsars-api.env --property=User=pulsars-api /opt/pulsars-api/current/pulsars-api check-content
+```
+
+Retour arrière : `deploy-api --rollback`. La release précédente lit encore
+les vues, toujours en place ; les trois tables de référence restent, sans
+gêner personne.
+
 ## Retour arrière de la phase 1
 
 Ordre inverse : le script, puis l'API, puis le site.
