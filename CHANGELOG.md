@@ -6,34 +6,62 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [Unreleased]
+## [0.6.0] - 2026-10-29
+
+The API owns the database and every feature of the site: the Laravel site
+is gone, replaced by `pulsars-web` (Nuxt), which calls the API from its
+server.
+
+### Upgrading
+
+- **Fresh install only**, on a new server: see `docs/deployment.md`. There
+  is no upgrade path from 0.5.0 or from the Laravel site's database; only
+  its content is copied over (`pulsars-api import-content`,
+  `deploy/sql/README.md`).
+- New required variables in production: `JWT_SIGNING_KEY_FILE` and
+  `JWT_SIGNING_KID` (`pulsars-api jwt-keygen`), `MESSAGES_KEY`
+  (`openssl rand -base64 32`). `/etc/pulsars-api/migrate.env`
+  (`DATABASE_MIGRATION_URL`) is required by `deploy-api`.
+- Removed variables, ignored if still set: `JWKS_URL`, `JWT_ISSUER`,
+  `JWT_AUDIENCE`, `JWT_OWN_ISSUER`, `BCRYPT_COST`, `LARAVEL_WEBHOOK_*`.
 
 ### Changed
 
-- The API owns the whole database (PLAN-REFONTE.md): one migration creates
-  the `site`, `contenu`, `game` and `langues` schemas from scratch, without
-  Laravel's own tables, and a second one the reference data (roles, forum
-  themes, licences, subjects, official sources, Mandarin). The earlier
-  migrations are folded into them: install on an empty database only
-  (`deploy/sql/README.md`).
+- The API owns the whole database: one migration creates the `site`,
+  `contenu`, `game` and `langues` schemas from scratch, without Laravel's
+  own tables, and a second one the reference data (roles, forum themes,
+  licences, subjects, official sources, Mandarin). The earlier migrations
+  are folded into them.
 - `deploy/sql/roles.sql` replaces `phase-1.sql`: `pulsars_owner`,
-  `pulsars_migrate` and `pulsars_api`, which now reads and writes every
-  table. `pulsars_site` and the `api_read` views are gone; member profiles
-  come from the `site.member*` views.
-- Passwords are argon2id (`ARGON2_MEMORY_KIB`, default 19 456), no longer
-  bcrypt (`BCRYPT_COST` is gone).
+  `pulsars_migrate` and `pulsars_api`, which reads and writes every table
+  and changes no structure. `pulsars_site` and the `api_read` views are
+  gone; member profiles come from the `site.member*` views.
+- Passwords are hashed with argon2id (`ARGON2_MEMORY_KIB`, default 19 456),
+  no longer bcrypt.
+- The API verifies only the game tokens it signs itself (`iss`
+  `https://api.pulsars.science`), with its own key, by `kid`, without any
+  network. The signing key is required in production; in development,
+  without it, the token routes answer 503.
+- `GET /healthz` no longer waits for a key set: `down` only while
+  PostgreSQL is down, `degraded` while Redis is.
+- The release archive carries `deploy/sql/` at the same path as the
+  repository (it was `sql/`). `deploy-api` requires `migrate.env`, and
+  enables the unit on the first installation.
+- `docs/deployment.md` is rewritten for a new server, with every variable;
+  `docs/contract/` describes the API as the owner of the data and
+  `pulsars-web` as the site.
 
 ### Added
 
-- The administration, `/v1/admin/*` for an admin's session (Laravel's
-  `admin/*`): the dashboard statistics (`/v1/admin/stats`, with Umami
-  when `UMAMI_*` is set) and the pending badge, the donation goal, news,
-  courses, exams (PDF upload in `multipart/form-data` and import of the AI's
-  JSON answer), resource requests (accept, reject, file), roles, reports
-  and suggestions, and the game and languages statistics for a session.
-  The two uploads have their own body limits (21 MiB and 16 MiB).
+- The administration, `/v1/admin/*` for an admin's session: the dashboard
+  statistics (`/v1/admin/stats`, with Umami when `UMAMI_*` is set) and the
+  pending badge, the donation goal, news, courses, exams (PDF upload in
+  `multipart/form-data` and import of the AI's JSON answer), resource
+  requests (accept, reject, file), roles, reports and suggestions, and the
+  game and languages statistics for a session. The two uploads have their
+  own body limits (21 MiB and 16 MiB).
 - `pulsars-api content check`, `content fix <file.json>` and
-  `content translate` (`contenu:verifier`, `contenu:corriger`,
+  `content translate` (the old `contenu:verifier`, `contenu:corriger`,
   `contenu:traduire`), the last with DeepL (`DEEPL_API_KEY`,
   `DEEPL_API_URL`).
 - The languages section: `GET /v1/languages`, `/v1/languages/{code}`,
@@ -53,45 +81,56 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   restore questions; hide, delete and restore answers. Muting members
   (`PUT` and `DELETE /v1/moderation/members/{id}/mute`), only those of a
   lower permission level.
-- The social part of the site (step D; tags `members`, `friends`, `rooms`,
-  `conversations`): the pseudo search and public profiles, follows, friend
-  requests and the friend QR code, rooms with their invitation links, and
-  private messages between friends, polled with `?after={id}`. Private
-  messages are sealed with AES-256-GCM under `MESSAGES_KEY` (required in
-  production). Migration `20261104000000_social`.
-- The members' routes of the site (step B, `openapi.yaml` tags
-  `progress`, `practice`, `dashboard`, `profile`, `feedback`): course
-  progress and lesson completion (`/v1/me/progress`,
-  `/v1/me/courses/{slug}/progress`, `PUT /v1/me/lessons/{id}/completion`),
-  exercises graded by the API with their solution after an attempt
-  (`/v1/me/exercises/{id}`, `POST /v1/exercises/{id}/attempts`,
-  `/v1/exercises/catalog`, `/random`, `/facets`), the dashboard, brains
-  history and XP leaderboards (`/v1/me/dashboard`, `/v1/me/brains`,
-  `/v1/leaderboard/xp`, `/v1/leaderboard/top`, `/v1/rewards`), the
-  profile, welcome steps, language and avatar (`/v1/me/profile`,
-  `/v1/me/onboarding`, `/v1/me/locale`, `/v1/me/avatar`,
-  `/v1/storage/{path}`, `/v1/roles`), reports with their captcha,
-  suggestions and proposed resources (`/v1/captcha`, `/v1/reports`,
-  `/v1/suggestions`, `/v1/resource-requests`, `/v1/licenses`), the
-  donations goal (`/v1/settings/donation-goal`), and the exam page's
-  corrections, counters and correction PDF
-  (`/v1/exams/{slug}/corrections`, `/v1/exams/{slug}/correction-pdf`).
-- `GET /v1/me` also answers the site's session, with the owner's
-  `email`, `email_verified`, `onboarded`, `locale` and
-  `forum_muted_until`.
+- The social part (tags `members`, `friends`, `rooms`, `conversations`):
+  the pseudo search and public profiles, follows, friend requests and the
+  friend QR code, rooms with their invitation links, and private messages
+  between friends, polled with `?after={id}`. Private messages are sealed
+  with AES-256-GCM under `MESSAGES_KEY` (required in production).
+  Migration `20261104000000_social`.
+- The members' routes (tags `progress`, `practice`, `dashboard`,
+  `profile`, `feedback`): course progress and lesson completion
+  (`/v1/me/progress`, `/v1/me/courses/{slug}/progress`,
+  `PUT /v1/me/lessons/{id}/completion`), exercises graded by the API with
+  their solution after an attempt (`/v1/me/exercises/{id}`,
+  `POST /v1/exercises/{id}/attempts`, `/v1/exercises/catalog`, `/random`,
+  `/facets`), the dashboard, brains history and XP leaderboards
+  (`/v1/me/dashboard`, `/v1/me/brains`, `/v1/leaderboard/xp`,
+  `/v1/leaderboard/top`, `/v1/rewards`), the profile, welcome steps,
+  language and avatar (`/v1/me/profile`, `/v1/me/onboarding`,
+  `/v1/me/locale`, `/v1/me/avatar`, `/v1/storage/{path}`, `/v1/roles`),
+  reports with their captcha, suggestions and proposed resources
+  (`/v1/captcha`, `/v1/reports`, `/v1/suggestions`,
+  `/v1/resource-requests`, `/v1/licenses`), the donations goal
+  (`/v1/settings/donation-goal`), and the exam page's corrections,
+  counters and correction PDF (`/v1/exams/{slug}/corrections`,
+  `/v1/exams/{slug}/correction-pdf`).
+- `GET /v1/me` also answers the site's session, with the owner's `email`,
+  `email_verified`, `onboarded`, `locale` and `forum_muted_until`.
 - Exam downloads (`disposition=attachment`) are counted, per visitor
   fingerprint (`site.reglages`, `sel_visiteurs`), robots excepted.
 
 ### Removed
 
+- The verification of the Laravel site's tokens: the JWKS client and its
+  refresh (`src/auth/jwks.rs`), the two-issuer logic, the `jwks_fetches_total`
+  and `jwks_keys` metrics, and the game-token `Moderator` extractor, which
+  no route used. The `no_keys` reason of `auth_rejections_total` is now
+  `no_key`.
 - `pulsars-api check-content` and `deploy-api --no-content-check`.
-- The results webhook to Laravel: a match end now writes `site.game_results`
+- The results webhook to Laravel: a match end writes `site.game_results`
   and the players' brains in its own transaction, and a season close
   credits its rewards. `game.webhook_outbox`, `game.seasons.event_id`,
   `site.game_results.game_event_id`, `LARAVEL_WEBHOOK_*`,
-  `pulsars-api webhooks replay`, the `webhook_*` metrics, the `webhook`
-  field of `GET /v1/game/admin/stats` and `docs/contract/webhooks.md` are
-  gone (migration `20261102000000_members`).
+  `pulsars-api webhooks replay`, the `webhook_*` metrics and the `webhook`
+  field of `GET /v1/game/admin/stats` are gone (migration
+  `20261102000000_members`).
+- The documents of the migration: `docs/contract/views.sql`,
+  `postgres-migration.md`, `laravel-tasks.md` and `webhooks.md`.
+
+### Fixed
+
+- `docker compose up` could not initialise the database: it did not mount
+  `deploy/sql` and `migrations/`, and the Alpine image has no `sha384sum`.
 
 ## [0.5.0] - 2026-10-29
 
@@ -416,7 +455,8 @@ archive's `sql/`), `pg_hba.conf` and `/etc/pulsars-api/migrate.env`, then
 - `GET /healthz` answers 503 (`down`) until Laravel's JWKS has been loaded
   once.
 
-[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.5.0
 [0.4.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.2.0...v0.3.0
