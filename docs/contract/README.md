@@ -177,6 +177,12 @@ cannot be silently dropped. The size limit is the server's
 |---|---|---|
 | Anonymous | 60 requests / minute | client IP (from `X-Forwarded-For`, set by the edge only) |
 | Authenticated (`Authorization: Bearer`) | 120 requests / minute | JWT `sub` |
+| The site (`Pulsars-Service-Key`) | none | — |
+
+The site calls the API from the same machine for all its visitors, so its
+calls would all share the loopback's limit. They carry the server's
+`SERVICE_KEY` in `Pulsars-Service-Key` instead, and are not counted. The
+key never leaves the server: browsers and games never see it.
 
 These are the limits Laravel's current `/api/v1` applies. Every response
 carries the draft IETF headers (`draft-ietf-httpapi-ratelimit-headers`):

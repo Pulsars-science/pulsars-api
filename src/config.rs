@@ -92,6 +92,10 @@ pub struct Config {
     /// Where match results go (`docs/contract/webhooks.md`). `None`: the
     /// outbox fills up and nothing is sent.
     pub webhook: Option<WebhookConfig>,
+    /// `SERVICE_KEY`: requests that carry it in `Pulsars-Service-Key` (the
+    /// site, from the same machine) are not rate limited. `None`: every
+    /// request is.
+    pub service_key: Option<Secret>,
 }
 
 /// `LARAVEL_WEBHOOK_URL`, `LARAVEL_WEBHOOK_SECRET` and the optional
@@ -106,6 +110,9 @@ pub struct WebhookConfig {
     /// `Host` header to send instead of the URL's host.
     pub host: Option<String>,
 }
+
+/// Shortest service key accepted.
+const SERVICE_KEY_MIN_CHARS: usize = 32;
 
 /// Shortest webhook secret accepted.
 const WEBHOOK_SECRET_MIN_CHARS: usize = 32;
@@ -207,6 +214,15 @@ impl Config {
             reader.optional_raw("LARAVEL_WEBHOOK_HOST"),
             &mut reader.problems,
         );
+        let service_key = match reader.optional_raw("SERVICE_KEY") {
+            Some(key) if key.chars().count() < SERVICE_KEY_MIN_CHARS => {
+                reader.problems.push(format!(
+                    "SERVICE_KEY: must be at least {SERVICE_KEY_MIN_CHARS} characters"
+                ));
+                None
+            }
+            key => key.map(Secret::new),
+        };
 
         // Cross-field checks need the individual values first.
         let cors_allowed_origins = environment.and_then(|env| {
@@ -331,6 +347,7 @@ impl Config {
                 log_filter,
                 shutdown_grace,
                 webhook,
+                service_key,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
@@ -729,5 +746,16 @@ mod tests {
         ])
         .expect_err("must fail");
         assert_eq!(err.problems.len(), 3);
+    }
+
+    #[test]
+    fn a_service_key_must_be_long() {
+        let problems = with(&[("SERVICE_KEY", "short")]).unwrap_err().problems;
+        assert_eq!(problems, ["SERVICE_KEY: must be at least 32 characters"]);
+        let key = "s".repeat(32);
+        let config =
+            Config::from_vars(base().into_iter().chain([("SERVICE_KEY", key.as_str())])).unwrap();
+        assert_eq!(config.service_key, Some(Secret::new(key.clone())));
+        assert_eq!(with(&[]).unwrap().service_key, None);
     }
 }

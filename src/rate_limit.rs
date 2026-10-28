@@ -1,5 +1,8 @@
 //! Per-client rate limits (`docs/contract/README.md`, rate limits).
 //!
+//! - A request with the service key (`Pulsars-Service-Key`, `SERVICE_KEY`)
+//!   is not counted: it is the site, calling from the same machine on
+//!   behalf of all its visitors.
 //! - A request with a valid game token is counted against its `sub`
 //!   (120 per minute by default); any other request against the client IP
 //!   (60 per minute), taken from the last `X-Forwarded-For` entry, which
@@ -49,6 +52,7 @@ const REDIS_TIMEOUT: Duration = Duration::from_millis(250);
 pub const RATELIMIT_LIMIT: HeaderName = HeaderName::from_static("ratelimit-limit");
 pub const RATELIMIT_REMAINING: HeaderName = HeaderName::from_static("ratelimit-remaining");
 pub const RATELIMIT_RESET: HeaderName = HeaderName::from_static("ratelimit-reset");
+pub const SERVICE_KEY: HeaderName = HeaderName::from_static("pulsars-service-key");
 
 /// Who a request is counted against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +108,9 @@ impl Decision {
 /// Middleware: counts the request and refuses it once the client is over
 /// its limit.
 pub async fn rate_limit(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if is_service(&state, request.headers()) {
+        return next.run(request).await;
+    }
     let (mut parts, body) = request.into_parts();
     let client = identify(&state, &mut parts).await;
     let request = Request::from_parts(parts, body);
@@ -128,6 +135,16 @@ pub async fn rate_limit(State(state): State<AppState>, request: Request, next: N
     let mut response = next.run(request).await;
     decision.apply(response.headers_mut());
     response
+}
+
+/// Whether the request carries the configured service key, compared in
+/// constant time.
+fn is_service(state: &AppState, headers: &HeaderMap) -> bool {
+    let (Some(key), Some(given)) = (&state.config.service_key, headers.get(SERVICE_KEY)) else {
+        return false;
+    };
+    let (key, given) = (key.expose().as_bytes(), given.as_bytes());
+    key.len() == given.len() && key.iter().zip(given).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 /// The member of a valid token, or else the client IP. The token check is
