@@ -19,7 +19,7 @@ use ed25519_dalek::SigningKey;
 use pulsars_api::auth::token::testing;
 use pulsars_api::auth::{Jwks, JwksSettings};
 use pulsars_api::config::Config;
-use pulsars_api::game::{Game, GameSettings};
+use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
 use serde_json::{Value, json};
@@ -371,18 +371,53 @@ async fn healthz_is_degraded_without_redis() {
     assert_eq!(check(&body, "postgres")["ok"], true);
 }
 
+/// Applies the migrations as the role allowed to create tables:
+/// `TEST_MIGRATION_DATABASE_URL` (`pulsars_migrate`), else the tests' own
+/// URL, for a database whose service role still owns its schemas.
+async fn apply_migrations(database_url: &str) {
+    let url = std::env::var("TEST_MIGRATION_DATABASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| database_url.to_owned());
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    store::migrate(&pool).await.expect("migrations apply");
+    pool.close().await;
+}
+
+/// The grants of deploy/sql/phase-1.sql, as the service's role sees them.
 #[tokio::test]
-async fn the_api_role_reads_views_but_not_site_tables() {
+async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
     let Some((database_url, _)) = integration_urls() else {
         return;
     };
+    // The game tables must exist for the structure checks below.
+    apply_migrations(&database_url).await;
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    let denied = |error: sqlx::Error| {
+        let message = error.to_string();
+        assert!(message.contains("permission denied"), "{message}");
+    };
 
-    let denied = sqlx::query("SELECT 1 FROM site.courses LIMIT 1")
-        .execute(&pool)
+    // No access to accounts before phase 2.
+    denied(
+        sqlx::query("SELECT 1 FROM site.users LIMIT 1")
+            .execute(&pool)
+            .await
+            .expect_err("pulsars_api must not read site"),
+    );
+
+    // Content: read, never written.
+    let raw: i64 = sqlx::query_scalar("SELECT count(*) FROM contenu.courses")
+        .fetch_one(&pool)
         .await
-        .expect_err("pulsars_api must not read site");
-    assert!(denied.to_string().contains("permission denied"), "{denied}");
+        .unwrap();
+    assert!(raw > 0, "demo data is loaded");
+    denied(
+        sqlx::query("UPDATE contenu.courses SET vues = vues WHERE false")
+            .execute(&pool)
+            .await
+            .expect_err("pulsars_api must not write content"),
+    );
 
     let courses: i64 = sqlx::query_scalar("SELECT count(*) FROM api_read.courses")
         .fetch_one(&pool)
@@ -398,14 +433,34 @@ async fn the_api_role_reads_views_but_not_site_tables() {
     .unwrap();
     assert_eq!(draft, 0, "drafts are invisible");
 
-    sqlx::query("CREATE TABLE IF NOT EXISTS game.write_check (id int)")
-        .execute(&pool)
-        .await
-        .expect("pulsars_api owns the game schema");
-    sqlx::query("DROP TABLE game.write_check")
-        .execute(&pool)
-        .await
-        .unwrap();
+    // Structure belongs to pulsars_owner: `pulsars-api migrate` changes it.
+    for ddl in [
+        "CREATE TABLE game.write_check (id int)",
+        "CREATE TABLE contenu.write_check (id int)",
+        "ALTER TABLE game.ratings ADD COLUMN write_check int",
+        "DROP TABLE game.seasons",
+    ] {
+        let error = sqlx::query(ddl)
+            .execute(&pool)
+            .await
+            .expect_err("pulsars_api must not change the structure");
+        let message = error.to_string();
+        assert!(
+            message.contains("permission denied") || message.contains("must be owner"),
+            "{ddl}: {message}"
+        );
+    }
+
+    // But it writes the rows of game.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO game.ratings (user_id, subject, rating, rd, volatility, games, wins, losses, draws)
+         VALUES (999999, 'all', 1500, 350, 0.06, 0, 0, 0, 0)",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("pulsars_api writes game rows");
+    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]

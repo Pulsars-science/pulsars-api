@@ -54,6 +54,36 @@ database pulsars
   lands in `site` too.
 - The full role and grant script is at the end of `views.sql`.
 
+### 2.1 Since phase 1: `pulsars_owner` owns the structure
+
+`deploy/sql/phase-1.sql` (run once by the administrator; rollback:
+`phase-1-retour.sql`) moves the content tables to a `contenu` schema and
+takes every structure right away from the service roles:
+
+```
+database pulsars
+├── schema site       owner pulsars_owner   accounts, forum, progress… (Laravel's other tables)
+├── schema contenu    owner pulsars_owner   courses, chapters, lessons, exercises, exams, exam_parties,
+│                                           ressources, actualites, contenu_translations, fichiers, telechargements
+├── schema api_read   owner pulsars_site    the views, unchanged: they follow the moved tables
+├── schema game       owner pulsars_owner
+└── schema langues    owner pulsars_owner   (once the languages section is deployed)
+```
+
+| Role | `site` | `contenu` | `api_read` | `game`, `langues` | Structure |
+|---|---|---|---|---|---|
+| `pulsars_owner` (no login) | owner | owner | — | owner | owns it all |
+| `pulsars_migrate` (login) | member of `pulsars_owner`: runs `pulsars-api migrate` | | | | yes |
+| `pulsars_site` (Laravel) | rows: read, write | rows: read, write | owner | **none** | **none** |
+| `pulsars_api` (Rust API) | **none** | `SELECT` | `SELECT` | rows: read, write | **none** |
+
+- `search_path`: `site, contenu` for `pulsars_site`, so Laravel's queries do
+  not change; `game, langues, api_read, contenu` for `pulsars_api`.
+- Tables a migration creates later get the same row rights through
+  `ALTER DEFAULT PRIVILEGES FOR ROLE pulsars_owner`, per schema.
+- `scripts/dev-db-init.sh` applies the script, so local and CI databases
+  have this layout; `tests/http.rs` checks the service role's side of it.
+
 ### Isolation tested
 
 `views.sql` was run on PostgreSQL 16 (PGlite) with Laravel-equivalent tables

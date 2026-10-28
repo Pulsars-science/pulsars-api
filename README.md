@@ -44,10 +44,13 @@ Requirements: Rust (stable), Docker.
 ```bash
 docker compose up -d          # PostgreSQL with demo data, and Redis
 cp .env.example .env
-set -a; . ./.env; set +a; cargo run
+set -a; . ./.env; set +a
+cargo run -- migrate          # as pulsars_migrate (DATABASE_MIGRATION_URL)
+cargo run
 ```
 
-The `game` schema migrations run at startup. Then
+The service never migrates: its role may not create tables. It waits, and
+logs which migrations are missing, until `pulsars-api migrate` has run. Then
 `curl http://127.0.0.1:8080/healthz`. Metrics are on
 `http://127.0.0.1:9464/metrics`. Content needs no token:
 
