@@ -17,6 +17,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `GET /v1/exams/facets`: the levels and countries of published exams.
 - Lessons carry their `id`, in a course's outline and in a lesson.
 - Exams in `GET /v1/exams` carry their `description`, as the detail did.
+- `SERVICE_KEY`: requests carrying it in `Pulsars-Service-Key` (the site,
+  reading content for its visitors) are not rate limited.
 
 ## [0.3.0] - 2026-10-28
 

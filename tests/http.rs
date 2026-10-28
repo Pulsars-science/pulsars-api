@@ -2355,6 +2355,45 @@ fn header_u64(headers: &axum::http::HeaderMap, name: &str) -> u64 {
 }
 
 #[tokio::test]
+async fn the_service_key_is_never_rate_limited() {
+    let Some(redis_url) = test_redis_url() else {
+        return;
+    };
+    let key = "k".repeat(40);
+    let (app, state) = app(config(
+        DEAD_POSTGRES,
+        &redis_url,
+        &[
+            ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1"),
+            ("SERVICE_KEY", &key),
+        ],
+    ))
+    .await;
+    wait_for_redis(&state).await;
+    let ip = fresh_ip();
+    let path = "/v1/courses?limit=500";
+    let with_key = |value: &str| {
+        let mut request = from_ip(path, &ip);
+        request
+            .headers_mut()
+            .insert("pulsars-service-key", value.parse().unwrap());
+        request
+    };
+
+    for _ in 0..3 {
+        let (status, headers, _) = send(&app, with_key(&key)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!headers.contains_key("ratelimit-limit"));
+    }
+    // A wrong key is an ordinary client: one request, then 429.
+    let (status, headers, _) = send(&app, with_key(&"x".repeat(40))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(headers["ratelimit-limit"], "1");
+    let (status, _, _) = send(&app, with_key(&key[..39])).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn anonymous_clients_are_limited_per_ip() {
     let Some(redis_url) = test_redis_url() else {
         return;
