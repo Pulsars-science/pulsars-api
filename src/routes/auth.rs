@@ -92,8 +92,8 @@ struct Current {
 }
 
 #[derive(Debug, Serialize)]
-struct Data<T> {
-    data: T,
+pub(crate) struct Data<T> {
+    pub(crate) data: T,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,8 +141,8 @@ pub struct ResetBody {
 /// Who is calling: the visitor's address (last `X-Forwarded-For` entry,
 /// set by the site or by nginx) and browser.
 pub struct Caller {
-    ip: Option<String>,
-    user_agent: Option<String>,
+    pub(crate) ip: Option<String>,
+    pub(crate) user_agent: Option<String>,
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for Caller {
@@ -249,6 +249,7 @@ pub async fn register(
         CreateError::EmailTaken => ApiError::InvalidFields(vec![taken("email")]),
         CreateError::Database(error) => error.into(),
     })?;
+    super::account::send_verification(&state, &account, body.locale.as_deref()).await?;
     open(&state, account, false, &caller, StatusCode::CREATED).await
 }
 
@@ -358,40 +359,51 @@ pub async fn reset_password(
 
 // --- Sessions --------------------------------------------------------------
 
-async fn open(
+pub(crate) async fn open(
     state: &AppState,
     account: AccountRow,
     remember: bool,
     caller: &Caller,
     status: StatusCode,
 ) -> Result<Response, ApiError> {
-    let token = new_token()?;
-    let row = sessions::create(
-        &state.db,
-        account.id,
-        &digest(&token),
-        remember,
-        caller.ip.as_deref(),
-        caller.user_agent.as_deref(),
-    )
-    .await?;
+    let session = new_session(state, account.id, remember, caller).await?;
     Ok(no_store(
         status,
         &Data {
             data: Opened {
-                session: NewSession {
-                    token,
-                    expires_at: timestamp(row.expires_at),
-                    remember: row.remember,
-                },
+                session,
                 user: account.into(),
             },
         },
     ))
 }
 
+/// Opens a session for `user_id`; its token is in the result, once.
+pub(crate) async fn new_session(
+    state: &AppState,
+    user_id: i64,
+    remember: bool,
+    caller: &Caller,
+) -> Result<NewSession, ApiError> {
+    let token = new_token()?;
+    let row = sessions::create(
+        &state.db,
+        user_id,
+        &digest(&token),
+        remember,
+        caller.ip.as_deref(),
+        caller.user_agent.as_deref(),
+    )
+    .await?;
+    Ok(NewSession {
+        token,
+        expires_at: timestamp(row.expires_at),
+        remember: row.remember,
+    })
+}
+
 /// The live session of `Pulsars-Session` and its account.
-async fn current(
+pub(crate) async fn current(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(SessionRow, AccountRow), ApiError> {
@@ -429,18 +441,22 @@ pub(crate) fn is_token(t: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn new_token() -> Result<String, ApiError> {
+pub(crate) fn new_token() -> Result<String, ApiError> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)
         .map_err(|e| ApiError::Internal(format!("no randomness for a session token: {e}")))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-fn digest(token: &str) -> Vec<u8> {
+pub(crate) fn digest(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
-async fn account_of(state: &AppState, user_id: &str, path: &str) -> Result<AccountRow, ApiError> {
+pub(crate) async fn account_of(
+    state: &AppState,
+    user_id: &str,
+    path: &str,
+) -> Result<AccountRow, ApiError> {
     let Ok(id) = user_id.parse::<i64>() else {
         return Err(ApiError::InvalidFields(vec![ParameterError::field(
             "user_id",
@@ -456,7 +472,11 @@ async fn account_of(state: &AppState, user_id: &str, path: &str) -> Result<Accou
         })
 }
 
-fn require_service(state: &AppState, headers: &HeaderMap, path: &str) -> Result<(), ApiError> {
+pub(crate) fn require_service(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+) -> Result<(), ApiError> {
     if rate_limit::is_service(state, headers) {
         Ok(())
     } else {
@@ -469,7 +489,7 @@ fn require_service(state: &AppState, headers: &HeaderMap, path: &str) -> Result<
 
 /// A per-action limit, counted even for the site: it forwards its
 /// visitors' attempts.
-async fn limit(
+pub(crate) async fn limit(
     state: &AppState,
     action: &str,
     who: &str,
@@ -486,7 +506,7 @@ async fn limit(
 
 // --- Passwords -------------------------------------------------------------
 
-async fn hash(cost: u32, password: String) -> Result<String, ApiError> {
+pub(crate) async fn hash(cost: u32, password: String) -> Result<String, ApiError> {
     tokio::task::spawn_blocking(move || {
         bcrypt::hash_with_result(password, cost)
             .map(|h| h.format_for_version(bcrypt::Version::TwoY))
@@ -569,7 +589,7 @@ fn is_email(email: &str) -> bool {
 
 /// 8 to 255 characters, confirmed. A mismatch is reported on `password`,
 /// as Laravel's `confirmed` rule does.
-fn check_password(password: &str, confirmation: &str, errors: &mut Vec<ParameterError>) {
+pub(crate) fn check_password(password: &str, confirmation: &str, errors: &mut Vec<ParameterError>) {
     let chars = password.chars().count();
     let error = if password.is_empty() {
         Some(("required", "is required"))
@@ -621,7 +641,7 @@ pub(crate) fn no_store<T: Serialize>(status: StatusCode, body: &T) -> Response {
     response
 }
 
-fn empty() -> Response {
+pub(crate) fn empty() -> Response {
     let mut response = StatusCode::NO_CONTENT.into_response();
     response
         .headers_mut()

@@ -1053,6 +1053,163 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/InvalidFields' }
 
+  /v1/auth/email/verification:
+    post:
+      tags: [auth]
+      operationId: sendVerification
+      summary: Mail the address verification link again (24 h)
+      description: Nothing is sent when the address is already verified. 6 per minute per account.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                lang: { type: [string, 'null'], enum: [fr, en, ru, null], description: The mail's language when the account has none. }
+      responses:
+        '204':
+          description: Sent, or nothing to send.
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/email/verify:
+    post:
+      tags: [auth]
+      operationId: verifyEmail
+      summary: Verify an address with the token of its link
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              additionalProperties: false
+              properties:
+                token: { type: string, minLength: 43, maxLength: 43 }
+      responses:
+        '200':
+          description: Verified
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [user]
+                    properties:
+                      user: { $ref: '#/components/schemas/AccountUser' }
+        '422': { $ref: '#/components/responses/InvalidToken' }
+
+  /v1/auth/password/forgot:
+    post:
+      tags: [auth]
+      operationId: forgotPassword
+      summary: Mail a password reset link (60 min) if an account has the address
+      description: |
+        Always 204: the answer never tells whether the account exists. At
+        most one mail a minute per account; 5 requests a minute per address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              additionalProperties: false
+              properties:
+                email: { type: string }
+                lang: { type: [string, 'null'], enum: [fr, en, ru, null] }
+      responses:
+        '204':
+          description: Done (sent or not).
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/password/reset-with-token:
+    post:
+      tags: [auth]
+      operationId: resetPasswordWithToken
+      summary: Set a password with the token of a reset link
+      description: Every session of the account is revoked. The address is not marked verified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, token, password, password_confirmation]
+              additionalProperties: false
+              properties:
+                email: { type: string }
+                token: { type: string }
+                password: { type: string, minLength: 8, maxLength: 255 }
+                password_confirmation: { type: string }
+      responses:
+        '204':
+          description: Changed.
+        '422':
+          description: Invalid password (`invalid-body`) or link (`invalid-token`).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /v1/auth/oauth/resolve:
+    post:
+      tags: [auth]
+      operationId: resolveOauth
+      summary: Find, link or create the account of a Google identity (service key)
+      description: The rules of the site's `ConnexionSociale::resoudre` (`auth-sessions.md` §4c).
+      parameters:
+        - $ref: '#/components/parameters/ServiceKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, subject]
+              additionalProperties: false
+              properties:
+                provider: { type: string, enum: [google, discord] }
+                subject: { type: string, minLength: 1, maxLength: 255 }
+                email: { type: [string, 'null'] }
+                email_verified: { type: boolean, default: false }
+                name: { type: [string, 'null'] }
+                nickname: { type: [string, 'null'] }
+                remember: { type: boolean, default: false }
+                current_user_id: { type: [string, 'null'], description: The member logged in on the site; links instead of logging in. }
+      responses:
+        '200': { $ref: '#/components/responses/Resolved' }
+        '201': { $ref: '#/components/responses/Resolved' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/auth/oauth/{provider}:
+    delete:
+      tags: [auth]
+      operationId: unlinkOauth
+      summary: Unlink a provider from the session's account
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, example: google }
+      responses:
+        '204':
+          description: Unlinked, or nothing was linked.
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /v1/auth/token:
     post:
       tags: [auth]
@@ -1494,6 +1651,48 @@ components:
             errors:
               - { parameter: pseudo, detail: is already used by another account, code: taken }
               - { parameter: password, detail: must be at least 8 characters, code: too_short }
+    InvalidToken:
+      description: A link that is unknown, used, expired, or was sent to another address
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/invalid-token
+            title: Invalid link
+            status: 422
+            detail: This link is unknown, already used, expired, or was sent to another address.
+            errors:
+              - { parameter: token, detail: 'is unknown, used, expired or for another address', code: invalid }
+    Conflict:
+      description: Conflicts with the account's state; `reason` is `taken`, `email_unverified` or `last_login_method`
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/conflict
+            title: Conflict
+            status: 409
+            detail: "This is the account's only way to log in: set a password first."
+            reason: last_login_method
+    Resolved:
+      description: The account of the identity, and its new session (none when linking to `current_user_id`)
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [user, session, created, linked]
+                properties:
+                  user: { $ref: '#/components/schemas/AccountUser' }
+                  session:
+                    oneOf:
+                      - { $ref: '#/components/schemas/Session' }
+                      - { type: 'null' }
+                  created: { type: boolean, description: A new account was created. }
+                  linked: { type: boolean, description: The identity was linked to an account that existed before. }
     SessionInvalid:
       description: Missing, unknown, expired or revoked session
       headers:
@@ -1847,11 +2046,14 @@ components:
                 description: |
                   Stable code of a field error (`/v1/auth/*`), for clients that
                   translate the message.
-                enum: [required, too_short, too_long, invalid_format, invalid_email, taken, mismatch, incorrect, invalid]
+                enum: [required, too_short, too_long, invalid_format, invalid_email, taken, mismatch, incorrect, invalid, email_missing]
         reason:
           type: string
-          description: For 401, why the token was refused; for 403, `insufficient_scope`. See `auth-jwt.md`.
-          enum: [missing, malformed, expired, not_yet_valid, bad_signature, unknown_kid, bad_issuer, bad_audience, bad_algorithm, insufficient_scope]
+          description: |
+            For 401, why the token was refused; for 403, `insufficient_scope`
+            (`auth-jwt.md`); for 409 `conflict`, what conflicts
+            (`auth-sessions.md`).
+          enum: [missing, malformed, expired, not_yet_valid, bad_signature, unknown_kid, bad_issuer, bad_audience, bad_algorithm, insufficient_scope, taken, email_unverified, last_login_method]
         trace_id: { type: string }
       additionalProperties: false
 

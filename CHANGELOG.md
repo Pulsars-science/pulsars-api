@@ -11,11 +11,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Two migrations (`20261029000000_auth_sessions`,
   `20261030000000_auth_roles`): `deploy-api` applies them as
   `pulsars_migrate`. They give `pulsars_api` the login columns of
-  `site.users` and read access to the permission roles.
+  `site.users` and read access to the permission roles. A third
+  (`20261031000000_email_tokens`) adds the links sent by mail and lets the
+  API mark addresses verified and link Google accounts.
+- Optional: `MAIL_SMTP_URL` (and `MAIL_FROM`) for the account mails; unset,
+  they are only logged, without their link.
 - Optional: the API's game-token key (`pulsars-api jwt-keygen`, then
   `JWT_SIGNING_KEY_FILE` and `JWT_SIGNING_KID`).
 
 ### Added
+
+- Account mails sent by the API (`lettre`, SMTP), in fr/en/ru with the
+  site's wording: `POST /v1/auth/email/verification` and
+  `/v1/auth/email/verify` (verification link, 24 h, sent on sign-up too),
+  `POST /v1/auth/password/forgot` (never says whether the account exists,
+  one mail a minute per account) and `/v1/auth/password/reset-with-token`
+  (60 min, revokes every session). Links are single-use token hashes in
+  `site.email_tokens`.
+- `POST /v1/auth/oauth/resolve` (service key): finds, links or creates the
+  account of a Google identity with the site's rules, then opens a
+  session; `DELETE /v1/auth/oauth/{provider}` unlinks, except the last way
+  to log in.
+- Problems `invalid-token` (422) and `conflict` (409, with a `reason`).
 
 - `/v1/auth/*` (`docs/contract/auth-sessions.md`): log in by e-mail or
   pseudo (ignoring case), sign up with Laravel's rules, sessions as opaque

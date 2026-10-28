@@ -14,6 +14,7 @@ pub mod sources;
 
 pub mod accounts;
 pub mod courses;
+pub mod email_tokens;
 pub mod exams;
 pub mod exercises;
 pub mod files;
@@ -21,6 +22,7 @@ pub mod members;
 pub mod news;
 pub mod resources;
 pub mod sessions;
+pub mod social;
 
 use std::str::FromStr;
 use std::time::Duration;

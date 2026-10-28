@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
 use pulsars_api::game::{Game, GameSettings, store};
+use pulsars_api::mail::{Kind, Mail};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
 use serde_json::{Value, json};
@@ -79,6 +80,7 @@ async fn env_with(extra: &[(&str, &str)]) -> Option<Env> {
             .expect("redis connects");
     }
     let state = AppState {
+        mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), GameSettings::default()),
         db,
         redis,
@@ -985,4 +987,516 @@ async fn the_api_publishes_its_signing_key() {
             "kid": TOKEN_KID, "use": "sig", "alg": "EdDSA",
         }]})
     );
+}
+
+// --- Mails: verification and forgotten password -----------------------------
+
+/// The link of the last mail of `kind` to `to`, and the mail.
+fn last_link(env: &Env, kind: Kind, to: &str) -> (String, Mail) {
+    let mail = env
+        .state
+        .mailer
+        .sent()
+        .into_iter()
+        .rev()
+        .find(|m| m.kind == kind && m.to == to)
+        .unwrap_or_else(|| panic!("no {kind:?} mail to {to}"));
+    let link = mail
+        .content
+        .text
+        .split_whitespace()
+        .find(|w| w.starts_with("https://pulsars.science/"))
+        .unwrap()
+        .to_owned();
+    (link, mail)
+}
+
+fn mails_to(env: &Env, kind: Kind, to: &str) -> usize {
+    env.state
+        .mailer
+        .sent()
+        .iter()
+        .filter(|m| m.kind == kind && m.to == to)
+        .count()
+}
+
+fn link_token(link: &str) -> String {
+    let path = link.split('?').next().unwrap();
+    path.rsplit('/').next().unwrap().to_owned()
+}
+
+async fn verify(app: &Router, token: &str) -> (StatusCode, Value) {
+    let (status, _, body) = Call::new("POST", "/v1/auth/email/verify")
+        .body(json!({ "token": token }))
+        .service()
+        .send(app)
+        .await;
+    (status, body)
+}
+
+async fn owner_pool(env: &Env) -> sqlx::PgPool {
+    sqlx::PgPool::connect(&owner_url(&env.database_url))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn signing_up_mails_a_verification_link_that_works_once() {
+    let Some(env) = env().await else { return };
+    let (_, email, _, session_token) = sign_up(&env.app).await;
+    let (link, mail) = last_link(&env, Kind::Verification, &email);
+    assert!(
+        link.starts_with("https://pulsars.science/email/verifier/"),
+        "{link}"
+    );
+    // The account asked for Russian.
+    assert_eq!(mail.content.subject, "Подтверди свой e-mail");
+    let token = link_token(&link);
+    assert_eq!(token.len(), 43);
+
+    let (status, body) = verify(&env.app, &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["user"]["email_verified"], true);
+    let (_, body) = session(&env.app, &session_token).await;
+    assert_eq!(body["data"]["user"]["email_verified"], true);
+
+    let (status, body) = verify(&env.app, &token).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body,
+        json!({
+            "type": "https://api.pulsars.science/problems/invalid-token",
+            "title": "Invalid link",
+            "status": 422,
+            "detail": "This link is unknown, already used, expired, or was sent to another address.",
+            "errors": [{"parameter": "token", "detail": "is unknown, used, expired or for another address", "code": "invalid"}]
+        })
+    );
+    for bad in ["", "short", &"x".repeat(43)] {
+        assert_eq!(
+            verify(&env.app, bad).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    // Verified: asking again sends nothing.
+    let (status, _, _) = Call::new("POST", "/v1/auth/email/verification")
+        .body(json!({}))
+        .session(&session_token)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(mails_to(&env, Kind::Verification, &email), 1);
+}
+
+#[tokio::test]
+async fn a_verification_link_expires_is_replaced_and_follows_the_address() {
+    let Some(env) = env().await else { return };
+    let owner = owner_pool(&env).await;
+
+    // Expired.
+    let (_, email, _, _) = sign_up(&env.app).await;
+    let (link, _) = last_link(&env, Kind::Verification, &email);
+    sqlx::query("UPDATE site.email_tokens SET expires_at = now() - interval '1 second' WHERE token_hash = $1")
+        .bind(sha(&link_token(&link)))
+        .execute(&owner)
+        .await
+        .unwrap();
+    assert_eq!(
+        verify(&env.app, &link_token(&link)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Sent again: the new link works, the old one no longer does.
+    let (_, email, _, session_token) = sign_up(&env.app).await;
+    let (first, _) = last_link(&env, Kind::Verification, &email);
+    let (status, _, _) = Call::new("POST", "/v1/auth/email/verification")
+        .body(json!({"lang": "en"}))
+        .session(&session_token)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (second, mail) = last_link(&env, Kind::Verification, &email);
+    assert_ne!(first, second);
+    // The account's language wins over the request's.
+    assert_eq!(mail.content.subject, "Подтверди свой e-mail");
+    assert_eq!(
+        verify(&env.app, &link_token(&first)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // The address changed since the mail: the link is for the old one.
+    let pseudo =
+        sqlx::query_scalar::<_, String>("SELECT pseudo::text FROM site.users WHERE email = $1")
+            .bind(&email)
+            .fetch_one(&owner)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE site.users SET email = $2 WHERE pseudo = $1")
+        .bind(&pseudo)
+        .bind(format!("new-{email}"))
+        .execute(&owner)
+        .await
+        .unwrap();
+    assert_eq!(
+        verify(&env.app, &link_token(&second)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Six mails a minute, then 429.
+    let (_, _, _, session_token) = sign_up(&env.app).await;
+    for _ in 0..6 {
+        let (status, _, _) = Call::new("POST", "/v1/auth/email/verification")
+            .body(json!({}))
+            .session(&session_token)
+            .send(&env.app)
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    let (status, _, _) = Call::new("POST", "/v1/auth/email/verification")
+        .body(json!({}))
+        .session(&session_token)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    // Without a session: 401.
+    let (status, _, _) = Call::new("POST", "/v1/auth/email/verification")
+        .body(json!({}))
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+async fn forgot(app: &Router, email: &str, ip: &str) -> StatusCode {
+    Call::new("POST", "/v1/auth/password/forgot")
+        .body(json!({ "email": email }))
+        .service()
+        .ip(ip)
+        .send(app)
+        .await
+        .0
+}
+
+#[tokio::test]
+async fn a_forgotten_password_never_says_whether_the_account_exists() {
+    let Some(env) = env().await else { return };
+    let (_, email, _, _) = sign_up(&env.app).await;
+    let nobody = format!("nobody-{}@example.invalid", unique());
+    assert_eq!(
+        forgot(&env.app, &nobody, &fresh_ip()).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(mails_to(&env, Kind::Reset, &nobody), 0);
+
+    // Any case of the address.
+    assert_eq!(
+        forgot(&env.app, &email.to_uppercase(), &fresh_ip()).await,
+        StatusCode::NO_CONTENT
+    );
+    let (link, mail) = last_link(&env, Kind::Reset, &email);
+    assert!(
+        link.starts_with("https://pulsars.science/reset-password/")
+            && link.ends_with(&format!("?email={}", email.replace('@', "%40"))),
+        "{link}"
+    );
+    assert!(mail.content.text.contains("действительна 60 мин."));
+    // One mail a minute per account, still 204.
+    assert_eq!(
+        forgot(&env.app, &email, &fresh_ip()).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(mails_to(&env, Kind::Reset, &email), 1);
+
+    // Five requests a minute per address.
+    let ip = fresh_ip();
+    for _ in 0..5 {
+        assert_eq!(forgot(&env.app, &nobody, &ip).await, StatusCode::NO_CONTENT);
+    }
+    assert_eq!(
+        forgot(&env.app, &nobody, &ip).await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn a_reset_link_sets_the_password_once_and_ends_every_session() {
+    let Some(env) = env().await else { return };
+    let (pseudo, email, _, session_token) = sign_up(&env.app).await;
+    forgot(&env.app, &email, &fresh_ip()).await;
+    let (link, _) = last_link(&env, Kind::Reset, &email);
+    let token = link_token(&link);
+    let reset = |email: String, token: String, password: &'static str| {
+        let app = env.app.clone();
+        async move {
+            Call::new("POST", "/v1/auth/password/reset-with-token")
+                .body(json!({"email": email, "token": token,
+                             "password": password, "password_confirmation": password}))
+                .service()
+                .send(&app)
+                .await
+        }
+    };
+
+    let (status, _, body) = reset(email.clone(), token.clone(), "short").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        codes(&body),
+        [("password".to_owned(), "too_short".to_owned())]
+    );
+    let (status, _, body) = reset(format!("x{email}"), token.clone(), "brand-new-pass").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["type"],
+        "https://api.pulsars.science/problems/invalid-token"
+    );
+
+    let (status, _, body) = reset(email.to_uppercase(), token.clone(), "brand-new-pass").await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(
+        session(&env.app, &session_token).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        login(&env.app, &pseudo, "brand-new-pass").await.0,
+        StatusCode::OK
+    );
+    // Laravel does not verify the address on a reset, neither does the API.
+    let (_, body) = login(&env.app, &pseudo, "brand-new-pass").await;
+    assert_eq!(body["data"]["user"]["email_verified"], false);
+
+    let (status, _, _) = reset(email.clone(), token, "another-new-pass").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+// --- Google accounts --------------------------------------------------------
+
+async fn resolve(app: &Router, body: Value) -> (StatusCode, Value) {
+    let (status, _, body) = Call::new("POST", "/v1/auth/oauth/resolve")
+        .body(body)
+        .service()
+        .send(app)
+        .await;
+    (status, body)
+}
+
+fn identity(subject: &str, email: &str, verified: bool, name: &str) -> Value {
+    json!({"provider": "google", "subject": subject, "email": email,
+           "email_verified": verified, "name": name, "nickname": null, "remember": true})
+}
+
+#[tokio::test]
+async fn a_new_google_identity_creates_an_account_and_finds_it_again() {
+    let Some(env) = env().await else { return };
+    let subject = format!("g-{}", unique());
+    let email = format!("{subject}@example.invalid");
+
+    let (status, _, _) = Call::new("POST", "/v1/auth/oauth/resolve")
+        .body(identity(&subject, &email, true, "Ada Lovelace"))
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "service key only");
+
+    let (status, body) = resolve(&env.app, identity(&subject, &email, true, "Grace Hopper")).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let data = &body["data"];
+    assert_eq!(
+        (data["created"].clone(), data["linked"].clone()),
+        (json!(true), json!(false))
+    );
+    assert_eq!(data["user"]["email_verified"], true);
+    assert_eq!(data["session"]["remember"], true);
+    let first_pseudo = data["user"]["pseudo"].as_str().unwrap().to_owned();
+    assert!(first_pseudo.starts_with("Grace-Hopper"), "{first_pseudo}");
+    let id = data["user"]["id"].clone();
+    assert_eq!(session(&env.app, &token(&body)).await.0, StatusCode::OK);
+    // No password: logging in with one fails.
+    assert_eq!(
+        login(&env.app, &first_pseudo, "").await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // The same identity again: the same account.
+    let (status, body) = resolve(
+        &env.app,
+        identity(&subject, "other@example.invalid", false, "X"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["user"]["id"], id);
+    assert_eq!(body["data"]["created"], false);
+    assert_eq!(body["data"]["linked"], false);
+
+    // A second person with the same name: a suffix.
+    let other = format!("g-{}", unique());
+    let (status, body) = resolve(
+        &env.app,
+        identity(
+            &other,
+            &format!("{other}@example.invalid"),
+            false,
+            "Grace Hopper",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let pseudo = body["data"]["user"]["pseudo"].as_str().unwrap();
+    assert!(pseudo.starts_with("Grace-Hopper-"), "{pseudo}");
+    assert_ne!(pseudo, first_pseudo);
+    assert_eq!(body["data"]["user"]["email_verified"], false);
+
+    // Nickname over name, `membre` for too short.
+    let short = format!("g-{}", unique());
+    let mut body_json = identity(&short, &format!("{short}@example.invalid"), true, "Jo");
+    body_json["nickname"] = json!("");
+    let (_, body) = resolve(&env.app, body_json).await;
+    assert!(
+        body["data"]["user"]["pseudo"]
+            .as_str()
+            .unwrap()
+            .starts_with("membre"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn an_existing_address_is_linked_only_when_google_vouches_for_it() {
+    let Some(env) = env().await else { return };
+    let (pseudo, email, _, _) = sign_up(&env.app).await;
+    let subject = format!("g-{}", unique());
+
+    let (status, body) = resolve(&env.app, identity(&subject, &email, false, "Someone")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["type"],
+        "https://api.pulsars.science/problems/conflict"
+    );
+    assert_eq!(body["reason"], "email_unverified");
+
+    let (status, body) = resolve(
+        &env.app,
+        identity(&subject, &email.to_uppercase(), true, "Someone"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["user"]["pseudo"], pseudo);
+    assert_eq!(body["data"]["linked"], true);
+    assert_eq!(body["data"]["created"], false);
+
+    let mut no_email = identity(&format!("g-{}", unique()), "", true, "X");
+    no_email["email"] = json!(null);
+    let (status, body) = resolve(&env.app, no_email).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        codes(&body),
+        [("email".to_owned(), "email_missing".to_owned())]
+    );
+
+    let (status, body) = resolve(&env.app, json!({"provider": "github", "subject": ""})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        codes(&body),
+        [
+            ("provider".to_owned(), "invalid".to_owned()),
+            ("subject".to_owned(), "invalid".to_owned())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_logged_in_member_links_google_unless_it_is_someone_elses() {
+    let Some(env) = env().await else { return };
+    let (pseudo, _, _, session_token) = sign_up(&env.app).await;
+    let id = id_of(&env, &pseudo).await.to_string();
+    let subject = format!("g-{}", unique());
+    let mut body_json = identity(&subject, "whatever@example.invalid", false, "X");
+    body_json["current_user_id"] = json!(id);
+
+    let (status, body) = resolve(&env.app, body_json.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["session"], Value::Null);
+    assert_eq!(body["data"]["linked"], true);
+    assert_eq!(body["data"]["user"]["pseudo"], pseudo);
+    // Again: still fine.
+    assert_eq!(resolve(&env.app, body_json).await.0, StatusCode::OK);
+
+    // Someone else's identity.
+    let (other, _, _, _) = sign_up(&env.app).await;
+    let mut theirs = identity(&subject, "x@example.invalid", true, "X");
+    theirs["current_user_id"] = json!(id_of(&env, &other).await.to_string());
+    let (status, body) = resolve(&env.app, theirs).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["reason"], "taken");
+
+    // Unlinking: fine with a password.
+    let (status, _, _) = Call::new("DELETE", "/v1/auth/oauth/google")
+        .session(&session_token)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn google_cannot_be_unlinked_from_an_account_without_a_password() {
+    let Some(env) = env().await else { return };
+    let subject = format!("g-{}", unique());
+    let (_, body) = resolve(
+        &env.app,
+        identity(
+            &subject,
+            &format!("{subject}@example.invalid"),
+            true,
+            "Only Google",
+        ),
+    )
+    .await;
+    let session_token = token(&body);
+    let unlink = || async {
+        Call::new("DELETE", "/v1/auth/oauth/google")
+            .session(&session_token)
+            .send(&env.app)
+            .await
+    };
+    let (status, _, body) = unlink().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["reason"], "last_login_method");
+
+    let (status, _, _) = Call::new("PUT", "/v1/auth/password")
+        .body(json!({"password": "a-password-now", "password_confirmation": "a-password-now"}))
+        .session(&session_token)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(unlink().await.0, StatusCode::NO_CONTENT);
+    // The identity is free again: it creates another account.
+    let (status, body) = resolve(
+        &env.app,
+        identity(
+            &subject,
+            &format!("{subject}-2@example.invalid"),
+            true,
+            "Only Google",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test]
+async fn two_simultaneous_first_logins_make_one_account() {
+    let Some(env) = env().await else { return };
+    let subject = format!("g-{}", unique());
+    let email = format!("{subject}@example.invalid");
+    let (a, b) = tokio::join!(
+        resolve(&env.app, identity(&subject, &email, true, "Twin")),
+        resolve(&env.app, identity(&subject, &email, true, "Twin")),
+    );
+    assert!(a.0.is_success() && b.0.is_success(), "{a:?} {b:?}");
+    assert_eq!(a.1["data"]["user"]["id"], b.1["data"]["user"]["id"]);
+    let accounts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM site.users WHERE lower(email) = lower($1)")
+            .bind(&email)
+            .fetch_one(&env.state.db)
+            .await
+            .unwrap();
+    assert_eq!(accounts, 1);
 }
