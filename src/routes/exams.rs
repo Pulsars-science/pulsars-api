@@ -1,4 +1,5 @@
-//! `GET /v1/exams` and `/v1/exams/{slug}` (`openapi.yaml`, tag `exams`).
+//! `GET /v1/exams`, `/v1/exams/facets` and `/v1/exams/{slug}` (`openapi.yaml`,
+//! tag `exams`).
 //!
 //! Statements only, never the model answer or the correction PDF. Exam
 //! titles and descriptions are not translatable in Laravel: an exam's `lang`
@@ -11,7 +12,7 @@ use serde_json::{Number, Value};
 
 use super::courses::timestamp;
 use super::cursor;
-use super::params::{EXAM_SUBJECTS, EXAM_TYPES, Params};
+use super::params::{EXAM_SUBJECTS, EXAM_TYPES, Lang, Params};
 use super::public::{self, Data, Pagination, PublicResult, served, translated};
 use crate::db::exams::{self, ExamFilters, ExamRow, PartRow};
 use crate::links;
@@ -75,37 +76,70 @@ pub async fn list(
     let country = params.upper_code("country", 2);
     let competition = params.text("competition", 255);
     let search = params.search();
+    let page = params.page(cursor.is_some());
     let filters = params.finish()?;
 
     let pagination = Pagination::new("exams", lang, &filters, limit);
-    let after = match cursor {
+    let after = match cursor.filter(|_| page.is_none()) {
         Some(c) => Some(cursor::time_id_key(&cursor::decode(
             &c,
             &pagination.fingerprint,
         )?)?),
         None => None,
     };
-    let rows = exams::list(
-        &state.db,
-        &ExamFilters {
-            kind,
-            subject,
-            level: level.as_deref(),
-            session: session.as_deref(),
-            country: country.as_deref(),
-            competition: competition.as_deref(),
-            search: search.as_deref(),
-        },
-        after,
-        pagination.fetch(),
-    )
-    .await?;
-    let page = pagination.page(
-        rows,
-        |row| cursor::time_id(row.published_at, row.id),
-        |row| to_summary(row).0,
-    );
-    public::json(&headers, lang, &page)
+    let exam_filters = ExamFilters {
+        kind,
+        subject,
+        level: level.as_deref(),
+        session: session.as_deref(),
+        country: country.as_deref(),
+        competition: competition.as_deref(),
+        search: search.as_deref(),
+    };
+    let offset = page.map_or(0, |page| pagination.offset(page));
+    let rows = exams::list(&state.db, &exam_filters, after, offset, pagination.fetch()).await?;
+    let body = match page {
+        Some(_) => {
+            let total = match rows.first() {
+                Some(row) => row.total,
+                // Past the last page: count from the first one.
+                None => exams::list(&state.db, &exam_filters, None, 0, 1)
+                    .await?
+                    .first()
+                    .map_or(0, |row| row.total),
+            };
+            pagination.numbered(rows, total, |row| to_summary(row).0)
+        }
+        None => pagination.page(
+            rows,
+            |row| cursor::time_id(row.published_at, row.id),
+            |row| to_summary(row).0,
+        ),
+    };
+    public::json(&headers, lang, &body)
+}
+
+/// `{"data": {"levels": [...], "countries": [...]}}`: the values the list's
+/// `level` and `country` filters can take.
+#[derive(Debug, Serialize)]
+pub struct Facets {
+    pub levels: Vec<String>,
+    pub countries: Vec<String>,
+}
+
+pub async fn facets(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    headers: HeaderMap,
+) -> PublicResult {
+    let mut params = Params::parse(query.as_deref());
+    let lang = params.lang();
+    params.finish()?;
+    let (levels, countries) = exams::facets(&state.db).await?;
+    let body = Data {
+        data: Facets { levels, countries },
+    };
+    public::json(&headers, lang, &body)
 }
 
 pub async fn show(
@@ -131,7 +165,7 @@ pub async fn show(
         data: ExamDetail {
             summary,
             description,
-            parts: parts.into_iter().map(to_part).collect(),
+            parts: parts.into_iter().map(|p| to_part(p, lang)).collect(),
         },
     };
     public::json(&headers, lang, &body)
@@ -170,12 +204,12 @@ fn to_summary(row: ExamRow) -> (ExamSummary, Option<String>) {
     (summary, row.description)
 }
 
-fn to_part(row: PartRow) -> Part {
+fn to_part(row: PartRow, lang: Lang) -> Part {
     let (title, is_tr) = translated(row.title, row.tr_title);
     Part {
         id: row.id,
         position: row.position,
-        lang: served(is_tr),
+        lang: served(lang, is_tr),
         title,
         points: row.points.and_then(points),
         statement_md: translated(row.statement_md, row.tr_statement_md).0,

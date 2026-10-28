@@ -66,11 +66,14 @@ pub struct Data<T> {
     pub data: T,
 }
 
-/// `{"data": [...], "next_cursor": ...}`.
+/// `{"data": [...], "next_cursor": ...}`, with `total` when the list was
+/// asked by `page`.
 #[derive(Debug, Serialize)]
 pub struct Page<T> {
     pub data: Vec<T>,
     pub next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<i64>,
 }
 
 /// One page of a keyset-paginated list.
@@ -112,7 +115,29 @@ impl Pagination {
         Page {
             data: rows.into_iter().map(item).collect(),
             next_cursor,
+            total: None,
         }
+    }
+
+    /// Page `page` (from 1) of `rows` fetched with [`Self::offset`]: no
+    /// cursor, the number of matching rows instead.
+    pub fn numbered<R, T>(
+        &self,
+        mut rows: Vec<R>,
+        total: i64,
+        item: impl FnMut(R) -> T,
+    ) -> Page<T> {
+        rows.truncate(self.limit as usize);
+        Page {
+            data: rows.into_iter().map(item).collect(),
+            next_cursor: None,
+            total: Some(total),
+        }
+    }
+
+    /// Rows to skip before page `page`.
+    pub fn offset(&self, page: u32) -> i64 {
+        i64::from(page.saturating_sub(1)) * i64::from(self.limit)
     }
 }
 
@@ -126,9 +151,10 @@ pub fn translated(original: String, translation: Option<String>) -> (String, boo
     }
 }
 
-/// The `lang` of an object whose main field was (or was not) translated.
-pub fn served(translated: bool) -> &'static str {
-    if translated { "en" } else { "fr" }
+/// The `lang` of an object whose main field was (or was not) translated
+/// into `lang`.
+pub fn served(lang: Lang, translated: bool) -> &'static str {
+    if translated { lang.code() } else { "fr" }
 }
 
 /// A `200` JSON response with the public caching headers, or `304` when the

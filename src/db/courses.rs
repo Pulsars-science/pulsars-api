@@ -26,6 +26,7 @@ macro_rules! course_select {
                 c.published_at, c.updated_at,
                 t.title AS tr_title, t.description AS tr_description,
                 sn.name AS tr_subject_name,
+                count(*) OVER () AS total,
                 ARRAY(SELECT DISTINCT a.lang::text FROM ",
             course_translations!(),
             " a
@@ -70,6 +71,9 @@ pub struct CourseRow {
     pub tr_subject_name: Option<String>,
     /// Languages with a course-level translation.
     pub translation_langs: Vec<String>,
+    /// Courses matching the filters of a list (0 for a single course).
+    #[sqlx(default)]
+    pub total: i64,
 }
 
 /// Filters of `GET /v1/courses`. `search` is a `LIKE` pattern.
@@ -80,19 +84,51 @@ pub struct CourseFilters<'a> {
     pub difficulty: Option<&'a str>,
     pub level: Option<&'a str>,
     pub tag: Option<&'a str>,
+    /// The site's `theme` (free text, e.g. `algebre`).
+    pub theme: Option<&'a str>,
     /// Only courses with a translation in this language.
     pub translated_in: Option<&'a str>,
     pub search: Option<&'a str>,
 }
 
-/// One page of published courses, by original title then id, after `after`.
+/// Order of `GET /v1/courses`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sort {
+    /// Original title, then id.
+    #[default]
+    Title,
+    /// Latest published first, then highest id (the site's library).
+    Recent,
+}
+
+/// Where a page of courses starts.
+#[derive(Debug, Clone)]
+pub enum After {
+    Start,
+    /// After `(title, id)`, in [`Sort::Title`].
+    Title(String, i64),
+    /// After `(published_at, id)`, in [`Sort::Recent`].
+    Recent(DateTime<Utc>, i64),
+    /// After `n` rows (`page`).
+    Offset(i64),
+}
+
+/// One page of published courses in `sort` order, from `after`. Each row
+/// carries `total`, the number of courses matching the filters.
 pub async fn list(
     pool: &PgPool,
     tr: Option<&str>,
     filters: &CourseFilters<'_>,
-    after: Option<(&str, i64)>,
+    sort: Sort,
+    after: After,
     limit: i64,
 ) -> Result<Vec<CourseRow>, sqlx::Error> {
+    let (title, recent, offset) = match after {
+        After::Start => (None, None, 0),
+        After::Title(ref title, id) => (Some((title.as_str(), id)), None, 0),
+        After::Recent(at, id) => (None, Some((at, id)), 0),
+        After::Offset(n) => (None, None, n),
+    };
     sqlx::query_as(concat!(
         course_select!(),
         concat!(
@@ -110,8 +146,13 @@ pub async fn list(
             AND ($8::text IS NULL OR c.title ILIKE $8 OR c.description ILIKE $8
                  OR t.title ILIKE $8 OR t.description ILIKE $8)
             AND ($9::text IS NULL OR (c.title, c.id) > ($9::text, $10::bigint))
-          ORDER BY c.title, c.id
-          LIMIT $11"
+            AND ($12::timestamptz IS NULL
+                 OR (c.published_at, c.id) < ($12::timestamptz, $13::bigint))
+            AND ($15::text IS NULL OR c.theme = $15)
+          ORDER BY CASE WHEN $14 THEN c.published_at END DESC,
+                   CASE WHEN $14 THEN c.id END DESC,
+                   c.title, c.id
+          LIMIT $11 OFFSET $16"
         )
     ))
     .bind(tr)
@@ -122,9 +163,14 @@ pub async fn list(
     .bind(filters.tag)
     .bind(filters.translated_in)
     .bind(filters.search)
-    .bind(after.map(|(title, _)| title))
-    .bind(after.map(|(_, id)| id))
+    .bind(title.map(|(title, _)| title))
+    .bind(title.map(|(_, id)| id))
     .bind(limit)
+    .bind(recent.map(|(at, _)| at))
+    .bind(recent.map(|(_, id)| id))
+    .bind(sort == Sort::Recent)
+    .bind(filters.theme)
+    .bind(offset)
     .fetch_all(pool)
     .await
 }

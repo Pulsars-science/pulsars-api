@@ -193,7 +193,19 @@ paths:
             Only courses that have a translation in this language. `fr`
             matches every course (French is the source language).
           schema: { $ref: '#/components/schemas/LangCode' }
+        - name: theme
+          in: query
+          description: Exact `theme`, as the course gives it (`Chimie – La matière`).
+          schema: { type: string, maxLength: 50 }
         - $ref: '#/components/parameters/Search'
+        - name: sort
+          in: query
+          description: |
+            `title` (default): original title, then `id`. `recent`: latest
+            `published_at` first, then highest `id`. A cursor is only valid
+            with the order it was issued for.
+          schema: { type: string, enum: [title, recent], default: title }
+        - $ref: '#/components/parameters/Page'
       responses:
         '200':
           description: A page of courses
@@ -213,6 +225,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/CourseSummary' }
                   next_cursor: { $ref: '#/components/schemas/NextCursor' }
+                  total: { $ref: '#/components/schemas/Total' }
               examples:
                 page:
                   $ref: '#/components/examples/CoursesPage'
@@ -263,7 +276,7 @@ paths:
                   chapter_count: 2
                   lesson_count: 4
                   exercise_count: 5
-                  available_langs: [fr, en]
+                  available_langs: [fr, en, ru]
                   published_at: '2026-08-17T09:27:34Z'
                   updated_at: '2026-08-17T09:27:34Z'
                   web_url: https://pulsars.science/cours/les-bases-du-calcul
@@ -272,8 +285,8 @@ paths:
                       title: L'ordre des opérations
                       lang: fr
                       lessons:
-                        - { slug: priorites-operatoires, position: 1, title: Les priorités opératoires, lang: fr }
-                        - { slug: les-fractions, position: 2, title: Les fractions, lang: fr }
+                        - { id: 1, slug: priorites-operatoires, position: 1, title: Les priorités opératoires, lang: fr }
+                        - { id: 2, slug: les-fractions, position: 2, title: Les fractions, lang: fr }
                       exercises:
                         - { id: 1, position: 1, type: qcm, title: Appliquer les priorités, lang: fr }
                         - { id: 2, position: 2, type: reponse_courte, title: Simplifier une fraction, lang: fr }
@@ -281,8 +294,8 @@ paths:
                       title: Puissances et pourcentages
                       lang: fr
                       lessons:
-                        - { slug: les-puissances, position: 1, title: Les puissances, lang: fr }
-                        - { slug: les-pourcentages, position: 2, title: Les pourcentages, lang: fr }
+                        - { id: 3, slug: les-puissances, position: 1, title: Les puissances, lang: fr }
+                        - { id: 4, slug: les-pourcentages, position: 2, title: Les pourcentages, lang: fr }
                       exercises:
                         - { id: 3, position: 1, type: qcm, title: Vrai ou faux sur les puissances, lang: fr }
                         - { id: 4, position: 2, type: reponse_courte, title: Calculer un pourcentage, lang: fr }
@@ -325,6 +338,7 @@ paths:
                 fr:
                   value:
                     data:
+                      id: 1
                       slug: priorites-operatoires
                       lang: fr
                       title: Les priorités opératoires
@@ -339,6 +353,7 @@ paths:
                 en:
                   value:
                     data:
+                      id: 1
                       slug: priorites-operatoires
                       lang: en
                       title: Operational priorities
@@ -505,6 +520,7 @@ paths:
           description: Competitive exam key, only for `type=concours`.
           schema: { type: string, example: centrale-supelec }
         - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/Page'
       responses:
         '200':
           description: A page of exams
@@ -521,9 +537,42 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/ExamSummary' }
                   next_cursor: { $ref: '#/components/schemas/NextCursor' }
+                  total: { $ref: '#/components/schemas/Total' }
               examples:
                 page:
                   $ref: '#/components/examples/ExamsPage'
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/exams/facets:
+    get:
+      tags: [exams]
+      operationId: getExamFacets
+      summary: Levels and countries of published exams
+      description: The values the `level` and `country` filters of `GET /v1/exams` can take, sorted.
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: Filter values
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [levels, countries]
+                    properties:
+                      levels: { type: array, items: { type: string } }
+                      countries: { type: array, items: { type: string, pattern: '^[A-Z]{2}$' } }
+              example:
+                data: { levels: [CPGE, Terminale], countries: [FR] }
         '304': { $ref: '#/components/responses/NotModified' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -1096,6 +1145,14 @@ components:
       in: query
       description: Opaque value from a previous `next_cursor`. Only valid with the same filters.
       schema: { type: string, maxLength: 512 }
+    Page:
+      name: page
+      in: query
+      description: |
+        Page number, from 1, for clients that show numbered pages: the
+        answer has `total` and no `next_cursor`. Not with `cursor`. Past the
+        last page, `data` is empty and `total` still counts the matches.
+      schema: { type: integer, minimum: 1, maximum: 1000 }
     Search:
       name: q
       in: query
@@ -1245,7 +1302,7 @@ components:
             chapter_count: 2
             lesson_count: 4
             exercise_count: 5
-            available_langs: [fr, en]
+            available_langs: [fr, en, ru]
             published_at: '2026-08-17T09:27:34Z'
             updated_at: '2026-08-17T09:27:34Z'
             web_url: https://pulsars.science/cours/les-bases-du-calcul
@@ -1377,7 +1434,7 @@ components:
   schemas:
     LangCode:
       type: string
-      enum: [fr, en]
+      enum: [fr, en, ru]
     Difficulty:
       type: string
       enum: [debutant, intermediaire, avance]
@@ -1407,6 +1464,10 @@ components:
         `host`: Pulsars serves the file (`download_url` is set; `source_url`,
         when set, credits where it came from). `link`: the resource lives on
         its author's site (`source_url` is the target, `download_url` is null).
+    Total:
+      type: integer
+      minimum: 0
+      description: Items matching the filters, on lists asked with `page` only.
     NextCursor:
       type: [string, 'null']
       description: Pass it as `cursor` to get the next page; null on the last page.
@@ -1557,8 +1618,9 @@ components:
                     type: array
                     items:
                       type: object
-                      required: [slug, position, title, lang]
+                      required: [id, slug, position, title, lang]
                       properties:
+                        id: { type: integer, description: 'Stable id, as in the site''s progress.' }
                         slug: { type: string }
                         position: { type: integer }
                         title: { type: string }
@@ -1584,8 +1646,9 @@ components:
 
     Lesson:
       type: object
-      required: [slug, lang, title, position, content_md, chapter, course, previous, next, updated_at, web_url]
+      required: [id, slug, lang, title, position, content_md, chapter, course, previous, next, updated_at, web_url]
       properties:
+        id: { type: integer }
         slug: { type: string }
         lang: { $ref: '#/components/schemas/LangCode' }
         title: { type: string }
