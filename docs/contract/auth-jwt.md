@@ -1,5 +1,15 @@
 # Game token (JWT)
 
+> **Two issuers during the migration (phase 2).** The API now issues the
+> same token itself, from the member's session: `POST /v1/auth/token` on
+> `api.pulsars.science` (§7), signed with the API's own key, `iss`
+> `https://api.pulsars.science`, published at
+> `https://api.pulsars.science/.well-known/jwks.json`. The API accepts both:
+> a token claiming its own issuer is verified with its own key (by `kid`,
+> no network); any other token with Laravel's JWKS and Laravel's issuer, as
+> below. Laravel's `/jeu/jeton` stays as a fallback until phase 5, when only
+> the API's issuer remains. `locale` may also be `ru`.
+
 Laravel (`pulsars.science`) is the only identity provider. When the game front
 end (`pulsars.science/jeux`) needs to act as a member, it asks Laravel for a
 short-lived token, then presents that token to the API (`api.pulsars.science`),
@@ -386,3 +396,70 @@ The `reason` field helps the front end react (refresh on `expired`), but
   banned-from-game state, if wanted, is a `game-design.md` decision.
 - `PROJET.md` still describes Laravel 11 / PHP 8.3; the code is Laravel 13
   (`composer.lock` v13.20.0) and production runs PHP 8.4.
+
+## 7. The API's own endpoint: `POST /v1/auth/token`
+
+```http
+POST /v1/auth/token HTTP/1.1
+Host: api.pulsars.science
+Origin: https://pulsars.science
+Cookie: pulsars_auth=…
+Content-Type: application/json
+Accept: application/json
+
+{}
+```
+
+The front end calls it like `/jeu/jeton`: `fetch(url, { method: "POST",
+credentials: "include", headers: { "Content-Type": "application/json",
+"Accept": "application/json" }, body: "{}" })`.
+
+- **Session**: the `pulsars_auth` cookie, which the site sets on
+  `.pulsars.science` when the member logs in (`auth-sessions.md`), or
+  `Pulsars-Session` from a server. Missing, unknown, expired or revoked:
+  `401 session-invalid`.
+- **Browser protection**, the same as Laravel's `VerifierOrigineJeu` (§2):
+  - `OPTIONS` preflight: `204` with `Access-Control-Allow-Origin: <origin>`,
+    `Access-Control-Allow-Credentials: true`, `Access-Control-Allow-Methods:
+    POST`, `Access-Control-Allow-Headers: Content-Type, Accept`,
+    `Access-Control-Max-Age: 600`, `Vary: Origin`, for an origin listed in
+    `CORS_ALLOWED_ORIGINS`; `403` without CORS headers otherwise.
+  - `POST`: `Origin` required and listed (else `403`), `Content-Type:
+    application/json` (else `415`), `Sec-Fetch-Site`, when sent, `same-site`
+    or `same-origin` (else `403`). Every answer to a listed origin carries
+    `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true`
+    and `Vary: Origin`.
+  - Exception: a request with `Pulsars-Session`, no cookie and no `Origin`
+    is a server's (a browser always sends `Origin` on a cross-origin POST,
+    and cannot send that header without a preflight, which is refused to
+    other origins). It skips the browser checks.
+- **Who**: e-mail verified and onboarding done, else `403` (`Your email
+  address is not verified.`, `Onboarding required.`). 30 tokens per minute
+  per member, else `429 rate-limited` with `Retry-After`.
+- **Without a signing key** (`JWT_SIGNING_KEY_FILE`, `JWT_SIGNING_KID`):
+  `503 token-unavailable`.
+- **Success**: `200`, `Cache-Control: no-store`, the same body as
+  `/jeu/jeton`:
+
+```json
+{"token": "eyJ…", "token_type": "Bearer", "expires_in": 300, "expires_at": "2026-10-29T10:17:31Z"}
+```
+
+Claims as §1, with `iss` = `https://api.pulsars.science`, `kid` the API's,
+`locale` = `users.locale` (`fr`, `en`, `ru` or null), `roles` the
+permission roles from `site.roles`/`site.role_user`, highest first. The token
+is never logged.
+
+### The API's key
+
+- `pulsars-api jwt-keygen <kid> <dir>` writes `<dir>/<kid>.key` (the 32-byte
+  seed in base64, as Laravel's `<kid>.key`, mode `0600`, never over an
+  existing file) and prints the public `x` and the two variables to set.
+- `JWT_SIGNING_KEY_FILE` names the file, `JWT_SIGNING_KID` its `kid`
+  (`YYYY-MM-ed25519-N`). In production the API refuses to start if the file
+  is readable by its group or others.
+- `GET https://api.pulsars.science/.well-known/jwks.json` publishes the
+  public key (same format as §3; `{"keys": []}` without a key).
+- Rotation: one key at a time for now. The API verifies its own tokens by
+  `kid`, so switching keys refuses the previous key's tokens at once; they
+  live 5 minutes, and the games ask for a new one when refused.

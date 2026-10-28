@@ -13,6 +13,7 @@ pub mod news;
 pub mod params;
 pub mod public;
 pub mod resources;
+pub mod token;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
@@ -126,9 +127,23 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // The game token, asked by the game front end with the session cookie:
+    // its own origin check and credentialed CORS (`token::browser_guard`).
+    let game_token = Router::new()
+        .route("/v1/auth/token", post(token::issue).options(preflight))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
+        .layer(from_fn_with_state(state.clone(), token::browser_guard));
+
+    // The API's public signing key, for anyone verifying its tokens.
+    let jwks = Router::new()
+        .route("/.well-known/jwks.json", get(token::jwks))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
         .merge(auth)
+        .merge(game_token)
+        .merge(jwks)
         .merge(content)
         .merge(files)
         .merge(game_public)

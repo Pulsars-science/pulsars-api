@@ -280,7 +280,14 @@ async fn account(state: &AppState, token: &str) -> Result<Login, Closing> {
         audience: &state.config.jwt_audience,
     };
     let now = chrono::Utc::now().timestamp();
-    let claims = match auth::authenticate(Some(header.as_bytes()), &state.jwks, expected, now).await
+    let claims = match auth::authenticate(
+        Some(header.as_bytes()),
+        &state.jwks,
+        expected,
+        state.config.token_signer.as_ref(),
+        now,
+    )
+    .await
     {
         Ok(claims) => claims,
         Err(Failure::Rejected { reason, .. }) => {

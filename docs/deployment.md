@@ -337,6 +337,9 @@ variable the API reads is in the file:
 | `RATE_LIMIT_ANONYMOUS_PER_MINUTE` | `60` | D7 |
 | `RATE_LIMIT_AUTHENTICATED_PER_MINUTE` | `120` | D7 |
 | `BCRYPT_COST` | `12` | cost of the password hashes the API writes, as Laravel's `BCRYPT_ROUNDS`; 4 in tests |
+| `JWT_SIGNING_KEY_FILE`, `JWT_SIGNING_KID` | unset | the API's game-token key (`pulsars-api jwt-keygen <kid> <dir>`), mode 0600 enforced in production; unset: `POST /v1/auth/token` answers 503 |
+| `JWT_OWN_ISSUER` | `https://api.pulsars.science` | `iss` of the tokens the API signs |
+| `JWT_TOKEN_TTL_SECS` | `300` | lifetime of those tokens, 60 to 3600 |
 | `SERVICE_KEY` | unset | the site's key (`PULSARS_API_SERVICE_KEY` in Laravel), at least 32 characters; its calls are not rate limited |
 | `REQUEST_TIMEOUT_SECS` | `10` | below nginx's `proxy_read_timeout` (30 s) |
 | `BODY_LIMIT_BYTES` | `65536` | below nginx's `client_max_body_size` (256k) |

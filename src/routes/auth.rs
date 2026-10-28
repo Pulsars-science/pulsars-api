@@ -396,6 +396,14 @@ async fn current(
     headers: &HeaderMap,
 ) -> Result<(SessionRow, AccountRow), ApiError> {
     let token = session_token(headers).ok_or(ApiError::SessionInvalid)?;
+    live_session(state, token).await
+}
+
+/// The live session of `token` and its account, extended by its lifetime.
+pub(crate) async fn live_session(
+    state: &AppState,
+    token: &str,
+) -> Result<(SessionRow, AccountRow), ApiError> {
     let session = sessions::use_token(&state.db, &digest(token))
         .await?
         .ok_or(ApiError::SessionInvalid)?;
@@ -406,16 +414,19 @@ async fn current(
 }
 
 /// The token of `Pulsars-Session`, if it has a token's shape.
-fn session_token(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn session_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(SESSION_HEADER)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
-        .filter(|t| {
-            t.len() == TOKEN_CHARS
-                && t.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        })
+        .filter(|t| is_token(t))
+}
+
+/// Whether `t` has the shape of a session token.
+pub(crate) fn is_token(t: &str) -> bool {
+    t.len() == TOKEN_CHARS
+        && t.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn new_token() -> Result<String, ApiError> {
@@ -602,7 +613,7 @@ fn field_order(field: &str) -> usize {
 
 // --- Responses -------------------------------------------------------------
 
-fn no_store<T: Serialize>(status: StatusCode, body: &T) -> Response {
+pub(crate) fn no_store<T: Serialize>(status: StatusCode, body: &T) -> Response {
     let mut response = (status, axum::Json(body)).into_response();
     response
         .headers_mut()

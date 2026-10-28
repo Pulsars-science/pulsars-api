@@ -21,6 +21,14 @@ const EXIT_CONFIG: u8 = 78;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Needs no configuration: it makes the key the configuration names.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [command, kid, dir] = args.as_slice()
+        && command == "jwt-keygen"
+    {
+        return jwt_keygen(kid, dir);
+    }
+
     let config = match Config::from_env() {
         Ok(config) => config,
         Err(error) => {
@@ -37,7 +45,6 @@ async fn main() -> ExitCode {
 
     // `pulsars-api migrate`, `pulsars-api check-content`,
     // `pulsars-api webhooks replay <event_id>` (docs/contract/webhooks.md §7).
-    let args: Vec<String> = std::env::args().skip(1).collect();
     if !args.is_empty() {
         return command(&config, &args).await;
     }
@@ -51,7 +58,48 @@ async fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: pulsars-api [migrate | check-content | webhooks replay <event_id>]";
+const USAGE: &str = "usage: pulsars-api [migrate | check-content | webhooks replay <event_id> \
+                     | jwt-keygen <kid> <dir>]";
+
+/// `pulsars-api jwt-keygen <kid> <dir>`: writes a new Ed25519 seed to
+/// `<dir>/<kid>.key` (mode 0600, never over an existing file), in the format
+/// `JWT_SIGNING_KEY_FILE` reads, and prints the public key.
+fn jwt_keygen(kid: &str, dir: &str) -> ExitCode {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    use std::io::Write as _;
+
+    if !pulsars_api::config::is_valid_kid(kid) {
+        eprintln!("kid must read YYYY-MM-ed25519-N, e.g. 2026-10-ed25519-1");
+        return ExitCode::from(EXIT_USAGE);
+    }
+    let mut seed = [0u8; 32];
+    if let Err(error) = getrandom::fill(&mut seed) {
+        eprintln!("no randomness: {error}");
+        return ExitCode::FAILURE;
+    }
+    let path = std::path::Path::new(dir).join(format!("{kid}.key"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let written = options
+        .open(&path)
+        .and_then(|mut file| writeln!(file, "{}", STANDARD.encode(seed)));
+    if let Err(error) = written {
+        eprintln!("{}: {error}", path.display());
+        return ExitCode::FAILURE;
+    }
+    let public = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+    println!("wrote {}", path.display());
+    println!("x = {}", URL_SAFE_NO_PAD.encode(public.as_bytes()));
+    println!("JWT_SIGNING_KEY_FILE={}", path.display());
+    println!("JWT_SIGNING_KID={kid}");
+    ExitCode::SUCCESS
+}
 
 /// One-off commands: `migrate`, `check-content` and
 /// `webhooks replay <event_id>`.
