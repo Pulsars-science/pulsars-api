@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod cli;
 pub mod config;
+pub mod content;
 pub mod crypto;
 pub mod db;
 pub mod deepl;
