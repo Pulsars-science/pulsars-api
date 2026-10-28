@@ -269,7 +269,7 @@ deleted during the match is skipped.
 
 | Endpoint | Auth | Body |
 |---|---|---|
-| `GET /v1/game/leaderboard?subject=maths&limit=50` | public | `{"subject", "data": [{rank, user_id, pseudo, avatar_url, rating, provisional, games, wins, losses, draws}]}` — players with at least one ranked match, best rating first. Pseudo and avatar from `api_read.members`; deleted accounts are skipped. |
+| `GET /v1/game/leaderboard?subject=maths&limit=50` | public | `{"subject", "data": [{rank, user_id, pseudo, avatar_url, rating, provisional, games, wins, losses, draws}]}` — players with at least one ranked match, best rating first. Pseudo and avatar from `site.members`; deleted accounts are skipped. |
 | `GET /v1/game/me` | Bearer | `{"brains": <balance>, "ratings": [{subject, rating, provisional, games, wins, losses, draws, rank}], "recent": [{match_id, mode, ranked, subject, rules, ended_at, outcome, score, rating_before, rating_after, opponents: [name]}]}` (last 20 matches) |
 | `GET /v1/game/admin/stats?days=30` | Bearer, `roles` with `admin` or `super-admin` | Live counters and the activity of the last `days` UTC days (below). |
 
@@ -278,8 +278,9 @@ All are JSON, `Cache-Control: no-store` for `/me` and the statistics,
 
 ### 9.1 Admin statistics
 
-For the Laravel admin dashboard, which calls it server to server (no
-`Origin`) and shows the result. `days` is 1–90 (default 30). A token
+For an admin client with a game token, server to server (no `Origin`).
+The site's dashboard reads the same numbers with a session:
+`GET /v1/admin/game/stats`. `days` is 1–90 (default 30). A token
 without the `admin` or `super-admin` role gets `403` with
 `reason: "insufficient_scope"` (and `WWW-Authenticate: Bearer …,
 error="insufficient_scope"`); no or a bad token, `401` as everywhere.
@@ -363,7 +364,7 @@ the few additions:
   leaderboard's `subject` defaults to `all` and `limit` to 50 (1–100);
   equal rounded ratings share a rank.
 - **Shutdown**: matches in progress when the API stops are lost (neither
-  stored nor sent to Laravel).
+  stored nor credited).
 - **Season close** (`src/game/season.rs`, added with the brains): checked
   once the migrations are applied at startup, then every 10 minutes (1
   minute after a database error). Only the month before the current one is
@@ -375,5 +376,5 @@ the few additions:
   uses, so the two cannot deadlock; a match ending during the close waits
   and then applies its result to the decayed rating. Standings order by the
   exact rating, not the rounded one. `/v1/game/me` reads `brains` from
-  `api_read.member_brains` (0 when the account has no row). Metric
+  `site.member_brains` (0 when the account has no row). Metric
   `game_seasons_closed_total{subject}`.

@@ -5,10 +5,9 @@
 //! school level and class. With a game token, never e-mail, locale, social
 //! logins or moderation state.
 //!
-//! With the site's session (`Pulsars-Session`, what replaces Laravel's
-//! shared `auth.user` props for the header), the owner's own account state
-//! is added: `email`, `email_verified`, `onboarded`, `locale` and
-//! `forum_muted_until`.
+//! With the site's session (`Pulsars-Session`, for the site's header), the
+//! owner's own account state is added: `email`, `email_verified`,
+//! `onboarded`, `locale` and `forum_muted_until`.
 
 use axum::Json;
 use axum::extract::{OriginalUri, State};
@@ -139,7 +138,7 @@ pub async fn me(
 }
 
 fn to_me(member: Member, roles: Vec<MemberRole>, storage_url: &str) -> Result<Me, ApiError> {
-    // `created_at` is always set by Laravel; the schema has no null here.
+    // `created_at` is always set; the schema has no null here.
     let member_since = member
         .member_since
         .ok_or_else(|| ApiError::Internal(format!("member {} has no created_at", member.id)))?

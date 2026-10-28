@@ -1,5 +1,5 @@
-//! Links to pages of the Laravel site (`web_url`, `profile_url`, download
-//! links). Every response object points back to its canonical page on
+//! Links to pages of the site, `pulsars-web` (`web_url`, `profile_url`,
+//! download links), which keeps the addresses of the old site. Every response object points back to its canonical page on
 //! `https://pulsars.science` (`docs/contract/README.md`).
 
 use crate::config::SITE_URL;
@@ -27,8 +27,8 @@ pub fn email_verification(token: &str) -> String {
     format!("{SITE_URL}/email/verifier/{}", encode(token, false))
 }
 
-/// The link of a password reset mail, as Laravel's `ResetPassword` builds
-/// it: `https://pulsars.science/reset-password/{token}?email={email}`.
+/// The link of a password reset mail, as the old site's `ResetPassword`
+/// built it: `https://pulsars.science/reset-password/{token}?email={email}`.
 pub fn password_reset(token: &str, email: &str) -> String {
     format!(
         "{SITE_URL}/reset-password/{}?email={}",
@@ -67,7 +67,7 @@ pub fn exam(slug: &str) -> String {
     format!("{SITE_URL}/examens/{}", encode(slug, false))
 }
 
-/// The statement PDF Laravel serves for a hosted exam.
+/// The site's download of the statement PDF of a hosted exam.
 pub fn exam_pdf(slug: &str) -> String {
     format!("{}/telecharger", exam(slug))
 }
@@ -77,7 +77,7 @@ pub fn resource(slug: &str) -> String {
     format!("{SITE_URL}/ressources/{}", encode(slug, false))
 }
 
-/// The file Laravel serves for a hosted resource.
+/// The site's download of the file of a hosted resource.
 pub fn resource_download(slug: &str) -> String {
     format!("{}/telecharger", resource(slug))
 }
@@ -94,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn site_links_match_laravel_routes() {
+    fn site_links_match_the_site_routes() {
         assert_eq!(
             lesson("les-bases-du-calcul", "priorites-operatoires"),
             "https://pulsars.science/cours/les-bases-du-calcul/lecon/priorites-operatoires"

@@ -13,7 +13,7 @@ use crate::db::exercises::{self, ExerciseFilters, ExerciseRow};
 use crate::links;
 use crate::state::AppState;
 
-/// Longest slug accepted in a filter (`varchar(255)` in Laravel).
+/// Longest slug accepted in a filter (`varchar(255)` in the schema).
 const SLUG_MAX_CHARS: usize = 255;
 
 #[derive(Debug, Serialize)]

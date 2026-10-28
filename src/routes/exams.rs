@@ -2,7 +2,7 @@
 //! tag `exams`).
 //!
 //! Statements only, never the model answer or the correction PDF. Exam
-//! titles and descriptions are not translatable in Laravel: an exam's `lang`
+//! titles and descriptions are not translatable: an exam's `lang`
 //! is always `fr`; only its parts follow `?lang`.
 
 use axum::extract::{OriginalUri, Path, RawQuery, State};

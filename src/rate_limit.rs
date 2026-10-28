@@ -34,7 +34,7 @@ use axum::response::{IntoResponse, Response};
 use fred::prelude::{ClientLike as _, KeysInterface as _};
 use fred::types::ExpireOptions;
 
-use crate::auth::{self, Expected, TokenCheck};
+use crate::auth::{self, TokenCheck};
 use crate::error::ApiError;
 use crate::middleware as mw;
 use crate::state::AppState;
@@ -151,19 +151,12 @@ pub fn is_service(state: &AppState, headers: &HeaderMap) -> bool {
 /// left in the request for [`crate::auth::AuthUser`].
 async fn identify(state: &AppState, parts: &mut axum::http::request::Parts) -> Client {
     if let Some(header) = parts.headers.get(header::AUTHORIZATION) {
-        let expected = Expected {
-            issuer: &state.config.jwt_issuer,
-            audience: &state.config.jwt_audience,
-        };
         let now = chrono::Utc::now().timestamp();
         let result = auth::authenticate(
             Some(header.as_bytes()),
-            &state.jwks,
-            expected,
             state.config.token_signer.as_ref(),
             now,
-        )
-        .await;
+        );
         let member = result.as_ref().ok().map(|claims| claims.sub.clone());
         parts.extensions.insert(TokenCheck(result));
         if let Some(sub) = member {

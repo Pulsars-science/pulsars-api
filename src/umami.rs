@@ -34,7 +34,7 @@ pub struct Stats {
 
 impl<'a> Umami<'a> {
     pub fn new(config: &'a UmamiConfig, redis: &'a fred::prelude::Client) -> Option<Self> {
-        let http = crate::auth::jwks::http_client(false, TIMEOUT, TIMEOUT)
+        let http = crate::http_client::http_client(false, TIMEOUT, TIMEOUT)
             .map_err(|error| tracing::warn!(%error, "umami: no HTTP client"))
             .ok()?;
         Some(Self {

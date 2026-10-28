@@ -1,51 +1,58 @@
 # Pulsars API contract
 
-This folder is the contract between the three Pulsars services:
+This folder is the contract of `pulsars-api`, the back end of Pulsars. The
+API owns the database and every feature; three kinds of clients call it:
 
-| Service | Repository | Role |
+| Client | Repository | How it calls the API |
 |---|---|---|
-| `pulsars.science` | this Laravel repository | Pages, SEO, accounts, forum, XP, admin. **Issues game tokens.** Writes the `site` schema. |
-| `api.pulsars.science` | `pulsars-api` (Rust, Axum) | Read-only content API (`/v1`) and the game server (`/v1/game`, WebSocket). Writes the `game` schema. |
-| `pulsars.science/jeux` | `pulsars-game` (Vue 3 + Vite, static) | Game front end. Sends actions, never scores. |
+| `pulsars.science` | `pulsars-web` (Nuxt, server rendering, Node) | From its server, and through its `/api/v1/**` relay: `Pulsars-Session` (from the `pulsars_auth` cookie), `Pulsars-Service-Key`, the visitor's `X-Forwarded-For` and `User-Agent` (`auth-sessions.md`). |
+| `pulsars.science/jeux` | `pulsars-game` (Vue 3 + Vite, static) | From the browser, to `api.pulsars.science`: a short JWT from `POST /v1/auth/token` (`auth-jwt.md`), then HTTP and the match WebSocket. Sends actions, never scores. |
+| `pulsars.science/langues` | `pulsars-langues` (static) | From the browser: the languages content and anonymous learning events (`docs/languages.md`); the same short JWT when it acts as a member. |
 
-It was written from the Laravel code as it stands on `main` at commit `6551770`
-(2026-10-13). When this document and the code disagree, **the code is right**
-and the gap is listed in the "Known gaps" section of the relevant document.
+Anyone may also read the public content (`/v1/courses`, `/v1/exams`, …)
+without a token.
+
+When this contract and the code disagree, the code is right and the
+contract is fixed in the same change.
 
 ## Documents
 
-| File | What it defines | Who implements it |
-|---|---|---|
-| [`openapi.yaml`](openapi.yaml) | Public read endpoints (`/v1/*`, `/healthz`), OpenAPI 3.1, with real examples | `pulsars-api` |
-| [`auth-jwt.md`](auth-jwt.md) | The game token: format, claims, issuing endpoint, JWKS, key rotation, errors | Laravel issues, `pulsars-api` verifies |
-| [`database.md`](database.md) | Schemas, roles, exposed column dictionary | both |
-| [`views.sql`](views.sql) | The `api_read` schema: one view per exposed resource | Laravel migration creates it |
-| [`postgres-migration.md`](postgres-migration.md) | Plan to move production from MySQL to PostgreSQL (not executed) | ops |
-| [`game-design.md`](game-design.md) | Game rules decided by the product owner | product owner |
-| [`laravel-tasks.md`](laravel-tasks.md) | What the Laravel repository must implement for the API to work | Laravel |
+| File | What it defines |
+|---|---|
+| [`openapi.yaml`](openapi.yaml) | Every route (`/v1/*`, `/healthz`, `/.well-known/jwks.json`), OpenAPI 3.1, with examples |
+| [`auth-sessions.md`](auth-sessions.md) | Sessions, passwords, account mails and Google accounts: how the site logs members in |
+| [`auth-jwt.md`](auth-jwt.md) | The game token: format, claims, issuing endpoint, the API's key and JWKS, errors |
+| [`database.md`](database.md) | Schemas, roles, who writes what (only the API), the views, what public content never shows |
+| [`brains.md`](brains.md) | The brains currency: ledger, earning, monthly duel seasons |
+| [`game-design.md`](game-design.md) | Game rules decided by the product owner |
 
-Reading order for someone building `pulsars-api`: this README, `database.md`,
-`views.sql`, `openapi.yaml`, `auth-jwt.md`, `brains.md`, `game-design.md`.
+Reading order for someone new to the API: this README, `database.md`,
+`openapi.yaml`, `auth-sessions.md`, `auth-jwt.md`, `brains.md`,
+`game-design.md`, then `docs/game-protocol.md`.
 
 ## Request flow
 
 ```
-pulsars.science/jeux ──(1) POST /jeu/jeton, session cookie──▶ pulsars.science
-                     ◀─(2) JWT (EdDSA, 5 min) ─────────────────┘
+browser ──▶ pulsars.science (nginx)
+              ├─ /jeux/, /langues/   static files
+              └─ everything else ──▶ pulsars-web (Nuxt, 127.0.0.1:3000)
+                                       │  Pulsars-Session, Pulsars-Service-Key,
+                                       ▼  X-Forwarded-For
+                                     pulsars-api (127.0.0.1:8080) ──▶ PostgreSQL, Redis
+
+pulsars.science/jeux ──(1) POST /v1/auth/token, pulsars_auth cookie──▶ api.pulsars.science
+                     ◀─(2) JWT (EdDSA, 5 min, signed by the API) ──────┘
                      ──(3) WebSocket + JWT ──▶ api.pulsars.science
-                                                 │ verifies with JWKS
-                                                 │ (https://pulsars.science/.well-known/jwks.json)
-                                                 │ reads site data via api_read views
-                                                 │ writes matches to game schema, and
-                                                 └─(4) the results and brains to site, in the same transaction
+                                                 │ verifies with its own key
+                                                 └─(4) match, ratings, results and brains, in one transaction
 ```
 
 ## Glossary
 
-The Laravel code is written in French. This contract uses English names; the
-table maps both.
+The tables keep the French names of the old Laravel site. This contract
+uses English names; the table maps both.
 
-| Term | Laravel name | Meaning |
+| Term | Old site's name, table | Meaning |
 |---|---|---|
 | **course** | `Course`, table `courses` | The base unit of the library. Has a title, description, difficulty, estimated duration, free tags, a theme, and a status. Identified publicly by its `slug`. |
 | **chapter** | `Chapter`, table `chapters` | An ordered section of a course (`ordre`). No public identifier of its own; addressed by its position. |
@@ -54,8 +61,8 @@ table maps both.
 | **exam** | `Exam`, table `exams` | A real exam paper (brevet, bac, competitive exam) split into **parts** (`exam_parties`). Identified by its `slug`. |
 | **exam part** | `ExamPartie`, table `exam_parties` | One exercise of an exam: statement and model answer (`corrige_md`, never exposed). |
 | **resource** | `Ressource`, table `ressources` | A free document: either **hosted** by Pulsars (a PDF on the private disk) or a **link** to its author's site. Carries a licence and an attribution. Identified by its `slug`. |
-| **flash questions** | `App\QuestionsFlash\*` | 30 generators of short automatism questions, computed from a seed. **Not stored in the database**, therefore not exposed by this API. See `game-design.md`. |
-| **domain / subject / topic** | *(target taxonomy)* | The target three-level catalogue: domain (pôle, e.g. "Sciences"), subject (matière, e.g. "Mathématiques"), topic (thème, e.g. "Analyse"). **Not implemented**: today a course has a single free-text `theme` string, usually `"<Subject> – <Topic>"`. The API derives subject and topic from it. There is no domain level. See `database.md`. |
+| **flash questions** | `App\QuestionsFlash\*` | 30 generators of short automatism questions, computed from a seed. **Not stored in the database**: the API generates them for the game (`src/flash/`). See `game-design.md`. |
+| **domain / subject / topic** | *(target taxonomy)* | The target three-level catalogue: domain (pôle, e.g. "Sciences"), subject (matière, e.g. "Mathématiques"), topic (thème, e.g. "Analyse"). **Not implemented**: a course has a single free-text `theme` string, usually `"<Subject> – <Topic>"`. The API derives subject and topic from it. There is no domain level. See `database.md`. |
 | **member** | `User` | A Pulsars account. Its public face is the pseudo, avatar, bio and roles. |
 | **role** | `Role`, tables `roles`, `role_user` | Three categories: `permission` (`moderateur` < `admin` < `super-admin`), `matiere` (declared interests), `distinction` (badges). |
 | **XP / level** | `App\Services\Experience` | Experience points, **computed** from activity, never stored (the view `site.member_xp`). |
@@ -168,12 +175,12 @@ cannot be silently dropped. The size limit is the server's
   course, exams, resources). Exercises and exam parts use their numeric `id`.
 - User identifiers are **strings** (`"42"`), the same value as the JWT `sub`
   claim, so a client never has to convert between the two.
-- Markdown fields end in `_md` and contain the raw Markdown stored by Laravel,
+- Markdown fields end in `_md` and contain the raw Markdown as stored,
   including LaTeX (`$...$`) and fenced code. The API does not render HTML.
 - Every resource has a `web_url` pointing to its canonical page on
   `https://pulsars.science`, so a client can always link back to the site.
-- JSON keys are `snake_case`. Enumerated values keep their Laravel values
-  (`debutant`, `reponse_courte`, `brevet`), which are stable database values.
+- JSON keys are `snake_case`. Enumerated values keep their database values
+  (`debutant`, `reponse_courte`, `brevet`), which are stable.
 
 ### Rate limits
 
@@ -186,9 +193,11 @@ cannot be silently dropped. The size limit is the server's
 The site calls the API from the same machine for all its visitors, so its
 calls would all share the loopback's limit. They carry the server's
 `SERVICE_KEY` in `Pulsars-Service-Key` instead, and are not counted. The
-key never leaves the server: browsers and games never see it.
+key never leaves the server: browsers and games never see it. Some routes
+have their own limits on top (logins, sign-ups, forms: `auth-sessions.md`,
+`openapi.yaml`), counted even with the service key.
 
-These are the limits Laravel's current `/api/v1` applies. Every response
+These are the limits the old site's `/api/v1` applied. Every response
 carries the draft IETF headers (`draft-ietf-httpapi-ratelimit-headers`):
 
 ```http
@@ -205,16 +214,16 @@ A `429` adds `Retry-After: <seconds>`.
 |---|---|
 | Public content, `200` | `Cache-Control: public, max-age=300, stale-while-revalidate=60` and a strong `ETag` (hash of the body). |
 | Conditional request with matching `If-None-Match` | `304 Not Modified`, no body. |
-| `/v1/me` and anything authenticated | `Cache-Control: private, no-store`, `Vary: Authorization`. |
+| `/v1/me` and anything authenticated | `Cache-Control: private, no-store`, `Vary: Authorization`; member routes `no-store`. |
 | Errors | `Cache-Control: no-store`, except `404` on public content: `public, max-age=60`. |
 | `/healthz` | `Cache-Control: no-store`. |
 
-`max-age=300` matches what Laravel's `PublicApiHeaders` middleware sends today.
+`max-age=300` matches what the old site's `PublicApiHeaders` middleware sent.
 
 ### Other headers
 
 - `X-Content-Type-Options: nosniff` and `X-Robots-Tag: noindex, nofollow` on
-  every response (same as Laravel's API today).
+  every response.
 - `traceparent` (W3C Trace Context) is accepted and propagated; responses
   carry `X-Request-Id`.
 - CORS: content endpoints and `/v1/game/leaderboard` allow any origin
@@ -223,37 +232,38 @@ A `429` adds `Retry-After: <seconds>`.
   (requests without `Origin`, server to server, are served as usual) (default
   `https://pulsars.science`, plus `http://localhost:5173` in
   development). The match WebSocket `/v1/game/ws` refuses (`403`, before the
-  upgrade) any `Origin` outside that list.
+  upgrade) any `Origin` outside that list. The site's routes (`/v1/auth/*`,
+  `/v1/me/*`, the forum, social and admin routes) have no CORS layer: they
+  are called by `pulsars-web`'s server, never straight from a browser.
 
 ## What this API never exposes
 
-These rules are enforced twice: by the `api_read` views (the columns do not
-exist for the API's database role) and by the OpenAPI schemas.
+The public content routes enforce these rules in their SQL sources
+(`src/db/sources.rs`, `database.md` §4) and in the OpenAPI schemas; the
+member routes apply the old site's rules on what a member, an owner or a
+moderator may see.
 
 1. **Unpublished content.** Drafts, archived courses, exams awaiting import or
-   review, resources not in `publie` status, hidden or deleted forum content.
-2. **Solutions and expected answers.** Exercise `solution_md`, QCM `correctes`,
-   short-answer `acceptees`, exam `corrige_md` and the correction PDF. The game
-   may reuse this content: an exposed answer is a cheat.
+   review, resources not in `publie` status, hidden or deleted forum
+   content, to anyone but the admins and moderators whose routes show them.
+2. **Solutions and expected answers** on public routes. Exercise
+   `solution_md`, QCM `correctes`, short-answer `acceptees`, exam
+   `corrige_md` and the correction PDF. The game may reuse this content: an
+   exposed answer is a cheat. A member sees an exercise's solution after an
+   attempt, and an exam's corrections on its page, as on the old site.
 3. **Personal data** beyond the public profile: no e-mail, IP address, date of
-   birth, school level or class, locale, social logins, 2FA data, friend token,
-   mute status, onboarding answers.
+   birth, school level or class, locale, social logins, 2FA data, friend
+   token, mute status, onboarding answers, except to the account's owner
+   (`/v1/me` with a session, `/v1/me/profile`).
 4. **Internal fields**: storage paths, original file names, AI import prompts
    and errors, view and download counters, author account ids.
+5. **Secrets**: password hashes, session and mail-link tokens (only their
+   SHA-256 is stored), private messages in clear (sealed with
+   `MESSAGES_KEY`, AES-256-GCM).
 
-## Known gaps between the target architecture and the code
+## Known gaps
 
-Each document has its own list. The most important ones:
-
-- Production runs **MySQL**, not SQLite and not PostgreSQL
-  (`docs/MISE-EN-PROD.md`, `deploy/*.service`). The architecture requires
-  PostgreSQL: see `postgres-migration.md`.
-- There are **no guilds** in the code (planned in `PROJET.md` v2, only a
-  marketing card on the home page).
-- **XP is not stored**; it is computed from activity tables. Awarding XP for
-  a match means adding a new source to `App\Services\Experience`.
+- There are **no guilds** (planned, never built).
+- **XP is not stored**; it is computed from activity (`site.member_xp`).
 - The **domain → subject → topic** taxonomy does not exist; courses have one
   `theme` string.
-- Laravel already serves a JSON API under `/api/v1` (`docs/API.md`). Its
-  `/api/v1/me` returns the e-mail address and its `/api/v1/examens/{slug}`
-  returns exam corrections publicly: both contradict the rules above.

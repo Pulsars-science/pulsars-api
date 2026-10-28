@@ -176,7 +176,7 @@ pub fn client_ip(parts: &Parts) -> Option<IpAddr> {
 }
 
 /// The body limit of a request: `BODY_LIMIT_BYTES`, except for the
-/// uploads, which have Laravel's: the two admin ones
+/// uploads, which have the old site's: the two admin ones
 /// (`routes::admin::exams`) and the members' avatar, suggestion and
 /// proposed resource (`routes::upload::UPLOAD_BODY_LIMIT`). A declared
 /// length over it is refused before reading; a body that grows over it

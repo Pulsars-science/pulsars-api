@@ -69,7 +69,7 @@ fn client() -> Result<&'static reqwest::Client, Error> {
     if let Some(client) = CLIENT.get() {
         return Ok(client);
     }
-    let client = crate::auth::jwks::http_client(false, ATTEMPT_TIMEOUT, CONNECT_TIMEOUT)
+    let client = crate::http_client::http_client(false, ATTEMPT_TIMEOUT, CONNECT_TIMEOUT)
         .map_err(Error::Unavailable)?;
     Ok(CLIENT.get_or_init(|| client))
 }
@@ -178,7 +178,7 @@ impl Deepl {
     pub fn new(config: DeeplConfig) -> Result<Self, String> {
         let timeout = Duration::from_secs(60);
         Ok(Self {
-            http: crate::auth::jwks::http_client(false, timeout, Duration::from_secs(10))?,
+            http: crate::http_client::http_client(false, timeout, Duration::from_secs(10))?,
             config,
             retry_delay: Duration::from_secs(2),
         })

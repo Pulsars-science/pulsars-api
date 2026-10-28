@@ -8,7 +8,8 @@
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # Debian, not Alpine: scripts/dev-db-init.sh needs sha384sum.
+    image: postgres:17
     environment:
       POSTGRES_DB: pulsars
       POSTGRES_USER: postgres
@@ -20,7 +21,8 @@ services:
       - ./dev/db/docker-init.sh:/docker-entrypoint-initdb.d/init.sh:ro
       - ./scripts:/workspace/scripts:ro
       - ./dev:/workspace/dev:ro
-      - ./docs/contract:/workspace/docs/contract:ro
+      - ./deploy/sql:/workspace/deploy/sql:ro
+      - ./migrations:/workspace/migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d pulsars"]
       interval: 2s

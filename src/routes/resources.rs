@@ -55,7 +55,7 @@ pub async fn list(
     let category = params.text("category", 120);
     let doc_lang = params.text("doc_lang", 8);
     let mode = params.one_of("mode", RESOURCE_MODES);
-    // `varchar(60)` in Laravel.
+    // `varchar(60)` in the schema.
     let license = params.text("license", 60);
     let search = params.search();
     let filters = params.finish()?;

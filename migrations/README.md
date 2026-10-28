@@ -1,9 +1,9 @@
 # Migrations
 
-sqlx migrations, embedded in the binary at build time. Since the Laravel
-migrations were frozen (0jikuji0/pulsars `docs/MIGRATIONS.md`), these are
-the only ones: `game` and `langues` today, `contenu` and `site` as the API
-takes them over. `api_read` stays as Laravel created it until it is dropped.
+sqlx migrations, embedded in the binary at build time: the whole schema of
+the database (`site`, `contenu`, `game`, `langues`), which the API owns
+(`docs/contract/database.md`). `20261101000000_schema.sql` creates it from
+scratch on a new server; the ones after it add to it.
 
 ## Who runs them
 
@@ -16,8 +16,8 @@ takes them over. `api_read` stays as Laravel created it until it is dropped.
 - in tests, `TEST_MIGRATION_DATABASE_URL`.
 
 Objects created by `pulsars_migrate` belong to `pulsars_owner`
-(`deploy/sql/phase-1.sql`); `pulsars_api` and `pulsars_site` get their rows'
-rights from the default privileges of each schema. sqlx records the history
+(`deploy/sql/roles.sql`); `pulsars_api` gets its rows' rights from the
+default privileges of each schema. sqlx records the history
 in `game._sqlx_migrations` (`pulsars_migrate`'s `search_path` starts with
 `game`). At startup the service only checks that every embedded migration is
 applied, and waits until it is.
@@ -27,8 +27,8 @@ applied, and waits until it is.
 - Never edit a migration that has been released: add a new one.
 - Keep them additive. `deploy-api` applies them while the previous release
   still runs, and rolling the binary back leaves the schema as it is.
-- A migration that creates a **schema** also grants it: `USAGE` to the
-  roles that need it, and `ALTER DEFAULT PRIVILEGES FOR ROLE pulsars_owner IN
+- A migration that creates a **schema** also grants it: `USAGE` to
+  `pulsars_api`, and `ALTER DEFAULT PRIVILEGES FOR ROLE pulsars_owner IN
   SCHEMA …` for their rows. Default privileges are per schema, so a new one
   starts with none.
 - Name: `<UTC timestamp>_<what>.sql`, e.g. `20261017000000_game_schema.sql`.

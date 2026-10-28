@@ -444,8 +444,9 @@ pub async fn record_event(
 }
 
 /// `GET /v1/languages/admin/stats?days=30`: learners, lessons, writing, per
-/// day and per level, and what learners struggle with. Called by the
-/// Laravel admin dashboard, server to server, with an admin game token.
+/// day and per level, and what learners struggle with, for a game token
+/// with the admin role. The site's dashboard reads the same numbers with a
+/// session: `GET /v1/admin/languages/stats`.
 pub async fn admin_stats(
     State(state): State<AppState>,
     _admin: Admin,

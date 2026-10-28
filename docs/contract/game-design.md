@@ -2,9 +2,10 @@
 
 **Status: decided on 2026-10-17**, except the defaults marked "to confirm" in Q4.
 
-This document lists the questions the product owner must answer before
-`pulsars-api` writes any game code (its Phase 4 is blocked while a question
-below is open). Each question gives the options and their technical impact.
+This document lists the questions the product owner answered before
+`pulsars-api` wrote any game code. It is kept as the record of those
+choices: the facts below describe the old Laravel site of the time; the API
+now owns the database and every feature. Each question gives the options and their technical impact.
 The "Decision" lines record the product owner's answers.
 
 When a question is answered, write the decision and the date on its
@@ -114,7 +115,7 @@ Defaults proposed by the developer, **to confirm**: a tie is broken by the lower
 | **Seasons** (reset every N months) | More motivation, more code (archives, rewards). |
 
 Also: provisional rating for new players? Public leaderboard on
-`pulsars.science` (Laravel reads it from `/v1/game`)? Does a ranked match need
+`pulsars.science` (the site reads it from `/v1/game`)? Does a ranked match need
 a verified account older than N days (against smurfs)?
 
 Decision: **Decided 2026-10-17.** One Glicko-2 rating per subject (and one for "all"), for 1 vs 1 online only. Provisional rating for new players (Glicko's rating deviation). Public leaderboard on `pulsars.science`. No seasons for now.
@@ -125,17 +126,16 @@ Decision: **Decided 2026-10-17.** One Glicko-2 rating per subject (and one for "
 |---|---|
 | **Existing exercises** (`qcm`, `reponse_courte`) | 863 questions, already written and translated (except QCM options). But **they are public on the site and the solutions are visible after answering**, and the public site and the old `/api/v1` with the `catalogue:corrections` ability expose corrections: a player can look answers up during a match. |
 | **Flash generators** | Unlimited, never the same question twice, so lookup is pointless. But they are PHP: port them to Rust (30 generators, seeded randomness must give the same series as PHP if shared links matter) or have Laravel generate and sign question sets for the API. |
-| **A dedicated, private question bank** | Best against cheating; someone must write and review it; needs an admin UI (Laravel) and a new table, readable by the API through a new `api_read` view that **does** expose answers to the API role only. |
+| **A dedicated, private question bank** | Best against cheating; someone must write and review it; needs an admin UI (Laravel) and a new table, readable by the API, with answers that must never reach a public endpoint. |
 | **A mix** | Generators for speed modes, a private bank for ranked play. |
 
 Also: how is a question's difficulty known (course difficulty, generator
 level, or measured from answer rates)?
 
-Impact: if answers must be available to the API, the API role needs a view
-with answers — the only exception to "no answers in `api_read`". It must then
-be a separate schema or view never used by the public endpoints.
+Impact: if answers must be available to the API, they must stay out of
+every public endpoint.
 
-Decision: **Decided 2026-10-17.** The flash generators, **ported to Rust** in the API: it generates and grades questions itself, nothing is sent in advance. The generators now live in TypeScript in `pulsars-game`, with parity fixtures produced by PHP; the Rust port must pass the same fixtures. Difficulty is the generator's level (collège, seconde, …). No exercise content and no answers are needed in `api_read`.
+Decision: **Decided 2026-10-17.** The flash generators, **ported to Rust** in the API: it generates and grades questions itself, nothing is sent in advance. The generators now live in TypeScript in `pulsars-game`, with parity fixtures produced by PHP; the Rust port must pass the same fixtures. Difficulty is the generator's level (collège, seconde, …). No exercise content and no answers are needed by the game.
 
 ## Q7. Sandbox
 
@@ -190,8 +190,8 @@ question 4, answer 4, accepted answer 12.
 - Does a correct answer to an existing exercise *during a match* count as
   "exercise solved" (8 XP, once per exercise), or not at all?
 
-Impact: new `BAREME` keys in Laravel, the `game_results` table, the
-`member_xp` view.
+Impact: new XP scale keys, the `game_results` table, the `member_xp`
+view.
 
 Decision: **Decided 2026-10-17.** A little XP, capped: about 3 XP per match played and 5 per win, at most 30 XP per day from the game. Accounts only (not guests). It counts in the general ranking.
 
@@ -202,10 +202,9 @@ Guilds do not exist.
 - Is the game built without guilds first (recommended by the order of
   dependencies), with guild features later?
 - If guilds come first: guild vs guild matches, guild ranking, guild XP?
-  Then guilds must be built in Laravel before the game (v2 of `PROJET.md`),
-  and exposed to the API through a new `api_read` view.
+  Then guilds must be built before the game (v2 of `PROJET.md`).
 
-Decision: **Decided 2026-10-17.** The game is built without guilds; guild features come after guilds exist in Laravel.
+Decision: **Decided 2026-10-17.** The game is built without guilds; guild features come after guilds exist.
 
 ## Q11. Who can play?
 

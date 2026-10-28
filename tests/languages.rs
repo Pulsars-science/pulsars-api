@@ -16,10 +16,8 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use chrono::Utc;
-use ed25519_dalek::SigningKey;
-use pulsars_api::auth::Jwks;
 use pulsars_api::auth::token::testing;
-use pulsars_api::config::Config;
+use pulsars_api::config::{Config, TokenSigner};
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
@@ -48,42 +46,17 @@ fn integration_urls() -> Option<(String, String)> {
 const KID: &str = "2026-10-ed25519-1";
 const ORIGIN: &str = "http://localhost:5174";
 
-/// Laravel's JWKS endpoint, in-process.
+/// The API's signing key, as the test application holds it.
 struct Keys {
-    url: String,
-    key: SigningKey,
+    signer: TokenSigner,
 }
 
 impl Keys {
-    async fn start() -> Self {
-        let key = testing::signing_key();
-        let document = json!({"keys": [testing::jwk(&key, KID)]}).to_string();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/.well-known/jwks.json",
-            listener.local_addr().unwrap()
-        );
-        let router = Router::new().route(
-            "/.well-known/jwks.json",
-            axum::routing::get(move || {
-                let document = document.clone();
-                async move {
-                    (
-                        [(header::CONTENT_TYPE, "application/jwk-set+json")],
-                        document,
-                    )
-                }
-            }),
-        );
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        Self { url, key }
-    }
-
     fn token(&self, roles: &[&str]) -> String {
         let mut claims = testing::claims("1", Utc::now().timestamp());
         claims["roles"] = json!(roles);
         testing::sign(
-            &self.key,
+            &self.signer.key,
             &json!({"alg": "EdDSA", "typ": "JWT", "kid": KID}),
             &claims,
         )
@@ -95,7 +68,7 @@ async fn languages_app() -> Option<Router> {
     Some(languages_app_with_keys().await?.0)
 }
 
-/// The same, with its JWKS loaded, and the pool.
+/// The same, with its signing key, and the pool.
 async fn languages_app_with_keys() -> Option<(Router, Keys, sqlx::PgPool)> {
     let (database_url, redis_url) = integration_urls()?;
     let owner_url = std::env::var("TEST_MIGRATION_DATABASE_URL")
@@ -106,13 +79,14 @@ async fn languages_app_with_keys() -> Option<(Router, Keys, sqlx::PgPool)> {
     store::migrate(&owner).await.expect("migrations apply");
     owner.close().await;
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let keys = Keys::start().await;
+    let keys = Keys {
+        signer: testing::signer(),
+    };
 
-    let config = Config::from_vars([
+    let mut config = Config::from_vars([
         ("PULSARS_ENV".to_owned(), "development".to_owned()),
         ("DATABASE_URL".to_owned(), database_url),
         ("REDIS_URL".to_owned(), redis_url),
-        ("JWKS_URL".to_owned(), keys.url.clone()),
         ("CORS_ALLOWED_ORIGINS".to_owned(), ORIGIN.to_owned()),
         (
             "RATE_LIMIT_ANONYMOUS_PER_MINUTE".to_owned(),
@@ -120,8 +94,7 @@ async fn languages_app_with_keys() -> Option<(Router, Keys, sqlx::PgPool)> {
         ),
     ])
     .expect("valid test config");
-    let jwks = Jwks::new(&config).unwrap();
-    jwks.refresh().await.expect("JWKS loads");
+    config.token_signer = Some(keys.signer.clone());
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
         mailer: pulsars_api::mail::Mailer::recording(),
@@ -129,7 +102,6 @@ async fn languages_app_with_keys() -> Option<(Router, Keys, sqlx::PgPool)> {
         db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
-        jwks,
     };
     Some((routes::router(state), keys, pool))
 }

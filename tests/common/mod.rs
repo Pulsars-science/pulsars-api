@@ -21,7 +21,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use pulsars_api::auth::Jwks;
+use pulsars_api::auth::token::testing;
 use pulsars_api::config::Config;
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
@@ -32,7 +32,6 @@ use tower::ServiceExt as _;
 
 pub const SERVICE_KEY: &str = "test-service-key-0123456789abcdef-0123";
 pub const ORIGIN: &str = "https://pulsars.test";
-const DEAD_JWKS: &str = "http://127.0.0.1:1/.well-known/jwks.json";
 
 pub struct Env {
     pub app: Router,
@@ -64,12 +63,11 @@ impl Env {
         let owner = sqlx::PgPool::connect(&owner_url).await.unwrap();
         store::migrate(&owner).await.expect("migrations apply");
 
-        let config = Config::from_vars(
+        let mut config = Config::from_vars(
             [
                 ("PULSARS_ENV", "development"),
                 ("DATABASE_URL", database_url.as_str()),
                 ("REDIS_URL", redis_url.as_str()),
-                ("JWKS_URL", DEAD_JWKS),
                 ("CORS_ALLOWED_ORIGINS", ORIGIN),
                 ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
                 ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
@@ -81,7 +79,8 @@ impl Env {
             .map(|(k, v)| (k.to_owned(), v.to_owned())),
         )
         .unwrap();
-        let jwks = Jwks::new(&config).unwrap();
+        // The key a production server reads from `JWT_SIGNING_KEY_FILE`.
+        config.token_signer = Some(testing::signer());
         let db = db::connect_lazy(&config).unwrap();
         let redis = redis::connect(&config).unwrap();
         {
@@ -97,7 +96,6 @@ impl Env {
             db: db.clone(),
             redis,
             config: Arc::new(config),
-            jwks,
         };
         Some(Self {
             app: routes::router(state.clone()),
@@ -105,6 +103,20 @@ impl Env {
             db,
             owner,
         })
+    }
+
+    /// A game token for `member`, signed with the app's key, with `roles`
+    /// (`POST /v1/auth/token` reads them from the database).
+    pub fn game_token(&self, member: &TestMember, roles: &[&str]) -> String {
+        let signer = self.state.config.token_signer.as_ref().unwrap();
+        let mut claims = testing::claims(&member.id.to_string(), chrono::Utc::now().timestamp());
+        claims["name"] = Value::from(member.pseudo.as_str());
+        claims["roles"] = Value::from(roles.to_vec());
+        testing::sign(
+            &signer.key,
+            &serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": signer.kid}),
+            &claims,
+        )
     }
 
     /// A new member, to shape before `create()`.

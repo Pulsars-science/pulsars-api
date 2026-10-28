@@ -159,7 +159,7 @@ INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created
 UPDATE users SET cerveaux_publics = false WHERE id = 3;
 
 -- Keep sequences ahead of the explicit ids above.
--- Stored files (bytea, as on the Laravel `local` disk): the published
+-- Stored files (bytea, on the `local` disk): the published
 -- statement and resource, and what must never be served: a correction, a
 -- draft exam's PDF, a pending resource's file, a file on another disk.
 INSERT INTO fichiers (id, disque, chemin, contenu, type_mime, taille, created_at, updated_at) VALUES

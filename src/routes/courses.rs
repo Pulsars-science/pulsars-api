@@ -375,7 +375,7 @@ fn to_summary(row: CourseRow, lang: Lang) -> CourseSummary {
         exercise_count: row.exercise_count,
         available_langs,
         published_at: timestamp(row.published_at),
-        // Laravel always sets it; the schema has no null here.
+        // Always set (the import, the admin routes); the schema has no null.
         updated_at: timestamp(row.updated_at.unwrap_or(row.published_at)),
     }
 }

@@ -1,11 +1,11 @@
 name: Contract change
-description: Propose a change to docs/contract/ (OpenAPI, JWT, brains, views).
+description: Propose a change to docs/contract/ (OpenAPI, sessions, JWT, brains, database).
 labels: [contract]
 body:
   - type: markdown
     attributes:
       value: |
-        The contract is shared with the Laravel site and the game front end.
+        The contract is shared with pulsars-web, the games and the languages section.
         It changes before the code: see "Changing the contract" in CONTRIBUTING.md.
   - type: dropdown
     id: document
@@ -14,9 +14,10 @@ body:
       multiple: true
       options:
         - openapi.yaml
+        - auth-sessions.md
         - auth-jwt.md
         - brains.md
-        - database.md / views.sql
+        - database.md
         - game-design.md
         - other
     validations:
@@ -48,6 +49,7 @@ body:
       label: Who must change
       options:
         - label: pulsars-api (this repository)
-        - label: Laravel site (pulsars.science)
+        - label: pulsars-web (pulsars.science)
         - label: Game front end (pulsars.science/jeux)
+        - label: Languages section (pulsars.science/langues)
         - label: Third-party API clients

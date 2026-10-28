@@ -214,8 +214,8 @@ pub async fn me(
 }
 
 /// `GET /v1/game/admin/stats?days=30`: live counters and the activity of
-/// the last `days` UTC days. Called by the Laravel admin dashboard, server
-/// to server.
+/// the last `days` UTC days, for a game token with the admin role. The
+/// site's dashboard reads them with a session: `GET /v1/admin/game/stats`.
 pub async fn admin_stats(
     State(state): State<AppState>,
     _admin: Admin,

@@ -45,9 +45,10 @@ per-field fallback to French. See `contract/openapi.yaml`, tag `languages`.
 ## Statistics
 
 The front end posts what learners do to `POST /v1/languages/events`, and
-the Laravel admin dashboard reads the sums from
-`GET /v1/languages/admin/stats` (admin game token, server to server), like
-the game's. See `contract/openapi.yaml`.
+the site's admin dashboard reads the sums from
+`GET /v1/admin/languages/stats` (session), like the game's;
+`GET /v1/languages/admin/stats` gives the same to an admin game token,
+server to server. See `contract/openapi.yaml`.
 
 - `lesson.completed`: level, score, right answers out of questions,
   duration, ids of the missed words.

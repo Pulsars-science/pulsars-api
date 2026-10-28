@@ -122,7 +122,7 @@ pub struct Thread<T> {
     pub has_more: bool,
 }
 
-/// The URL of a file of Laravel's `public` disk.
+/// The URL of a file of the `public` disk.
 pub(crate) fn avatar_url(storage_url: &str, path: Option<String>) -> Option<String> {
     path.filter(|p| !p.is_empty())
         .map(|p| format!("{storage_url}/{}", encode(p.trim_start_matches('/'), true)))

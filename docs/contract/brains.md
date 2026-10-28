@@ -12,8 +12,7 @@ document covers earning, the monthly duel season, and display.
 member's movements. Each credit is written in the transaction of what earns
 it: a lesson completed (`PUT /v1/me/courses/{slug}/lessons/{lesson}/completion`),
 a match ended (`game::store::finish`, with the `site.game_results` rows),
-a season closed (`game::season::close_month`). There is no webhook any
-more.
+a season closed (`game::season::close_month`).
 
 ### Table `site.cerveaux_mouvements`
 
@@ -45,10 +44,6 @@ and the API's public endpoints do not see it.
 | Match won | **+3** | `victoire:<match_id>` | `outcome = win`. |
 | Daily cap on matches | **20 / UTC day** | | `partie` + `victoire` of the day of `ended_at`, summed; the credit is cut to what is left (a cut credit is stored with the reduced amount, a zero credit is not stored). |
 | Monthly duel season | see §3 | `saison:<YYYY-MM>:<subject>` | At the season close. |
-
-Lessons completed before this feature are credited once by a migration
-(backfill, same keys), and so are matches already in `game_results`, with the
-daily cap applied in `ended_at` order.
 
 ## 3. Monthly duel season
 
@@ -91,11 +86,10 @@ Credited per subject (a player ranked in maths and in "all" gets both), key
 
 ## 4. Reading the balance from the API
 
-New view in `api_read` (created by Laravel's migration, copied in
-`views.sql`):
+The view `site.member_brains` (`migrations/`):
 
 ```sql
-CREATE OR REPLACE VIEW api_read.member_brains AS
+CREATE VIEW site.member_brains AS
 SELECT u.id AS user_id,
        coalesce((SELECT sum(m.montant) FROM site.cerveaux_mouvements m
                   WHERE m.user_id = u.id), 0)::int AS balance,
