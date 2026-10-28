@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::cursor;
-use super::params::{DIFFICULTIES, EXERCISE_TYPES, Params};
+use super::params::{DIFFICULTIES, EXERCISE_TYPES, Lang, Params};
 use super::public::{self, Data, Pagination, PublicResult, served, translated};
 use crate::db::exercises::{self, ExerciseFilters, ExerciseRow};
 use crate::links;
@@ -92,7 +92,11 @@ pub async fn list(
         pagination.fetch(),
     )
     .await?;
-    let page = pagination.page(rows, |row| vec![Value::from(row.id)], to_exercise);
+    let page = pagination.page(
+        rows,
+        |row| vec![Value::from(row.id)],
+        |row| to_exercise(row, lang),
+    );
     public::json(&headers, lang, &page)
 }
 
@@ -123,7 +127,7 @@ pub async fn show(
         &headers,
         lang,
         &Data {
-            data: to_exercise(row),
+            data: to_exercise(row, lang),
         },
     )
 }
@@ -135,14 +139,14 @@ fn parse_id(raw: &str) -> Option<i64> {
     if canonical { raw.parse().ok() } else { None }
 }
 
-fn to_exercise(row: ExerciseRow) -> Exercise {
+fn to_exercise(row: ExerciseRow, lang: Lang) -> Exercise {
     let (title, is_tr) = translated(row.title, row.tr_title);
     let (chapter_title, chapter_tr) = translated(row.chapter_title, row.tr_chapter_title);
     let (course_title, course_tr) = translated(row.course_title, row.tr_course_title);
     let is_qcm = row.kind == "qcm";
     Exercise {
         id: row.id,
-        lang: served(is_tr),
+        lang: served(lang, is_tr),
         title,
         question_md: translated(row.question_md, row.tr_question_md).0,
         options: if is_qcm {
@@ -160,13 +164,13 @@ fn to_exercise(row: ExerciseRow) -> Exercise {
         chapter: ChapterRef {
             position: row.chapter_position,
             title: chapter_title,
-            lang: served(chapter_tr),
+            lang: served(lang, chapter_tr),
         },
         web_url: links::exercise(&row.course_slug, row.id),
         course: CourseRef {
             slug: row.course_slug,
             title: course_title,
-            lang: served(course_tr),
+            lang: served(lang, course_tr),
             difficulty: row.course_difficulty,
         },
     }

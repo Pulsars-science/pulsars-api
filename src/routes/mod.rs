@@ -58,6 +58,7 @@ pub fn router(state: AppState) -> Router {
             get(exercises::show).options(preflight),
         )
         .route("/v1/exams", get(exams::list).options(preflight))
+        .route("/v1/exams/facets", get(exams::facets).options(preflight))
         .route("/v1/exams/{slug}", get(exams::show).options(preflight))
         .route("/v1/news", get(news::list).options(preflight))
         .route("/v1/news/{slug}", get(news::show).options(preflight))

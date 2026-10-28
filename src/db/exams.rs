@@ -18,7 +18,8 @@ macro_rules! exam_select {
                 x.total_points::int AS total_points,
                 x.part_count::int AS part_count, x.has_pdf,
                 x.official_url, x.source_url::text AS source_url,
-                x.published_at, x.description
+                x.published_at, x.description,
+                count(*) OVER () AS total
            FROM ",
             published_exams!(),
             " x"
@@ -49,6 +50,8 @@ pub struct ExamRow {
     pub source_url: Option<String>,
     pub published_at: DateTime<Utc>,
     pub description: Option<String>,
+    /// Exams matching the filters of a list.
+    pub total: i64,
 }
 
 /// Filters of `GET /v1/exams`. `search` is a `LIKE` pattern.
@@ -63,11 +66,12 @@ pub struct ExamFilters<'a> {
     pub search: Option<&'a str>,
 }
 
-/// One page of exams, newest first, after `after`.
+/// One page of exams, newest first, after `after` or after `offset` rows.
 pub async fn list(
     pool: &PgPool,
     filters: &ExamFilters<'_>,
     after: Option<(DateTime<Utc>, i64)>,
+    offset: i64,
     limit: i64,
 ) -> Result<Vec<ExamRow>, sqlx::Error> {
     sqlx::query_as(concat!(
@@ -82,7 +86,7 @@ pub async fn list(
             AND ($7::text IS NULL OR x.title ILIKE $7 OR x.description ILIKE $7)
             AND ($8::timestamptz IS NULL OR (x.published_at, x.id) < ($8::timestamptz, $9::bigint))
           ORDER BY x.published_at DESC, x.id DESC
-          LIMIT $10"
+          LIMIT $10 OFFSET $11"
     ))
     .bind(filters.kind)
     .bind(filters.subject)
@@ -94,6 +98,7 @@ pub async fn list(
     .bind(after.map(|(at, _)| at))
     .bind(after.map(|(_, id)| id))
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await
 }
@@ -141,4 +146,19 @@ pub async fn parts(
     .bind(exam_id)
     .fetch_all(pool)
     .await
+}
+
+/// Levels and countries that published exams have, for list filters.
+pub async fn facets(pool: &PgPool) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
+    let (levels, countries): (Vec<String>, Vec<String>) = sqlx::query_as(concat!(
+        "SELECT ARRAY(SELECT DISTINCT x.level::text FROM ",
+        published_exams!(),
+        " x ORDER BY 1),
+                ARRAY(SELECT DISTINCT x.country::text FROM ",
+        published_exams!(),
+        " x ORDER BY 1)"
+    ))
+    .fetch_one(pool)
+    .await?;
+    Ok((levels, countries))
 }

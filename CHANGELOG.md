@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-28
+
+### Upgrading
+
+- From 0.2.0, as 0.3.0 was never installed: follow `deploy/sql/README.md`
+  (the phase 1 script before `deploy-api`, as for 0.3.0), with the new
+  step for `SERVICE_KEY`.
+- From 0.3.0: a plain `deploy-api`. No migration.
+- `SERVICE_KEY` is optional; the site needs it before it reads content
+  through the API.
+
+### Added
+
+- `lang=ru`: Russian translations, falling back to French per object and
+  per field as English does. `available_in=ru`, and `ru` in
+  `available_langs`.
+- `GET /v1/courses`: `sort=recent` (latest published first), `theme`, and
+  `page` for numbered pages, answered with `total`.
+- `GET /v1/exams`: `page` and `total`.
+- `GET /v1/exams/facets`: the levels and countries of published exams.
+- Lessons carry their `id`, in a course's outline and in a lesson.
+- Exams in `GET /v1/exams` carry their `description`, as the detail did.
+- `SERVICE_KEY`: requests carrying it in `Pulsars-Service-Key` (the site,
+  reading content for its visitors) are not rate limited.
+
 ## [0.3.0] - 2026-10-28
 
 ### Upgrading
@@ -249,7 +274,8 @@ archive's `sql/`), `pg_hba.conf` and `/etc/pulsars-api/migrate.env`, then
 - `GET /healthz` answers 503 (`down`) until Laravel's JWKS has been loaded
   once.
 
-[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Pulsars-science/pulsars-api/releases/tag/v0.1.0
