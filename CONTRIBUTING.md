@@ -11,7 +11,9 @@ change the API contract.
    ```bash
    docker compose up -d
    cp .env.example .env
-   set -a; . ./.env; set +a; cargo run
+   set -a; . ./.env; set +a
+   cargo run -- migrate
+   cargo run
    ```
 
 3. Before pushing, run what CI runs:
@@ -31,9 +33,10 @@ To recreate the database from scratch: `docker compose down -v && docker compose
 - **Errors**: never `unwrap()`, `expect()` or `panic!` outside tests (Clippy
   denies them). Request errors become RFC 9457 problem documents through
   `ApiError`.
-- **Data**: the API reads Laravel's data only through the `api_read` views
-  and writes only the `game` schema. Migrations in `migrations/` touch `game`
-  only.
+- **Data**: the API owns the whole database and is the only program that
+  connects to it (`docs/contract/database.md`). Schema changes are new
+  migrations in `migrations/`, never edits of released ones; tables keep
+  the old site's names.
 - **No secrets** in the repository. New settings are environment variables,
   documented in `.env.example` and validated in `src/config.rs`.
 - **The server arbitrates**: game clients send actions, never scores or
@@ -62,21 +65,19 @@ commits you already made: `git rebase --signoff origin/main`.
 
 ## Changing the contract
 
-`docs/contract/` is the source of truth for the public API, the JWT, the
-brains and the database views. It is shared with the Laravel site and the
-game front end, so it changes **before** the code:
+`docs/contract/` is the source of truth for the routes, the sessions, the
+JWT, the brains and the database. It is shared with `pulsars-web`, the games
+and the languages section, so it changes **before** the code:
 
 1. Open an issue with the "Contract change" template: what changes, why, and
-   who is affected (API clients, Laravel, the game front end).
+   who is affected (`pulsars-web`, the games, the languages section, other
+   API clients).
 2. Open a pull request that changes only the documents in `docs/contract/`.
    For `openapi.yaml`, keep the spec valid and every example matching its
    schema.
 3. Within `/v1`, only additive changes are allowed (new endpoints, optional
    parameters, new fields). Anything else needs `/v2`.
 4. Once the contract change is merged, implement it in a separate pull request.
-
-Changes to `views.sql` also require a matching migration in the Laravel
-repository; mention it in the pull request.
 
 ## Reporting bugs and security issues
 

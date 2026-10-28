@@ -1,41 +1,53 @@
 # Pulsars API
 
-Public content API and game server of [Pulsars](https://pulsars.science), a
-free learning platform: courses, exercises, exams and free resources.
+The back end of [Pulsars](https://pulsars.science), a free learning
+platform: courses, exercises, exams, free resources, a forum, duels and a
+languages section. It owns the database and every feature; the site, the
+games and the languages section are its clients.
 
-This service runs at `api.pulsars.science` and provides:
+This service runs at `api.pulsars.science`, and on the loopback for the
+site. It provides:
 
-- **`/v1`**: read-only access to published content (courses, lessons,
-  exercises, exams, resources). Never solutions, never personal data.
-- **`/v1/game`**: the game server of the flash duels (`pulsars-game`):
+- **public content** (`/v1/courses`, `/v1/exercises`, `/v1/exams`,
+  `/v1/resources`, `/v1/news`, `/v1/languages`…): published content only,
+  never solutions, never personal data;
+- **accounts** (`/v1/auth/*`): sign-up, login sessions, passwords, account
+  mails, Google accounts, and the short game token (`POST /v1/auth/token`)
+  with its public key (`/.well-known/jwks.json`);
+- **what the site's pages need** (`/v1/me/*`, `/v1/forum/*`,
+  `/v1/members/*`, `/v1/friends/*`, `/v1/rooms/*`, `/v1/conversations/*`,
+  `/v1/moderation/*`, `/v1/admin/*`…): progress, exercises, the dashboard,
+  the forum and its moderation, the social part, private messages
+  (encrypted at rest), reports, suggestions and the administration;
+- **the game server** of the flash duels (`/v1/game`, `pulsars-game`):
   matchmaking, private rooms, ghost runs and real-time matches over the
-  WebSocket `/v1/game/ws`, Glicko-2 ratings per subject, the public
-  leaderboard and the player's own history. Protocol:
+  WebSocket `/v1/game/ws`, Glicko-2 ratings per subject, leaderboards,
+  brains and monthly seasons. Protocol:
   [`docs/game-protocol.md`](docs/game-protocol.md); rules:
   [`docs/contract/game-design.md`](docs/contract/game-design.md).
 
 ## Architecture in brief
 
 ```
-pulsars.science/jeux ──JWT──▶ api.pulsars.science ◀──── pulsars.science
-   (Vue SPA)                   (this repository)          (Nuxt)
-                                 │        │
-                       PostgreSQL         Redis
-          reads `api_read` views,      matchmaking,
-          writes `game` schema         pub/sub, limits
+browser ──▶ pulsars.science ──▶ pulsars-web (Nuxt) ──Pulsars-Session──▶ pulsars-api ──▶ PostgreSQL
+                                                     Pulsars-Service-Key      │     └──▶ Redis
+pulsars.science/jeux, /langues ──JWT──▶ api.pulsars.science ──────────────────┘
 ```
 
-- Laravel (`pulsars.science`) owns accounts, content and XP. It issues
-  short-lived EdDSA tokens that this API verifies with Laravel's public keys.
-- This API reads Laravel's data **only** through read-only views
-  (`api_read`), and writes only its own `game` schema.
-- A finished match writes its results, ratings and brains in one
-  transaction ([`brains.md`](docs/contract/brains.md)).
+- `pulsars-web` calls the API from its server, with the visitor's session
+  token and the server's service key
+  ([`auth-sessions.md`](docs/contract/auth-sessions.md)).
+- The games and the languages section get a short EdDSA token from
+  `POST /v1/auth/token`; the API signs it and verifies it with its own key
+  ([`auth-jwt.md`](docs/contract/auth-jwt.md)).
+- The API is the only program that connects to the database
+  ([`database.md`](docs/contract/database.md)). A finished match writes its
+  results, ratings and brains in one transaction
+  ([`brains.md`](docs/contract/brains.md)).
 
 Details: [`docs/architecture.md`](docs/architecture.md) and the contract in
-[`docs/contract/`](docs/contract/README.md) (OpenAPI spec, JWT, brains,
-database views). The contract is the source of truth: code follows it, and
-changes to it are proposed before the code (see
+[`docs/contract/`](docs/contract/README.md). The contract is the source of
+truth: code follows it, and changes to it are proposed before the code (see
 [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## Run it locally
@@ -61,10 +73,13 @@ curl 'http://127.0.0.1:8080/v1/courses/les-bases-du-calcul/lessons/les-fractions
 curl 'http://127.0.0.1:8080/v1/exercises?type=qcm&limit=2'
 ```
 
-`/healthz` answers 503 until the API has loaded Laravel's public keys from
-`JWKS_URL` (a local Laravel by default, see `.env.example`). Authenticated
-endpoints such as `GET /v1/me` need a token issued by that Laravel
-(`POST /jeu/jeton`, see [`auth-jwt.md`](docs/contract/auth-jwt.md)).
+The demo account `ada` (password `secret-pass-demo`, `dev/db/30-demo-data.sql`)
+logs in with `POST /v1/auth/login`, which gives a session token for
+`Pulsars-Session`.
+Game tokens need a signing key: `cargo run -- jwt-keygen 2026-10-ed25519-1 .`
+writes one (`*.key` is git-ignored), and prints the `JWT_SIGNING_KEY_FILE`
+and `JWT_SIGNING_KID` to put in `.env`. Without them (development only), `POST /v1/auth/token` and
+the routes that need a game token answer 503.
 
 The game WebSocket is `ws://127.0.0.1:8080/v1/game/ws`: the `Origin` must
 be one of `CORS_ALLOWED_ORIGINS`, and the first frame authenticates
@@ -76,42 +91,30 @@ standings, on the first start.
 
 The demo database contains a handful of courses, exercises, exams and
 resources from the open Pulsars content, plus drafts and answers that the
-views must hide. It contains no production data.
+public routes must hide, and a few demo accounts. It contains no
+production data.
 
 ## Tests
 
 ```bash
-cargo test                                   # unit tests and HTTP tests
+cargo test                                   # unit tests; integration tests skip
 TEST_DATABASE_URL=postgres://pulsars_api:pulsars_api_dev@localhost:5432/pulsars \
+TEST_MIGRATION_DATABASE_URL=postgres://pulsars_migrate:pulsars_migrate_dev@localhost:5432/pulsars \
 TEST_REDIS_URL=redis://localhost:6379 \
-cargo test                                   # plus tests against the compose services
+cargo test                                   # everything, against the compose services
 ```
 
-CI runs everything against real PostgreSQL and Redis, plus `cargo fmt`,
-`cargo clippy -D warnings`, `cargo deny`, `shellcheck` and a DCO check.
+CI runs everything against real PostgreSQL and Redis
+(`REQUIRE_INTEGRATION=1`: a missing service fails instead of skipping),
+plus `cargo fmt`, `cargo clippy -D warnings`, `cargo deny`, `shellcheck` and
+a DCO check.
 
 ## Deployment
 
-In production the API runs on the Pulsars VPS behind nginx, as a systemd
-service installed from release archives that CI publishes on each `vX.Y.Z` tag. Installation,
-upgrades and rollback: [`docs/deployment.md`](docs/deployment.md). It is
-not deployed yet: it needs the production PostgreSQL migration, the
-`api_read` views and Laravel's JWKS endpoint first.
-
-## Status
-
-| Phase | Content | State |
-|---|---|---|
-| 0 | Contract and plan | done |
-| 1 | Open-source skeleton, `/healthz`, CI | done |
-| 2 | JWT authentication, `/v1/me` | done |
-| 3 | Content endpoints, rate limits | done |
-| 4 | Game (flash race): WebSocket, matchmaking, rooms, ghosts, Glicko-2, `game` schema | done; the 30 flash generators are ported to Rust (`src/flash/`) |
-| 5 | Match results and brains written by the API itself (the results webhook to Laravel is gone) | done |
-| 5b | Brains: monthly duel season close (rewards, rating decay), balance in `/v1/me` and `/v1/game/me` ([`brains.md`](docs/contract/brains.md)) | done |
-| 5c | Admin statistics of the game, `GET /v1/game/admin/stats` (`admin` / `super-admin` role), for the Laravel admin dashboard | done |
-| 6 | Code sandbox | not needed (no code mode) |
-| 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |
+In production the API runs on the Pulsars server behind nginx, as a systemd
+service installed from release archives that CI publishes on each `vX.Y.Z`
+tag. A new server, the database, the environment, upgrades and rollback:
+[`docs/deployment.md`](docs/deployment.md).
 
 ## Contributing
 

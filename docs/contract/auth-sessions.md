@@ -1,32 +1,38 @@
-# Sessions, passwords, mails and Google accounts (phase 2)
+# Sessions, passwords, mails and Google accounts
 
-Contract between `pulsars-api` and the Laravel site for logging in,
-signing up and changing passwords. Routes and schemas are in
-`openapi.yaml` (tag `auth`).
+How members log in to the site. The API is the authority: it checks
+passwords, creates accounts, opens and closes sessions, sends the account
+mails and links Google identities. The site, `pulsars-web`, holds the
+session token in a cookie and calls the API from its server. Routes and
+schemas are in `openapi.yaml` (tag `auth`).
 
 ## 1. Principle
 
-- The API is the authority for sessions: it checks passwords, creates
-  accounts, opens and closes sessions. The site no longer reads
-  `users.password` and keeps no login session of its own.
 - A session is an **opaque token**: 32 random bytes in base64url without
   padding (43 characters). The API stores only its SHA-256, in
   `site.auth_sessions`.
-- The site keeps the token in a `pulsars_auth` cookie (httpOnly, Secure in
-  production, `SameSite=Lax`, `Domain` from `PULSARS_AUTH_COOKIE_DOMAIN`:
-  empty locally, `.pulsars.science` in production so part 2 can read it on
-  `api.pulsars.science`). The site does not encrypt this cookie.
-- The site calls the API from its server (`PULSARS_API_URL`) with
-  `Pulsars-Service-Key`, the visitor's address in `X-Forwarded-For` (the API
-  takes the last entry) and the visitor's browser in `User-Agent`.
-- A session's token is given in the `Pulsars-Session: <token>` header.
-- Part 2 (later): `POST /v1/auth/token` (cookie `pulsars_auth` → a JWT
-  signed by the API), the API's JWKS, mail and Google in the API.
+- `pulsars-web` keeps the token in the `pulsars_auth` cookie: httpOnly,
+  Secure, `SameSite=Lax`, `Domain=.pulsars.science` in production, so that
+  `api.pulsars.science/v1/auth/token` reads it too and gives the games and
+  the languages section their short JWT (`auth-jwt.md`). The cookie is set
+  and cleared by the site's own server routes (`/auth/login`,
+  `/auth/register`, `/auth/logout`, `/auth/google/*`), never by the API.
+- The site calls the API from its server, directly or through its `/api`
+  relay, with:
+  - `Pulsars-Session: <token>`, the token from the cookie;
+  - `Pulsars-Service-Key`, the server's `SERVICE_KEY`: its calls are not
+    rate limited by IP (`README.md`, rate limits), and some routes accept
+    only them (marked *service key* below);
+  - the visitor's address in `X-Forwarded-For` (the API takes the last
+    entry) and the visitor's browser in `User-Agent`.
+- Against CSRF, the site's relay refuses writes (anything but `GET` and
+  `HEAD`) whose `Origin` is not the site's. Browsers never call these
+  routes on `api.pulsars.science` directly.
+- Passwords are hashed with **argon2id** (`$argon2id$v=19$m=19456,t=2,p=1$…`,
+  the OWASP parameters; `ARGON2_MEMORY_KIB` lowers the memory cost in
+  tests only).
 
 ## 2. Table `site.auth_sessions`
-
-Created by the migration `20261029000000_auth_sessions`, run as
-`pulsars_migrate` (owner `pulsars_owner`).
 
 | Column | Type | Rule |
 |---|---|---|
@@ -41,24 +47,7 @@ Created by the migration `20261029000000_auth_sessions`, run as
 | `ip` | inet NULL | |
 | `user_agent` | text NULL | first 500 characters |
 
-The same migration grants `pulsars_api`:
-
-- `USAGE` on schema `site`;
-- `SELECT (id, pseudo, name, email, email_verified_at, password, locale,
-  onboarding_at, created_at, updated_at)` on `site.users`, **never** the
-  `two_factor_*` columns nor `remember_token`;
-- `INSERT (pseudo, name, email, password, locale, created_at, updated_at)`
-  and `UPDATE (password, updated_at)` on `site.users`;
-- `USAGE` on the sequence of `site.users.id`;
-- `SELECT, INSERT, UPDATE, DELETE` on `site.auth_sessions`.
-
-Nothing else of `site` (`the_api_role_reads_content_writes_game_and_changes_no_structure`
-proves it). `deploy/sql/phase-1-retour.sql` drops the table and its
-migration row.
-
 ## 2b. Table `site.email_tokens`
-
-Migration `20261031000000_email_tokens`.
 
 | Column | Type | Rule |
 |---|---|---|
@@ -71,10 +60,8 @@ Migration `20261031000000_email_tokens`.
 | `expires_at` | timestamptz NOT NULL | 24 h (`verify`), 60 min (`reset`) |
 | `used_at` | timestamptz NULL | set when the link is used |
 
-The same migration grants `pulsars_api` all rights on it, `UPDATE
-(email_verified_at, updated_at)` and `INSERT (email_verified_at)` on
-`site.users`, all rights on `site.comptes_sociaux` and `USAGE` on its
-sequence.
+Both tables are in the starting schema (`migrations/`); `pulsars_api` has
+row rights on them like on every table (`database.md` §2).
 
 ## 3. Objects
 
@@ -126,7 +113,6 @@ Body `{"login", "password", "remember"}` (`remember` optional, false).
 - Limit: 5 attempts per minute per `lower(login)|ip`, in Redis, **even with
   the service key**. Beyond: `429 rate-limited` with `Retry-After`.
 - Success: `200 {"data": {"session": Session, "user": AccountUser}}`.
-- Hashes are bcrypt. PHP's `$2y$` hashes are checked as they are.
 
 ### `POST /v1/auth/register`
 
@@ -134,28 +120,26 @@ Body `{"pseudo", "email", "password", "password_confirmation", "locale"}`
 (`locale` optional: `fr`, `en`, `ru` or null). Missing strings count as
 empty.
 
-| Field | Rules (Laravel's `CreateNewUser`) | Codes |
+| Field | Rules (as the old site's `CreateNewUser`) | Codes |
 |---|---|---|
 | `pseudo` | required, 3 to 30 characters, letters and digits (Unicode), `_`, `-`; unique ignoring case | `required`, `too_short`, `too_long`, `invalid_format`, `taken` |
 | `email` | required, at most 255, one `@`, a local part, a domain with a dot, no whitespace; unique ignoring case | `required`, `too_long`, `invalid_email`, `taken` |
 | `password` | required, 8 to 255 characters, equal to `password_confirmation` | `required`, `too_short`, `too_long`, `mismatch` |
 | `locale` | `fr`, `en`, `ru` or null | `invalid` |
 
-- A mismatch is reported on `password`, as Laravel's `confirmed` rule.
-- Creates the account: `name` = pseudo, bcrypt **cost 12 in the `$2y$`
-  format** (Laravel's `Hash::check` refuses other prefixes), `locale`,
+- A mismatch is reported on `password`, as Laravel's `confirmed` rule did.
+- Creates the account: `name` = pseudo, an argon2id hash, `locale`,
   `created_at` = `updated_at` = now (UTC). `email_verified_at` and
   `onboarding_at` stay null. A uniqueness conflict caught by the database
   (two sign-ups racing) gives the same `taken`.
 - Opens a session (`remember` false): `201 {"data": {"session", "user"}}`.
-- The verification e-mail is still sent by the site (part 1).
+- Sends the address verification mail (§4b).
 - Limit: 10 sign-ups per hour per address, even with the service key,
   counted only for valid requests.
 
 ### `GET /v1/auth/session`
 
-`Pulsars-Session` header; what the site calls once per request of a
-logged-in visitor.
+`Pulsars-Session` header; what the site calls to know who is logged in.
 
 - Missing, malformed, unknown, revoked or expired: `401 session-invalid`,
   `WWW-Authenticate: Session realm="api.pulsars.science"`.
@@ -170,8 +154,8 @@ twice is not an error.
 ### `POST /v1/auth/sessions` (service key)
 
 Body `{"user_id": "42", "remember": false}`. Opens a session for an account
-the site authenticated another way: Google, a reset link, the seeder's
-administrator.
+the site authenticated another way. Only for a trusted server: the site
+itself logs in through `login`, `register` and `oauth/resolve`.
 
 - No valid service key: `403 forbidden`. `user_id` not an integer string:
   `422`, code `invalid`. Unknown account: `404`.
@@ -183,23 +167,23 @@ administrator.
 `{"current_password", "password", "password_confirmation"}`.
 
 - `current_password` is required only when the account has a password: an
-  account made through Google can set its first one (it could not with
-  Fortify). Missing: code `required`; wrong: code `incorrect`.
+  account made through Google can set its first one (it could not on the
+  old site). Missing: code `required`; wrong: code `incorrect`.
 - `password`: the sign-up rules.
 - Saves the hash, **revokes every other session** of the account, keeps the
   request's. `204`.
 
 ### `POST /v1/auth/password/reset` (service key)
 
-Body `{"user_id", "password", "password_confirmation"}`. The site checked
-the reset link (`password_reset_tokens`, unchanged in part 1). Saves the
-hash and **revokes every session** of the account. `204`.
+Body `{"user_id", "password", "password_confirmation"}`, for a trusted
+server that checked who asks itself; members reset theirs with a link
+(`reset-with-token`, §4b). Saves the hash and **revokes every session** of
+the account. `204`.
 
-## 4b. Mails (phase 2, part 3)
+## 4b. Mails
 
-The API sends the two account mails itself, in the words of Laravel's
-stock `VerifyEmail` and `ResetPassword` notifications as the site translates
-them (`src/mail/templates.rs`, fr/en/ru, plain text and HTML). The mail's
+The API sends the two account mails, in the words of the old site's
+`VerifyEmail` and `ResetPassword` notifications and its translations (`src/mail/templates.rs`, fr/en/ru, plain text and HTML). The mail's
 language is the account's `locale`, else the request's `lang`, else `fr`.
 
 - **SMTP**: `MAIL_SMTP_URL` (`smtp://127.0.0.1:1025` for Mailpit,
@@ -223,9 +207,7 @@ language is the account's `locale`, else the request's `lang`, else `fr`.
 - 6 per minute per account (`429 rate-limited`), even with the service key.
 - `204`.
 
-`POST /v1/auth/register` now sends this mail itself. **The site must stop
-sending its own** (`Registered` → `SendEmailVerificationNotification`) when
-it signs up through the API, or the member gets two.
+`POST /v1/auth/register` sends it too, once, after creating the account.
 
 ### `POST /v1/auth/email/verify`
 
@@ -243,9 +225,9 @@ Body `{"email": "…", "lang": "en"}` (`lang` optional). **Always `204`**: the
 answer never tells whether an account has the address.
 
 - When an account has it (ignoring case): mails
-  `https://pulsars.science/reset-password/{token}?email={email}` (the URL
-  Laravel's `ResetPassword` builds), valid **60 minutes**.
-- At most one mail a minute per account (Laravel's `throttle: 60`): a
+  `https://pulsars.science/reset-password/{token}?email={email}` (the old
+  site's URL, which `pulsars-web` keeps), valid **60 minutes**.
+- At most one mail a minute per account (the old site's `throttle: 60`): a
   second request in the minute answers `204` and sends nothing.
 - 5 requests per minute per address (`429`), even with the service key.
 - Empty `email`: `422`, code `required`.
@@ -260,16 +242,14 @@ the reset link.
 - Token unknown, used, expired, or sent to another address (compared
   ignoring case): `422 invalid-token`.
 - Saves the hash, marks the link used, **revokes every session** of the
-  account. `204`. The address is **not** marked verified, as with Laravel.
+  account. `204`. The address is **not** marked verified, as on the old
+  site.
 
-The service-key `POST /v1/auth/password/reset` stays, for a site that still
-checks `password_reset_tokens` itself.
+## 4c. Google accounts
 
-## 4c. Google accounts (phase 2, part 3)
-
-The site still talks to Google (Socialite, its redirect URL, the OAuth
-state in its session). It hands the identity it got to the API, which
-applies the rules of the site's `ConnexionSociale::resoudre` and
+The site talks to Google (its redirect URL, the OAuth state, the code
+exchange: `/auth/google/*`). It hands the identity it got to the API, which
+applies the rules of the old site's `ConnexionSociale::resoudre` and
 `ConnexionSocialeController::rattacher`.
 
 ### `POST /v1/auth/oauth/resolve` (service key)
@@ -322,25 +302,19 @@ Refused when it is the account's last way to log in (no password, no other
 provider): `409 conflict`, `reason: "last_login_method"`. Otherwise `204`
 (also when nothing was linked).
 
-## 5. What the site does (`PULSARS_AUTH_VIA_API`, false by default)
+## 5. What the site does
 
-- A Laravel guard `pulsars-api` (a `StatefulGuard`) replaces the `session`
-  driver of the `web` guard. `$request->user()`, `auth`, `verified`,
-  `onboarding` work unchanged: the guard reads the cookie, calls
-  `GET /v1/auth/session` once per request and loads the `User` model by id.
-- `login($user, $remember)` (Google, reset, seeder): `POST
-  /v1/auth/sessions`, then sets the cookie. A session just opened by the
-  API's login or sign-up for the same account is reused.
-- Fortify's `authenticateUsing`: `POST /v1/auth/login`; errors come back as
-  Laravel's (`email` key, `auth.failed`, `auth.throttle`).
-- `CreateNewUser`: `POST /v1/auth/register`, then the site sends the
-  verification e-mail; codes become Laravel's validation messages.
-- Logout: `POST /v1/auth/logout`, the cookie is cleared, the Laravel session
-  (only CSRF, flash messages and the OAuth state now) is invalidated.
-- `UpdateUserPassword`: `PUT /v1/auth/password`; `ResetUserPassword`:
-  `POST /v1/auth/password/reset`.
-- If the API does not answer, the visitor is seen as logged out and a login
-  fails with a clear message. **No fallback to the database** for logging
-  in: it would create sessions the API does not know.
-- Switch-over: everyone logs in again once; passwords do not change.
-- `/jeu/jeton`, the site's JWKS and Sanctum (`/api/v1`) stay as they are.
+- Every page the site renders on its server, and every call of its `/api`
+  relay, reads the `pulsars_auth` cookie and passes it on as
+  `Pulsars-Session`, with `Pulsars-Service-Key` and the visitor's address.
+  The member routes take one of the API's member extractors (`Member`,
+  `Verified`, …, `src/auth/member.rs`), which look the session up with its
+  account and roles: the old site's `auth`, `verified` and `onboarding`
+  middleware.
+- Login, sign-up and Google: the site's server route calls `POST
+  /v1/auth/login`, `POST /v1/auth/register` or `POST /v1/auth/oauth/resolve`,
+  then sets the cookie from the `session` it gets. Logout: `POST
+  /v1/auth/logout`, then the cookie is cleared, whatever the API answered.
+- A `401 session-invalid` means the visitor is logged out: the site clears
+  the cookie. If the API does not answer, the visitor is seen as logged out
+  and a login fails with a clear message.

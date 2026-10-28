@@ -1,10 +1,11 @@
--- The database roles and the empty schemas of a new server (PLAN-REFONTE.md,
--- R3). Run ONCE, as a superuser, on an empty `pulsars` database:
+-- The database roles and the empty schemas of a new server
+-- (docs/contract/database.md §2). Run ONCE, as a superuser, on an empty
+-- `pulsars` database (deploy/sql/README.md):
 --
 --     sudo -u postgres createdb pulsars
 --     sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 \
 --         -v mdp_migrate="$(cat ~/pulsars-secrets/MDP_MIGRATE)" \
---         -v mdp_api="$(cat ~/pulsars-secrets/MDP_API)" -f roles.sql
+--         -v mdp_api="$(cat ~/pulsars-secrets/MDP_API)" -f deploy/sql/roles.sql
 --
 -- Running it again changes nothing. Then `pulsars-api migrate` creates the
 -- tables.

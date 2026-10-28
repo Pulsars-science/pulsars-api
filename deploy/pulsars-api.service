@@ -1,11 +1,12 @@
-# pulsars-api: the public content API and game server of api.pulsars.science.
+# pulsars-api: the back end of pulsars.science and its game server.
 #
 #   sudo cp pulsars-api.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now pulsars-api
 #
-# It listens on 127.0.0.1:8080 (public traffic, through nginx) and
-# 127.0.0.1:9464 (/metrics, never proxied). Nothing to open on the firewall.
+# It listens on 127.0.0.1:8080 (pulsars-web on the same machine, and
+# api.pulsars.science through nginx) and 127.0.0.1:9464 (/metrics, never
+# proxied). Nothing to open on the firewall.
 # Full procedure: docs/deployment.md. `deploy-api` installs this file on each
 # deployment when it has changed.
 
@@ -28,7 +29,9 @@ User=pulsars-api
 Group=pulsars-api
 
 # Read by systemd itself (as root) before dropping privileges: the file can
-# stay root:root 0600, unreadable by the service account.
+# stay root:root 0600, unreadable by the service account. The signing key it
+# names (JWT_SIGNING_KEY_FILE) is read by the service itself: it belongs to
+# pulsars-api, mode 0600.
 EnvironmentFile=/etc/pulsars-api/pulsars-api.env
 
 # `current` is a symlink to the active release, swapped by `deploy-api`.
@@ -56,15 +59,16 @@ SyslogIdentifier=pulsars-api
 # WebSocket players well below what the machine can take.
 LimitNOFILE=65536
 # Normal use is a few tens of MB. A leak hits this ceiling instead of the
-# rest of the VPS (Octane, the databases).
+# rest of the server (pulsars-web, the databases).
 MemoryHigh=384M
 MemoryMax=512M
 TasksMax=256
 
 # ---------------------------------------------------------------- sandbox
 #
-# The binary only needs to: read its own files, open TCP sockets (listeners,
-# PostgreSQL, Redis, Laravel's JWKS over HTTPS) and resolve names. Each line
+# The binary only needs to: read its own files and its signing key, open
+# TCP sockets (listeners, PostgreSQL, Redis, SMTP, DeepL and Umami) and
+# resolve names. Each line
 # below was checked against a Tokio + rustls (ring) build under systemd; see
 # docs/deployment.md, "Sandbox".
 

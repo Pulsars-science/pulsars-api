@@ -4,9 +4,9 @@
 # checks it, and goes back to the previous release if the check fails. Run it
 # ON the server, from the extracted release archive built by CI:
 #
-#     sha256sum -c pulsars-api-v0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-#     tar xzf pulsars-api-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
-#     ./pulsars-api-v0.2.0-x86_64-unknown-linux-gnu/deploy-api
+#     sha256sum -c pulsars-api-v0.6.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+#     tar xzf pulsars-api-v0.6.0-x86_64-unknown-linux-gnu.tar.gz
+#     ./pulsars-api-v0.6.0-x86_64-unknown-linux-gnu/deploy-api
 #
 # The release it installs is the directory this script sits in. To go back to
 # the release that ran before the last deployment:
@@ -19,8 +19,11 @@
 #     --no-check     skip the final check through nginx (the local health
 #                    check always runs: it decides the rollback)
 #
-# The first installation is described in docs/deployment.md. This script only
-# handles the deployments after it.
+# On a new server, docs/deployment.md (§4) prepares what this script needs:
+# the account, /opt/pulsars-api/releases, the database and its roles, the
+# two environment files and the signing key. The script then makes the
+# first installation (it installs and enables the unit) and every later
+# one.
 #
 # It stops at the first error (`set -e`). Up to the restart, nothing the
 # running service uses has changed (the migrations it applies first are
@@ -34,15 +37,13 @@ SERVICE="pulsars-api"
 UNIT="/etc/systemd/system/pulsars-api.service"
 VHOST="/etc/nginx/sites-available/pulsars-api"
 ENV_FILE="/etc/pulsars-api/pulsars-api.env"
-# DATABASE_MIGRATION_URL (the pulsars_migrate account). Read by this script
-# only, never by the service. Optional: without it, migrations run with the
-# service's DATABASE_URL, which works only while that role owns its schemas.
+# DATABASE_MIGRATION_URL (the pulsars_migrate account). Read by the migration
+# step only, never by the service: the service's role may not create tables.
 MIGRATE_ENV_FILE="/etc/pulsars-api/migrate.env"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/healthz}"
 PUBLIC_URL="${PUBLIC_URL:-https://api.pulsars.science/healthz}"
 # Seconds the new release gets to answer 200 on /healthz. It needs
-# PostgreSQL and Laravel's JWKS; the JWKS fetch is retried after 1, 2, 4, 8,
-# 16 seconds.
+# PostgreSQL; the connection is retried in the background.
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-45}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
 # EX_CONFIG: what the binary returns when the configuration is invalid.
@@ -126,6 +127,8 @@ restart() {
 command -v curl >/dev/null || { fail "curl is missing."; exit 1; }
 "${SUDO[@]}" test -f "$ENV_FILE" \
     || { fail "No $ENV_FILE. First installation: see docs/deployment.md."; exit 1; }
+"${SUDO[@]}" test -f "$MIGRATE_ENV_FILE" \
+    || { fail "No $MIGRATE_ENV_FILE. First installation: see docs/deployment.md."; exit 1; }
 "${SUDO[@]}" test -d "$ROOT/releases" \
     || { fail "No $ROOT/releases. First installation: see docs/deployment.md."; exit 1; }
 
@@ -216,6 +219,11 @@ if [ "$NO_SYSTEM" = false ]; then
         "${SUDO[@]}" systemctl daemon-reload
         ok "pulsars-api.service updated"
     fi
+    # The first installation: started at boot from now on.
+    if ! "${SUDO[@]}" systemctl is-enabled --quiet "$SERVICE" 2>/dev/null; then
+        "${SUDO[@]}" systemctl enable --quiet "$SERVICE"
+        ok "pulsars-api.service enabled"
+    fi
 
     # An invalid configuration would also take down the other sites of the
     # machine at the next nginx restart: keep the old one at hand and put it
@@ -244,7 +252,7 @@ step "Migrations"
 # the command as the service account.
 "${SUDO[@]}" systemd-run --quiet --wait --pipe --collect \
     --property=EnvironmentFile="$ENV_FILE" \
-    --property=EnvironmentFile=-"$MIGRATE_ENV_FILE" \
+    --property=EnvironmentFile="$MIGRATE_ENV_FILE" \
     --property=User=pulsars-api \
     "$TARGET/pulsars-api" migrate
 ok "database schema up to date"
@@ -279,7 +287,7 @@ if ! healthy "$VERSION"; then
             fail "$RELEASE failed its health check; $CURRENT runs again."
         else
             fail "$CURRENT does not answer either: the cause is probably outside the"
-            fail "binary (PostgreSQL, Laravel's JWKS, $ENV_FILE)."
+            fail "binary (PostgreSQL, $ENV_FILE, the signing key)."
             show_logs
         fi
     else

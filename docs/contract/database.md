@@ -1,404 +1,139 @@
 # Database
 
-## 1. What runs today
+One PostgreSQL 17 database, `pulsars`, on the same machine as the API.
+**The API is the only program that connects to it**: `pulsars-web`, the
+games and the languages section go through the API's routes. The tables
+keep the names and types the old Laravel site gave them, so its content
+copied over as is (`pulsars-api import-content`, `deploy/sql/README.md`).
 
-| Environment | Engine | Source |
-|---|---|---|
-| Development | **SQLite** (`database/database.sqlite`) | `.env.example`: `DB_CONNECTION=sqlite`; `config/database.php` default |
-| Production (`pulsars.science`) | **MySQL** on the VPS, native install, no Docker | `docs/MISE-EN-PROD.md` §1 and §5 (`CREATE DATABASE pulsars CHARACTER SET utf8mb4`), `deploy/pulsars-octane.service` and `deploy/pulsars-queue.service` (`After=… mysql.service`) |
-| Docker stack (not the documented production path) | PostgreSQL 17 | `compose.yaml`, `docs/DOCKER.md`, `Dockerfile` (`pdo_pgsql`) |
-
-Sessions, cache and queue are stored in the database (`SESSION_DRIVER`,
-`CACHE_STORE`, `QUEUE_CONNECTION` = `database`). Redis is configured in
-`.env.example` but not used in production.
-
-These facts come from the repository. Nobody has checked the server for this
-contract: `deploy/diagnostic-serveur.sh` lists the active database services
-and should be run once to confirm.
-
-**Gap.** The target architecture says "move production from SQLite to
-PostgreSQL". Production is not on SQLite but on MySQL. The migration to plan
-is therefore **MySQL → PostgreSQL**: see `postgres-migration.md`.
-
-## 2. Target layout
-
-One PostgreSQL database, `pulsars`, three schemas and two login roles.
+## 1. Layout
 
 ```
 database pulsars
-├── schema site       owner pulsars_site   all Laravel tables (today's tables, unchanged)
-├── schema api_read   owner pulsars_site   views only, created by a Laravel migration from views.sql
-├── schema game       owner pulsars_api    tables created by pulsars-api migrations
-└── schema langues    owner pulsars_api    languages section, same (docs/languages.md)
+├── schema site      accounts, sessions, mail links, roles, progress, exercise attempts,
+│                    brains, forum, moderation, follows, friends, rooms, private messages,
+│                    reports, suggestions, resource requests, settings
+├── schema contenu   courses, chapters, lessons, exercises, exams, exam parts, resources,
+│                    news, translations, stored files, downloads, reference tables
+├── schema game      matches, players' seats, ratings, seasons, the migrations' history
+└── schema langues   the languages section: languages, levels, words, learners' events
 ```
 
-| Role | `site` | `api_read` | `game`, `langues` |
+| Schema | Tables |
+|---|---|
+| `site` | `users`, `auth_sessions`, `email_tokens`, `comptes_sociaux`, `roles`, `role_user`, `enrollments`, `lesson_progress`, `exercise_attempts`, `cerveaux_mouvements`, `game_results`, `forum_themes`, `questions`, `answers`, `forum_votes`, `forum_translations`, `abonnements`, `friendships`, `rooms`, `room_members`, `room_invites`, `room_messages`, `direct_conversations`, `direct_messages`, `signalements`, `suggestions`, `demandes_ressources`, `reglages` |
+| `contenu` | `courses`, `chapters`, `lessons`, `exercises`, `exams`, `exam_parties`, `ressources`, `actualites`, `contenu_translations`, `fichiers`, `telechargements`, `licences`, `matieres`, `sources_officielles` |
+| `game` | `matches`, `match_players`, `ratings`, `seasons`, `_sqlx_migrations` |
+| `langues` | `languages`, `levels`, `words`, `events` |
+
+The whole structure is in `migrations/` (`20261101000000_schema.sql` and the
+ones after it); `20261101000001_reference.sql` adds the reference data every
+server needs: roles, forum themes, licences, subject names, official exam
+sources and the first language taught.
+
+Files are rows too: `contenu.fichiers` holds every stored file as `bytea`,
+on one of two "disks" (`disque`): `local` (statement and correction PDFs,
+hosted resources, proposed resources: served only by the routes that check
+who may read them) and `public` (avatars, suggestion images: served by
+`GET /v1/storage/{path}`).
+
+## 2. Roles: who writes what
+
+| Role | Login | Rights | Used by |
 |---|---|---|---|
-| `pulsars_site` (Laravel) | owner, all rights | owner (creates the views) | **none** |
-| `pulsars_api` (Rust API) | **none** | `USAGE` + `SELECT` | owner, all rights |
+| `pulsars_owner` | no | owns every schema, table, sequence, view and function | nobody: it only holds the structure |
+| `pulsars_migrate` | yes | member of `pulsars_owner`; its session runs as `pulsars_owner` | `pulsars-api migrate` only (`DATABASE_MIGRATION_URL`, `/etc/pulsars-api/migrate.env`) |
+| `pulsars_api` | yes | `USAGE` on the four schemas; `SELECT`, `INSERT`, `UPDATE`, `DELETE` on every table; `USAGE`, `SELECT`, `UPDATE` on every sequence; `EXECUTE` on the functions of `contenu`. **No structure right**: it creates, alters and drops nothing | the service (`DATABASE_URL`) |
 
-- A PostgreSQL view runs with its **owner's** privileges: `pulsars_api` reads
-  `site` data only through the views, never the tables. Tested: a `SELECT`
-  on `site.courses` as `pulsars_api` fails with
-  `permission denied for schema site`.
-- The views must **not** set `security_invoker = true`, or the API would need
-  rights on `site`.
-- Laravel never reads `game` directly. Game data reaches the site through
-  `/v1/game` (architecture rule "no service writes into the other's schema",
-  extended here to reads, so the API's tables can evolve freely).
-- The `api_read` schema is created by the administrator, not the migration:
-  even `CREATE SCHEMA IF NOT EXISTS` needs the `CREATE` privilege on the
-  database (found while testing `views.sql`).
-- Laravel connects with `search_path = site`. The `pgsql` connection in
-  `config/database.php` reads `DB_SCHEMA`/`search_path`; set
-  `'search_path' => env('DB_SEARCH_PATH', 'site')`. The `migrations` table
-  lands in `site` too.
-- The full role and grant script is at the end of `views.sql`.
-
-### 2.1 Since phase 1: `pulsars_owner` owns the structure
-
-`deploy/sql/phase-1.sql` (run once by the administrator; rollback:
-`phase-1-retour.sql`) moves the content tables to a `contenu` schema and
-takes every structure right away from the service roles:
-
-```
-database pulsars
-├── schema site       owner pulsars_owner   accounts, forum, progress… (Laravel's other tables)
-├── schema contenu    owner pulsars_owner   courses, chapters, lessons, exercises, exams, exam_parties,
-│                                           ressources, actualites, contenu_translations, fichiers, telechargements
-├── schema api_read   owner pulsars_site    the views, unchanged: they follow the moved tables
-├── schema game       owner pulsars_owner
-└── schema langues    owner pulsars_owner   (once the languages section is deployed)
-```
-
-| Role | `site` | `contenu` | `api_read` | `game`, `langues` | Structure |
-|---|---|---|---|---|---|
-| `pulsars_owner` (no login) | owner | owner | — | owner | owns it all |
-| `pulsars_migrate` (login) | member of `pulsars_owner`: runs `pulsars-api migrate` | | | | yes |
-| `pulsars_site` (Laravel) | rows: read, write | rows: read, write | owner | **none** | **none** |
-| `pulsars_api` (Rust API) | **none** | `SELECT` | `SELECT` | rows: read, write | **none** |
-
-- `search_path`: `site, contenu` for `pulsars_site`, so Laravel's queries do
-  not change; `game, langues, api_read, contenu` for `pulsars_api`.
-- Tables a migration creates later get the same row rights through
-  `ALTER DEFAULT PRIVILEGES FOR ROLE pulsars_owner`, per schema.
-- `scripts/dev-db-init.sh` applies the script, so local and CI databases
-  have this layout; `tests/http.rs` checks the service role's side of it.
-
-### 2.2 Phase 1 (2/2): the API reads `contenu` itself
-
-The API no longer reads the content views: `src/db/sources.rs` holds, as
-one SQL subquery per resource, the same filters and the same columns
-(published rows only; no solution, no correction, no private column). The
-column dictionary of §4 still describes what they return, under the views'
-names. Three reference tables, created by the migration
-`20261028000000_contenu_reference`, replace the values the views copied from
-PHP:
-
-| Table | Replaces | Source in Laravel |
-|---|---|---|
-| `contenu.licences (cle, nom, url)` | `api_read.licenses` | `config/licences.php` |
-| `contenu.matieres (slug, langue, nom)` | `api_read.subject_names` | `App\Support\Matieres`, `lang/*.json` |
-| `contenu.sources_officielles (hote, prefixe)` | the allow-list of `api_read.exams.official_url` | `SujetOfficiel::SOURCES` |
-
-Until the site writes content through the API (phase 4), the PHP values
-stay the source: changing one needs a migration here too.
-
-- Still read through views until phase 2: `api_read.members` (the author's
-  pseudo), `member_roles`, `member_xp`, `member_brains`. The content views
-  stay in place for Laravel's own tests and for the comparison below, and
-  go away in phase 5.
-- `pulsars-api check-content` compares each source with the view it
-  replaces, row for row (`EXCEPT ALL` both ways), on the real data; so does
-  `the_content_sources_read_exactly_what_the_views_show` on the demo data.
-- `dev/db/25-api-read.sql` is the views as Laravel's migrations build them,
-  generated by `scripts/site-schema-snapshot.sh`; `views.sql` is the
-  original contract and had drifted (no Russian subject names, a simpler
-  official-URL check).
-
-### 2.3 Phase 2 (1/2): sessions and passwords
-
-The migration `20261029000000_auth_sessions` creates `site.auth_sessions`
-(the API's login sessions, token hashes only) and gives `pulsars_api` the
-login columns of `site.users`, as column grants: `SELECT` of `id, pseudo,
-name, email, email_verified_at, password, locale, onboarding_at,
-created_at, updated_at`; `INSERT` of `pseudo, name, email, password, locale,
-created_at, updated_at`; `UPDATE` of `password, updated_at`; the sequence of
-`users.id`. Never the two-factor secrets or `remember_token`, nothing else
-of `site`. Details: `auth-sessions.md`.
-
-### 2.4 Phase 2: mails and Google accounts
-
-The migration `20261031000000_email_tokens` creates `site.email_tokens`
-(links sent by mail, token hashes only) and gives `pulsars_api`: all rights
-on it; `UPDATE` of `email_verified_at, updated_at` and `INSERT` of
-`email_verified_at` on `site.users`; all rights on `site.comptes_sociaux`
-and its sequence (Google links). Still never the two-factor secrets,
-`remember_token`, `sessions`, `password_reset_tokens` or private messages.
-Details: `auth-sessions.md` §2b, §4b, §4c.
-
-### Isolation tested
-
-`views.sql` was run on PostgreSQL 16 (PGlite) with Laravel-equivalent tables
-loaded from the local seed (272 courses, 1,120 exercises, 32 exams,
-5 resources, 2,735 translations), under the two roles above. Checks that
-passed:
-
-- `pulsars_api` cannot read `site` or create anything in `api_read`; it can
-  create tables in `game`;
-- no view has a column named `solution_md`, `correctes`, `acceptees`,
-  `corrige_md`, `fichier_corrige`, `email`, `password`, `friend_token`,
-  `locale`, `niveau_scolaire`, `classe`, `prompt_ia`, `fichier`, `donnees`,
-  `champs`, `vues`, `telechargements`;
-- QCM options carry only `id` and `text`; English solutions and translated
-  exam corrections never appear in any view;
-- draft, future-dated and archived courses, and draft exams with their parts
-  and translations, are invisible;
-- `member_xp` gives the same total and level as `App\Services\Experience`, and
-  the level formula matches the PHP loop for every XP value from 0 to 200,000;
-- the official exam URL allow-list rejects a path containing `..`.
-
-The test script is not in the repository (it lives with the Rust API's
-integration tests, task in `laravel-tasks.md`).
+- **Only the API writes**, through `pulsars_api`. No other service has a
+  role, and none needs one.
+- `deploy/sql/roles.sql` creates the three roles and the four empty
+  schemas, once, on a new server. Running it again changes nothing.
+- The migrations grant `pulsars_api` its row rights, and set the default
+  privileges of `pulsars_owner` in each schema (`ALTER DEFAULT PRIVILEGES
+  FOR ROLE pulsars_owner IN SCHEMA …`), so a table a later migration
+  creates gets the same rights. A migration that adds a **schema** must
+  grant it as well: default privileges are per schema.
+- `search_path`: `game, site, contenu, langues` for `pulsars_migrate` (the
+  migrations' history lands in `game`); `site, contenu, game, langues` for
+  `pulsars_api`, whose queries name their schema anyway.
+- `pulsars_api` also has `statement_timeout = 5s` and
+  `idle_in_transaction_session_timeout = 30s`.
+- The service never migrates: at start-up it waits, and logs which
+  migrations are missing, until `pulsars-api migrate` has applied them.
+  `deploy-api` runs it before each switch (`docs/deployment.md`).
+- `scripts/dev-db-init.sh` builds the same layout locally and in CI, with
+  development passwords, then loads `dev/db/30-demo-data.sql`.
 
 ## 3. Views
 
-One view per exposed resource, plus translation views and static reference
-data. Every view is limited to published rows (same rules as the Eloquent
-scopes) and to allowed columns.
+Four views of `site` put in one place what every route that shows a member
+needs:
 
-| View | Source | Publication rule |
+| View | Columns | Meaning |
 |---|---|---|
-| `courses` | `courses` + author `pseudo` + counts | `statut = 'publie'` and `published_at <= now()` (`Course::scopePublies`) |
-| `course_translations` | `contenu_translations` type `course` | parent visible |
-| `chapters` | `chapters` | course visible |
-| `chapter_translations` | type `chapter` | parent visible |
-| `lessons` | `lessons` | chapter visible |
-| `lesson_translations` | type `lesson` | parent visible |
-| `exercises` | `exercises`, answers removed | chapter visible |
-| `exercise_translations` | type `exercise`, without `solution_md` | parent visible |
-| `exams` | `exams` | `statut = 'publie'` and `published_at <= now()` (`Exam::scopePublies`) |
-| `exam_parts` | `exam_parties`, without `corrige_md` | exam visible |
-| `exam_part_translations` | type `exam_partie`, without `corrige_md` | parent visible |
-| `resources` | `ressources` | `statut = 'publie'` (`Ressource::scopePubliees`), and a file or a link exists |
-| `resource_translations` | type `ressource` | parent visible |
-| `members` | `users`, public columns only | all accounts (see note) |
-| `member_roles` | `role_user` + `roles` | all |
-| `member_xp` | activity tables, computed | all |
-| `member_brains` | `cerveaux_mouvements` summed, `users.cerveaux_publics` | all (`brains.md` §4) |
-| `licenses` | copy of `config/licences.php` | static |
-| `subject_names` | copy of subject names in `lang/en.json` | static |
+| `site.members` | `id`, `pseudo`, `avatar_path`, `bio`, `member_since` | The public face of an account. `avatar_path` is relative to the `public` disk: the API builds the URL as `<PUBLIC_STORAGE_URL>/<path>` (`https://pulsars.science/storage/…`, which `pulsars-web` relays to `GET /v1/storage/{path}`). |
+| `site.member_roles` | `user_id`, `slug`, `name`, `category`, `color`, `permission_level`, `display_order` | `category` is `permission`, `matiere` or `distinction`; `permission_level` is 0 except for the permission roles (1 `moderateur`, 2 `admin`, 3 `super-admin`). |
+| `site.member_brains` | `user_id`, `balance`, `public` | The sum of the member's `cerveaux_mouvements.montant` (0 without movements); `public` is `users.cerveaux_publics` (`brains.md`). |
+| `site.member_xp` | `user_id`, `total`, `level` | Experience points, **computed** from activity (lessons, exercises, courses, forum posts, accepted answers, games), never stored, with the old site's scale (`App\Services\Experience`). |
 
-Note on `members`: every account is visible to the API role, but no endpoint
-lists members. Laravel deliberately has no member directory
-(`ProfilPublicController::index` shows nothing without a search); the API
-must not create one either. `/v1/me` only reads the token's own row.
+There is no member directory: no route lists every member, as on the old
+site (`ProfilPublicController::index` showed nothing without a search).
 
-## 4. Column dictionary
+## 4. Public content: what is read, what never is
 
-Types are PostgreSQL types as Laravel creates them (`string` → `varchar(255)`,
-`json` → `json`, `timestamp` → `timestamp(0)`), after the conversions done in
-the views (`timestamptz`, `jsonb`).
+The public content routes read `contenu` through `src/db/sources.rs`: one
+SQL subquery per resource, each keeping **published rows only** and
+**allowed columns only**. It is the security boundary of the public
+content; a test dumps every source and checks that no answer, correction or
+private column gets through.
 
-### `api_read.courses`
+| Source | Publication rule |
+|---|---|
+| courses, and their chapters, lessons and exercises | `statut = 'publie'` and `published_at <= now()` (the old `Course::scopePublies`) |
+| exams, and their parts | `statut = 'publie'` and `published_at <= now()`; `attente_import` and `brouillon` (an AI import not yet reviewed) are left out |
+| resources | `statut = 'publie'`, and a hosted file or a link |
+| news | `published_at <= now()`; null is a draft |
+| translations (`contenu_translations`) | their parent is visible |
+| stored files | the statement PDF of a published exam, the file of a published hosted resource; never the correction, a draft's file or a path |
 
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | Internal id, stable. |
-| `slug` | varchar | no | Public identifier, unique. |
-| `title` | varchar | no | Original (French) title. |
-| `description` | text | no | Original description. |
-| `theme` | varchar | no | Raw theme, e.g. `Chimie – La matière`. Default `Divers`. |
-| `subject_name` | text | no | Part before the first ` – ` (en dash). |
-| `subject_slug` | text | no | `slugify(subject_name)`. |
-| `topic_name` | text | yes | Part after ` – `; null for the 4 courses whose theme is just `Mathématiques` or `Physique`. |
-| `topic_slug` | text | yes | |
-| `difficulty` | varchar | no | `debutant`, `intermediaire`, `avance`. |
-| `levels` | text[] | no | From tags: subset of `college`, `lycee`, `superieur`; often empty. |
-| `duration_minutes` | smallint | yes | Estimated duration. |
-| `tags` | jsonb | no | Array of free tags, `[]` when none. |
-| `author_pseudo` | varchar | yes | Null if the author account is gone. Today every course has an author (`auteur_id` cascades on delete, so deleting an author deletes their courses: worth knowing). |
-| `chapter_count`, `lesson_count`, `exercise_count` | int | no | |
-| `published_at` | timestamptz | no | |
-| `updated_at` | timestamptz | yes | |
+Never selected by these sources, whatever route uses them:
 
-### `api_read.course_translations`, `chapter_translations`, `lesson_translations`, `exercise_translations`, `exam_part_translations`, `resource_translations`
+- `exercises.solution_md`, `exercises.donnees` (its `correctes` and
+  `acceptees`), and the `solution_md` key of translations;
+- `exam_parties.corrige_md` and its translation, `exams.fichier_corrige`;
+- storage paths, original file names, AI prompts and errors, view and
+  download counters, author account ids.
 
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `<parent>_id` | bigint | no | Id of the translated row. |
-| `lang` | varchar(5) | no | `en` today. |
-| translated fields | text | yes | `title`, `description`, `content_md`, `question_md`, `statement_md`, `category` depending on the view. Null when the translation lacks the field: the API then falls back to the original. |
+The answers and corrections have their own sources, read only by the
+member routes that apply the old site's rules on when to show them (an
+exercise's solution after an attempt, an exam's corrections on its page).
 
-`exercise_translations` also has `options` (jsonb, null unless the exercise
-is a QCM whose translation has an `options` object): the same
-`[{"id", "text"}]` array as `exercises.options`, same ids and order, each text
-translated or, when missing, the original one.
+Response fields, with their types and meaning, are in `openapi.yaml`.
 
-Translations whose `source_hash` no longer matches the source are still
-served, as Laravel does (`Traduisible::t()` ignores the hash).
+### Conventions of the stored data
 
-### `api_read.chapters`
+- Timestamps are `timestamp(0) without time zone` in UTC, as the old site
+  stored them; the API reads them `AT TIME ZONE 'UTC'` and answers ISO 8601
+  with `Z`.
+- Small integer columns are cast to `int` when read, so a type change
+  cannot break decoding.
+- Translations whose `source_hash` no longer matches the original are still
+  served, as the old site did; `pulsars-api content translate` refreshes
+  them.
+- Reference values that the old site kept in PHP are tables now:
+  `contenu.licences` (`config/licences.php`), `contenu.matieres` (subject
+  names, `lang/*.json`), `contenu.sources_officielles` (the official exam
+  URL allow-list, `SujetOfficiel::SOURCES`).
 
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | |
-| `course_id` | bigint | no | |
-| `position` | smallint | no | `ordre`, from 1. |
-| `title` | varchar | no | |
+## 5. Known gaps
 
-### `api_read.lessons`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | |
-| `chapter_id`, `course_id` | bigint | no | |
-| `slug` | varchar | no | Unique per chapter only (`unique(chapter_id, slug)`); unique per course in practice. |
-| `position` | smallint | no | Order in the chapter. |
-| `chapter_position` | smallint | no | For reading order across chapters. |
-| `title` | varchar | no | |
-| `content_md` | text | no | Markdown with LaTeX. |
-| `updated_at` | timestamptz | yes | |
-
-### `api_read.exercises`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | Public identifier. |
-| `chapter_id`, `course_id` | bigint | no | |
-| `type` | varchar | no | `qcm`, `reponse_courte`, `reponse_libre`. |
-| `title` | varchar | no | |
-| `question_md` | text | no | |
-| `position`, `chapter_position` | smallint | no | |
-| `options` | jsonb | yes | QCM only: `[{"id": "a", "text": "31"}, …]`. Never `correctes`. |
-| `multiple` | boolean | yes | QCM only: more than one correct option. |
-| `updated_at` | timestamptz | yes | |
-
-Excluded: `solution_md`, the whole `donnees` column (it holds `correctes` for
-QCM and `acceptees` for short answers).
-
-### `api_read.exams`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | |
-| `slug` | varchar | no | |
-| `title` | varchar | no | Not translatable. |
-| `type` | varchar | no | `brevet`, `bac`, `blanc`, `concours`. |
-| `competition` | varchar | yes | `centrale-supelec` for competitive exams. |
-| `subject` | varchar | no | `App\Enums\MatiereExamen` value. |
-| `country` | varchar(2) | no | ISO code, default `FR`. |
-| `level` | varchar | no | Free text: `3e`, `Terminale`, `CPGE`. |
-| `tracks` | jsonb | no | CPGE tracks, `[]` otherwise. |
-| `session` | varchar | yes | Free text label. |
-| `duration_minutes` | smallint | yes | |
-| `total_points` | smallint | yes | |
-| `description` | text | yes | Not translatable. |
-| `has_pdf` | boolean | no | Pulsars hosts the statement PDF. |
-| `official_url` | text | yes | Organiser's PDF, **only if** it passes the `SujetOfficiel` allow-list (reimplemented in SQL). |
-| `source_url` | varchar | yes | Organiser's listing page. |
-| `part_count` | int | no | |
-| `published_at`, `updated_at` | timestamptz | no / yes | |
-
-Excluded: `statut`, `fichier_pdf`, `nom_fichier_original`, `fichier_corrige`,
-`prompt_ia`, `erreur_ia`, `analyse_at`, `auteur_id`, `vues`,
-`telechargements`.
-
-### `api_read.exam_parts`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | |
-| `exam_id` | bigint | no | |
-| `position` | smallint | no | |
-| `title` | varchar | no | |
-| `statement_md` | text | no | `enonce_md`. |
-| `points` | numeric(5,2) | yes | |
-
-Excluded: `corrige_md`.
-
-### `api_read.resources`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | |
-| `slug` | varchar | no | |
-| `title` | varchar | no | |
-| `description` | text | yes | |
-| `category` | varchar | yes | Free text, translatable. |
-| `doc_lang` | varchar(5) | yes | Language of the document. |
-| `mode` | text | no | `host` or `link`. |
-| `attribution` | varchar(200) | yes | `auteur_nom`: credited author of the document. |
-| `license_key` | varchar(60) | yes | Key of `licenses`; null for older resources. |
-| `license_custom` | varchar(200) | yes | Free text when the key is `autre`. |
-| `source_url` | varchar(500) | yes | The link (mode `link`) or the credited origin (mode `host`). |
-| `size_bytes` | bigint | yes | Mode `host` only. |
-| `created_at`, `updated_at` | timestamptz | yes | |
-
-Excluded: `fichier`, `nom_fichier_original`, `statut`, `ajoute_par`,
-`telechargements`, `vues`.
-
-### `api_read.members`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `id` | bigint | no | Equals the JWT `sub` (as a string on the API side). |
-| `pseudo` | varchar | no | Unique. |
-| `avatar_path` | varchar | yes | Path on Laravel's `public` disk. The API builds the URL as `https://pulsars.science/storage/<path>` (`PUBLIC_STORAGE_URL`). |
-| `bio` | varchar(280) | yes | |
-| `member_since` | timestamptz | yes | `created_at`. |
-
-### `api_read.member_roles`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `user_id` | bigint | no | |
-| `slug`, `name` | varchar | no | |
-| `category` | varchar | no | `permission`, `matiere`, `distinction`. |
-| `color` | varchar(7) | no | Hex. |
-| `permission_level` | smallint | no | 0 except permission roles (1–3). |
-| `display_order` | smallint | no | |
-
-### `api_read.member_xp`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `user_id` | bigint | no | |
-| `total` | int | no | Same as `Experience::pour()['total']`. |
-| `level` | int | no | Same as `Experience::niveau()`. |
-
-### `api_read.member_brains`
-
-| Column | Type | Null | Meaning |
-|---|---|---|---|
-| `user_id` | bigint | no | |
-| `balance` | int | no | Sum of the member's `cerveaux_mouvements.montant` (0 without movements). |
-| `public` | boolean | no | `users.cerveaux_publics`. The API shows the balance to its owner only (`/v1/me`, `/v1/game/me`). |
-
-See `brains.md`.
-
-### `api_read.licenses`, `api_read.subject_names`
-
-Static copies of `config/licences.php` and of the subject names in
-`lang/en.json`. They are views over `VALUES`, regenerated by the same
-migration as the other views.
-
-## 5. Indexes the views rely on
-
-The views add no index. On PostgreSQL, unlike MySQL, a foreign key does **not**
-create an index. The `site` tables already have composite indexes on most
-foreign keys, but `questions.user_id` and `answers.user_id` have none (used
-by `member_xp` and by `Experience` itself). Add them during the PostgreSQL
-migration (see `postgres-migration.md`).
-
-## 6. Known gaps
-
-- No domain → subject → topic taxonomy: derived from `theme` in the view.
+- No domain → subject → topic taxonomy: subject and topic are derived from
+  a course's single `theme` string (`"<Subject> – <Topic>"`).
 - No level column on courses: derived from tags with two spellings.
-- Topic names have no English translation; "Biologie" is missing from
-  `lang/en.json`.
-- QCM options, exam titles and exam descriptions are not translatable.
-- Licence names, subject names, the `SujetOfficiel` allow-list and the XP scale
-  live in PHP; the views copy them. A Laravel test must compare the copies
-  (task in `laravel-tasks.md`).
-- Lesson slug uniqueness is per chapter, not per course.
+- Topic names have no translation.
+- QCM option texts, exam titles and exam descriptions are not translatable.
+- Lesson slug uniqueness is per chapter, not per course (unique per course
+  in practice).
+- Deleting an author deletes their courses (`auteur_id` cascades), as on
+  the old site.
