@@ -41,6 +41,11 @@ tags:
   - name: resources
   - name: news
     description: Announcements of the team, as on https://pulsars.science/actualite.
+  - name: auth
+    description: |
+      Logging in, signing up, sessions and passwords, called by the site from
+      its server (`auth-sessions.md`). A session is an opaque token given back
+      in `Pulsars-Session`.
   - name: account
   - name: game
     description: |
@@ -870,6 +875,184 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Check a login and a password, open a session
+      description: |
+        `login` is an e-mail or a pseudo, ignoring case. 5 attempts per minute
+        per login and address, even with the service key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login, password]
+              additionalProperties: false
+              properties:
+                login: { type: string }
+                password: { type: string }
+                remember: { type: boolean, default: false }
+      responses:
+        '200': { $ref: '#/components/responses/Opened' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '422':
+          description: Unknown login, wrong password, or an account without a password.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+              example:
+                type: https://api.pulsars.science/problems/invalid-credentials
+                title: Invalid credentials
+                status: 422
+                detail: These credentials do not match any account.
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Create an account and open a session
+      description: |
+        The rules of Laravel's `CreateNewUser` (`auth-sessions.md` §4). Every
+        field error at once, each with a `code`. 10 sign-ups per hour per
+        address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                pseudo: { type: string, minLength: 3, maxLength: 30 }
+                email: { type: string, maxLength: 255 }
+                password: { type: string, minLength: 8, maxLength: 255 }
+                password_confirmation: { type: string }
+                locale: { type: [string, 'null'], enum: [fr, en, ru, null] }
+      responses:
+        '201': { $ref: '#/components/responses/Opened' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/session:
+    get:
+      tags: [auth]
+      operationId: getSession
+      summary: The account of a session, which is extended
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: A live session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [user, session]
+                    properties:
+                      user: { $ref: '#/components/schemas/AccountUser' }
+                      session: { $ref: '#/components/schemas/SessionInfo' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Revoke a session
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204':
+          description: Revoked, or already invalid.
+
+  /v1/auth/sessions:
+    post:
+      tags: [auth]
+      operationId: openSession
+      summary: Open a session for an account the site authenticated (service key)
+      description: After Google, a reset link, or for the seeder's administrator.
+      parameters:
+        - $ref: '#/components/parameters/ServiceKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              additionalProperties: false
+              properties:
+                user_id: { type: string, example: '42' }
+                remember: { type: boolean, default: false }
+      responses:
+        '201': { $ref: '#/components/responses/Opened' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/auth/password:
+    put:
+      tags: [auth]
+      operationId: changePassword
+      summary: Change the password of the session's account
+      description: |
+        `current_password` is required only when the account has a password.
+        Every other session of the account is revoked.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                current_password: { type: [string, 'null'] }
+                password: { type: string, minLength: 8, maxLength: 255 }
+                password_confirmation: { type: string }
+      responses:
+        '204':
+          description: Changed.
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/auth/password/reset:
+    post:
+      tags: [auth]
+      operationId: resetPassword
+      summary: Set a password after a reset link the site checked (service key)
+      description: Every session of the account is revoked.
+      parameters:
+        - $ref: '#/components/parameters/ServiceKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              additionalProperties: false
+              properties:
+                user_id: { type: string }
+                password: { type: string, minLength: 8, maxLength: 255 }
+                password_confirmation: { type: string }
+      responses:
+        '204':
+          description: Changed.
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
   /v1/me:
     get:
       tags: [account]
@@ -1128,6 +1311,18 @@ components:
         See `auth-jwt.md`.
 
   parameters:
+    SessionToken:
+      name: Pulsars-Session
+      in: header
+      required: true
+      description: A session token from `/v1/auth/login`, `/register` or `/sessions`.
+      schema: { type: string, minLength: 43, maxLength: 43 }
+    ServiceKey:
+      name: Pulsars-Service-Key
+      in: header
+      required: true
+      description: The server's `SERVICE_KEY`; only the site has it.
+      schema: { type: string }
     Lang:
       name: lang
       in: query
@@ -1188,6 +1383,57 @@ components:
       schema: { type: integer, example: 12 }
 
   responses:
+    Opened:
+      description: A new session and its account
+      headers:
+        Cache-Control: { schema: { type: string, const: no-store } }
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [session, user]
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+                  user: { $ref: '#/components/schemas/AccountUser' }
+    InvalidBody:
+      description: The body is not JSON, or has an unknown or mistyped field
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InvalidFields:
+      description: Field errors, all at once, each with a `code`
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/invalid-body
+            title: Invalid body
+            status: 422
+            detail: One or more fields are invalid.
+            errors:
+              - { parameter: pseudo, detail: is already used by another account, code: taken }
+              - { parameter: password, detail: must be at least 8 characters, code: too_short }
+    SessionInvalid:
+      description: Missing, unknown, expired or revoked session
+      headers:
+        WWW-Authenticate: { schema: { type: string, example: 'Session realm="api.pulsars.science"' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/session-invalid
+            title: Invalid session
+            status: 401
+            detail: The session is missing, unknown, expired or revoked.
+    Problem:
+      description: A problem
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     File:
       description: The whole file
       headers:
@@ -1474,6 +1720,33 @@ components:
       type: [string, 'null']
       description: Pass it as `cursor` to get the next page; null on the last page.
 
+    AccountUser:
+      type: object
+      required: [id, pseudo, email, email_verified, onboarded, locale]
+      properties:
+        id: { type: string, example: '42' }
+        pseudo: { type: string }
+        email: { type: string }
+        email_verified: { type: boolean }
+        onboarded: { type: boolean }
+        locale: { type: [string, 'null'], enum: [fr, en, ru, null] }
+    Session:
+      type: object
+      required: [token, expires_at, remember]
+      properties:
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+          description: Opaque; shown only here. Give it back in `Pulsars-Session`.
+        expires_at: { type: string, format: date-time }
+        remember: { type: boolean }
+    SessionInfo:
+      type: object
+      required: [expires_at, remember]
+      properties:
+        expires_at: { type: string, format: date-time }
+        remember: { type: boolean }
     Problem:
       type: object
       description: RFC 9457 problem details.
@@ -1492,6 +1765,12 @@ components:
             properties:
               parameter: { type: string }
               detail: { type: string }
+              code:
+                type: string
+                description: |
+                  Stable code of a field error (`/v1/auth/*`), for clients that
+                  translate the message.
+                enum: [required, too_short, too_long, invalid_format, invalid_email, taken, mismatch, incorrect, invalid]
         reason:
           type: string
           description: For 401, why the token was refused; for 403, `insufficient_scope`. See `auth-jwt.md`.

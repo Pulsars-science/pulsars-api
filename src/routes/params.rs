@@ -97,6 +97,7 @@ impl Params {
         self.errors.push(ParameterError {
             parameter: parameter.to_owned(),
             detail: detail.into(),
+            code: None,
         });
     }
 

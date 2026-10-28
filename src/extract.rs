@@ -62,6 +62,7 @@ pub fn parse<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ApiError> {
             ApiError::InvalidBody(vec![ParameterError {
                 parameter: pointer(&path),
                 detail: detail(&inner),
+                code: None,
             }])
         } else {
             // Syntax error or truncated body: no field to name.
