@@ -48,7 +48,7 @@ use protocol::{PlayerInfo, ServerMsg};
 /// Who a player is for the length of their session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlayerId {
-    /// Laravel `users.id`.
+    /// `site.users.id`.
     Account(i64),
     /// A guest, numbered by this process.
     Guest(u64),

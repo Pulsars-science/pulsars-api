@@ -12,7 +12,7 @@ use sqlx::PgPool;
 pub struct Member {
     pub id: i64,
     pub pseudo: String,
-    /// Relative to Laravel's `public` disk.
+    /// Relative to the `public` disk (`GET /v1/storage/{path}`).
     pub avatar_path: Option<String>,
     pub bio: Option<String>,
     pub member_since: Option<DateTime<Utc>>,

@@ -1249,7 +1249,7 @@ async fn a_reset_link_sets_the_password_once_and_ends_every_session() {
         login(&env.app, &pseudo, "brand-new-pass").await.0,
         StatusCode::OK
     );
-    // Laravel does not verify the address on a reset, neither does the API.
+    // As on the old site, a reset does not verify the address.
     let (_, body) = login(&env.app, &pseudo, "brand-new-pass").await;
     assert_eq!(body["data"]["user"]["email_verified"], false);
 

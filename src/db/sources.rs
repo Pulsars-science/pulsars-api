@@ -13,11 +13,11 @@
 //!
 //! The answers and corrections have their own macros, at the end
 //! ([`ANSWER_SOURCES`]): published content only too, read by the member
-//! routes that apply Laravel's rules on when to show them (an exercise's
+//! routes that apply the old site's rules on when to show them (an exercise's
 //! solution after an attempt, an exam's corrections on its page), never by
 //! a content route.
 //!
-//! Laravel stores timestamps as `timestamp(0) without time zone` in UTC;
+//! The schema stores timestamps as `timestamp(0) without time zone` in UTC;
 //! `AT TIME ZONE 'UTC'` makes them `timestamptz`.
 
 /// Same rule as `Course::scopePublies()`, on alias `c`.
@@ -391,8 +391,8 @@ macro_rules! resource_translations {
     };
 }
 
-/// Subject names in a translated language (`contenu.matieres`), with the
-/// columns of the old `api_read.subject_names`. French has no row there:
+/// Subject names in a translated language (`contenu.matieres`), as
+/// `subject_slug`, `lang` and `name`. French has no row there:
 /// its name is the course theme itself.
 macro_rules! subject_names {
     () => {
@@ -401,7 +401,7 @@ macro_rules! subject_names {
     };
 }
 
-/// `contenu.licences`, with the columns of the old `api_read.licenses`.
+/// `contenu.licences`, with English column names.
 macro_rules! licenses {
     () => {
         "(SELECT cle AS key, nom AS name, url FROM contenu.licences)"

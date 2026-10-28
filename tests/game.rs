@@ -1019,6 +1019,6 @@ async fn game_me_shows_the_brains_balance() {
     };
     // `ada` (dev/db/30-demo-data.sql): three lessons, 5 brains each.
     assert_eq!(me("2".to_owned()).await["brains"], 15);
-    // An account without movements, or unknown to Laravel: 0.
+    // An account without movements, or unknown: 0.
     assert_eq!(me(fresh_user().to_string()).await["brains"], 0);
 }

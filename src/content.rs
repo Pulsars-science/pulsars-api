@@ -1,5 +1,5 @@
-//! `pulsars-api content …` (PLAN-REFONTE.md, R6/D12): the content commands
-//! of Laravel kept for one admin running a small site.
+//! `pulsars-api content …`: the content commands of the old site (its
+//! `contenu:*` Artisan commands) kept for one admin running a small site.
 //!
 //! - `content check [--lang en]` (`contenu:verifier`): checks the content
 //!   in the database (courses, exercises, translations, files); changes

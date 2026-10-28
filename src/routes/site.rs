@@ -56,7 +56,7 @@ pub fn created<T: Serialize>(data: T) -> Response {
     no_store(StatusCode::CREATED, &Data { data })
 }
 
-/// The public address of a file of Laravel's `public` disk (an avatar),
+/// The public address of a file of the `public` disk (an avatar),
 /// as `/v1/me` builds it.
 pub fn avatar_url(state: &AppState, path: Option<&str>) -> Option<String> {
     path.filter(|p| !p.is_empty()).map(|p| {
@@ -216,7 +216,7 @@ const ROBOTS: &[&str] = &[
 ];
 
 /// Whether the browser is a robot, from its `User-Agent` (relayed by the
-/// site): none, or a known signature. Laravel also refused an `Accept`
+/// site): none, or a known signature. The old site also refused an `Accept`
 /// without `text/html`; behind the site's relay that header is the site's,
 /// not the browser's, so it is not looked at.
 pub fn is_robot(user_agent: Option<&str>) -> bool {

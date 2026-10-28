@@ -1,4 +1,4 @@
-//! One-off commands for a new server (PLAN-REFONTE.md, R5):
+//! One-off commands for a new server (`docs/deployment.md`):
 //!
 //! - `pulsars-api create-admin <pseudo> <email>`: the first account, with
 //!   the `super-admin` role, its address verified and the welcome steps
@@ -13,8 +13,9 @@ use sqlx::{PgPool, Postgres, Row as _, Transaction};
 
 use crate::auth::password;
 
-/// The content tables, parents first. Their columns are those of the
-/// Laravel tables, in `site` (the old layout) or `contenu`.
+/// The content tables, parents first. Their columns are the same here and in
+/// the old database, where they sit in `site` (its older layout) or
+/// `contenu`.
 pub const CONTENT_TABLES: &[&str] = &[
     "courses",
     "chapters",

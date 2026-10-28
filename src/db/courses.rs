@@ -4,7 +4,7 @@
 //!
 //! Every query takes `tr`, the language to read translations in, or `None`
 //! for the original French text. Small integer columns are cast to `int`
-//! so a type change in Laravel's tables cannot break decoding.
+//! so a type change in the tables cannot break decoding.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;

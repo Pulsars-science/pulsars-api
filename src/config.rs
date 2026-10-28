@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn kids_follow_the_laravel_format() {
+    fn kids_name_a_month_and_a_counter() {
         for kid in ["2026-10-ed25519-1", "2027-01-ed25519-123456"] {
             assert!(is_valid_kid(kid), "{kid}");
         }

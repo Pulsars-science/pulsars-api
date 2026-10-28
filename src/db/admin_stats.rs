@@ -6,7 +6,7 @@
 //! (included, so partial) and starts at midnight UTC N-1 days ago; each
 //! series also carries the total of the N days before, for the trend.
 //!
-//! Laravel's `visits` log is gone (PLAN-REFONTE.md, R3): signed-in page
+//! The old site's `visits` log is not kept: signed-in page
 //! views no longer count as activity, and the "signed in in the last 24 h"
 //! and "active over 7 days" counters are not kept.
 

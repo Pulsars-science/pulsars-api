@@ -144,8 +144,8 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
     // Authenticated endpoints: only the game front end may call them from a
-    // browser. Without `Origin` (server to server: the Laravel admin
-    // dashboard proxies the statistics) the CORS layer stays out of the way.
+    // browser. Without `Origin` (server to server) the CORS layer stays out
+    // of the way.
     let authenticated = Router::new()
         .route("/v1/me", get(me::me).options(preflight))
         .route("/v1/game/me", get(game::me).options(preflight))

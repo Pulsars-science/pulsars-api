@@ -1,6 +1,6 @@
 //! Uploads (`multipart/form-data`): the resource a member proposes, the
 //! image of a suggestion, an avatar. Files are stored as `bytea` in
-//! `contenu.fichiers`, under a random name, on Laravel's disks (`local`:
+//! `contenu.fichiers`, under a random name, on one of two disks (`local`:
 //! never served directly; `public`: served by `GET /v1/storage/{path}`).
 //!
 //! Body limits: these routes have their own (`UPLOAD_BODY_LIMIT`), above
@@ -120,7 +120,7 @@ pub async fn read<S: Send + Sync>(
     Ok(form)
 }
 
-/// Laravel's `local` disk, stored in `contenu.fichiers`.
+/// The `local` disk, stored in `contenu.fichiers`.
 pub(crate) const DISK: &str = "local";
 
 /// A `multipart/form-data` body, to read field by field. Any other
@@ -315,8 +315,8 @@ pub async fn store(
     Ok(())
 }
 
-/// `GET /v1/storage/{path}`: a file of Laravel's `public` disk (avatars,
-/// suggestion images), as `FichierPublicController`. Its name is random and
+/// `GET /v1/storage/{path}`: a file of the `public` disk (avatars,
+/// suggestion images), as the old site's `FichierPublicController`. Its name is random and
 /// its content never changes: cached for a year. Uploaded by a member:
 /// never interpreted as a page.
 pub async fn public_file(pool: &PgPool, path: &str, instance: &str) -> Response {
