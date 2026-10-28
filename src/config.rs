@@ -112,10 +112,25 @@ pub struct Config {
     /// Where account mails go (`MAIL_SMTP_URL`, `MAIL_FROM`). `None`: they
     /// are only logged, without their link.
     pub mail: Option<MailConfig>,
-    /// Translation of forum posts (`DEEPL_API_KEY`, `DEEPL_API_URL`,
+    /// Translation of forum posts and `pulsars-api content translate`
+    /// (`DEEPL_API_KEY`, `DEEPL_API_URL`,
     /// `DEEPL_LANGUAGES`). `None` without a key: the translation routes
     /// answer 503 `not_configured`, as Laravel did.
     pub deepl: Option<DeeplConfig>,
+    /// The Umami instance that measures the site's audience, read by the
+    /// admin dashboard. `None`: the dashboard says it is not configured.
+    pub umami: Option<UmamiConfig>,
+}
+
+/// `UMAMI_URL`, `UMAMI_WEBSITE_ID`, `UMAMI_USERNAME` and `UMAMI_PASSWORD`,
+/// all four or none (Laravel's `services.umami`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UmamiConfig {
+    /// Usually on the same machine: plain http is accepted.
+    pub url: String,
+    pub website_id: String,
+    pub username: String,
+    pub password: Secret,
 }
 
 /// DeepL, which translates forum posts (Laravel's `services.deepl`).
@@ -339,6 +354,15 @@ impl Config {
                 None
             }
         };
+        let umami = parse_umami(
+            [
+                reader.optional_raw("UMAMI_URL"),
+                reader.optional_raw("UMAMI_WEBSITE_ID"),
+                reader.optional_raw("UMAMI_USERNAME"),
+                reader.optional_raw("UMAMI_PASSWORD"),
+            ],
+            &mut reader.problems,
+        );
         let signer_file = reader.optional_raw("JWT_SIGNING_KEY_FILE");
         let signer_kid = reader.optional_raw("JWT_SIGNING_KID");
         let own_issuer = reader.optional("JWT_OWN_ISSUER", API_ISSUER, |v| Ok(v.to_owned()));
@@ -556,6 +580,7 @@ impl Config {
                     .unwrap_or(crate::auth::password::DEFAULT_MEMORY_KIB),
                 token_signer,
                 mail,
+                umami,
                 deepl,
             }),
             _ => Err(ConfigError {
@@ -756,6 +781,35 @@ fn parse_http_url(value: &str, environment: Environment) -> Result<String, Strin
         return Err("must not contain credentials".to_owned());
     }
     Ok(value.to_owned())
+}
+
+/// The four Umami variables, or none.
+fn parse_umami(values: [Option<String>; 4], problems: &mut Vec<String>) -> Option<UmamiConfig> {
+    match values {
+        [None, None, None, None] => None,
+        [Some(url), Some(website_id), Some(username), Some(password)] => {
+            match parse_url_scheme(&url, &["http", "https"]) {
+                Ok(()) => Some(UmamiConfig {
+                    url: url.trim_end_matches('/').to_owned(),
+                    website_id,
+                    username,
+                    password: Secret::new(password),
+                }),
+                Err(message) => {
+                    problems.push(format!("UMAMI_URL: {message}"));
+                    None
+                }
+            }
+        }
+        _ => {
+            problems.push(
+                "UMAMI_URL, UMAMI_WEBSITE_ID, UMAMI_USERNAME and UMAMI_PASSWORD: \
+                 set all four or none"
+                    .to_owned(),
+            );
+            None
+        }
+    }
 }
 
 /// Both the URL and the secret, or neither.
@@ -1203,6 +1257,24 @@ mod tests {
             problems[1],
             "MAIL_SMTP_URL: must start with smtp:// or smtps://"
         );
+    }
+
+    #[test]
+    fn umami_needs_its_four_variables() {
+        let config = with(&[]).unwrap();
+        assert_eq!(config.umami, None);
+        let config = with(&[
+            ("UMAMI_URL", "http://127.0.0.1:3001/"),
+            ("UMAMI_WEBSITE_ID", "site"),
+            ("UMAMI_USERNAME", "admin"),
+            ("UMAMI_PASSWORD", "secret"),
+        ])
+        .unwrap();
+        let umami = config.umami.unwrap();
+        assert_eq!(umami.url, "http://127.0.0.1:3001");
+        assert_eq!(umami.password.expose(), "secret");
+        let error = with(&[("UMAMI_URL", "http://127.0.0.1:3001")]).unwrap_err();
+        assert!(error.problems[0].contains("set all four or none"));
     }
 
     #[test]

@@ -175,6 +175,39 @@ pub fn client_ip(parts: &Parts) -> Option<IpAddr> {
     })
 }
 
+/// The body limit of a request: `BODY_LIMIT_BYTES`, except for the two
+/// admin uploads, which have Laravel's (`routes::admin::exams`). A declared
+/// length over it is refused before reading; a body that grows over it
+/// fails while it is read (413 either way).
+pub async fn body_limit(
+    axum::extract::State(state): axum::extract::State<crate::state::AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    use crate::routes::admin::exams;
+    let path = request.uri().path();
+    let limit = if request.method() != axum::http::Method::POST {
+        state.config.body_limit_bytes
+    } else if path == "/v1/admin/exams" {
+        exams::UPLOAD_BODY_LIMIT
+    } else if path.starts_with("/v1/admin/exams/") && path.ends_with("/import") {
+        exams::IMPORT_BODY_LIMIT
+    } else {
+        state.config.body_limit_bytes
+    };
+    let declared = request
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|n| n > limit as u64) {
+        return ApiError::PayloadTooLarge.into_response();
+    }
+    let (parts, body) = request.into_parts();
+    let body = axum::body::Body::new(http_body_util::Limited::new(body, limit));
+    next.run(Request::from_parts(parts, body)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

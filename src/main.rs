@@ -61,7 +61,9 @@ async fn main() -> ExitCode {
 
 const USAGE: &str = "usage: pulsars-api [migrate | create-admin <pseudo> <email> \
                      | import-content <old database url> <author pseudo> \
-                     | webhooks replay <event_id> | jwt-keygen <kid> <dir>]";
+                     | webhooks replay <event_id> | jwt-keygen <kid> <dir> \
+                     | content check [--lang en] | content fix <file.json> [--dry-run] \
+                     | content translate [--lang en] [--force] [--limit N]]";
 
 /// `pulsars-api jwt-keygen <kid> <dir>`: writes a new Ed25519 seed to
 /// `<dir>/<kid>.key` (mode 0600, never over an existing file), in the format
@@ -114,6 +116,7 @@ async fn command(config: &Config, args: &[String]) -> ExitCode {
         [command, source, author] if command == "import-content" => {
             return import_content_command(config, source, author).await;
         }
+        [command, rest @ ..] if command == "content" => return content_command(config, rest).await,
         _ => {}
     }
     let [group, action, event_id] = args else {
@@ -228,6 +231,136 @@ async fn import_content_command(config: &Config, source: &str, author: &str) -> 
             ExitCode::FAILURE
         }
     }
+}
+
+/// `pulsars-api content check|fix|translate` (`pulsars_api::content`).
+async fn content_command(config: &Config, args: &[String]) -> ExitCode {
+    let mut lang = "en".to_owned();
+    let mut dry_run = false;
+    let mut force = false;
+    let mut limit = None;
+    let mut positional = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--lang" => match rest.next() {
+                Some(value) => lang.clone_from(value),
+                None => return usage(),
+            },
+            "--dry-run" => dry_run = true,
+            "--force" => force = true,
+            "--limit" => match rest.next().and_then(|v| v.parse::<usize>().ok()) {
+                Some(n) => limit = Some(n),
+                None => return usage(),
+            },
+            other if other.starts_with("--") => return usage(),
+            other => positional.push(other),
+        }
+    }
+    let pool = match db::connect_lazy(config) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("invalid DATABASE_URL: {error}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    match positional.as_slice() {
+        ["check"] => match pulsars_api::content::check(&pool, &lang).await {
+            Ok(check) => {
+                println!(
+                    "{} courses, {} exercises, {} exams, {} resources checked.",
+                    check.courses, check.exercises, check.exams, check.resources
+                );
+                if check.problems.is_empty() {
+                    println!("No problem.");
+                    return ExitCode::SUCCESS;
+                }
+                for problem in &check.problems {
+                    println!("  - {problem}");
+                }
+                eprintln!("{} problem(s).", check.problems.len());
+                ExitCode::FAILURE
+            }
+            Err(error) => {
+                eprintln!("database error: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        ["fix", file] => {
+            let parsed = std::fs::read(file)
+                .map_err(|e| format!("{file}: {e}"))
+                .and_then(|bytes| {
+                    serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|_| {
+                        "unreadable file: {\"corrections\": [...]} expected".to_owned()
+                    })
+                });
+            let fixed = match parsed {
+                Ok(value) => pulsars_api::content::fix(&pool, &value, dry_run).await,
+                Err(error) => Err(error),
+            };
+            match fixed {
+                Ok(fixed) => {
+                    let verb = if dry_run { "Valid" } else { "Applied" };
+                    println!("{verb}: {}", fixed.applied);
+                    for refused in &fixed.refused {
+                        println!("  - {refused}");
+                    }
+                    if fixed.refused.is_empty() {
+                        ExitCode::SUCCESS
+                    } else {
+                        eprintln!("{} element(s) refused.", fixed.refused.len());
+                        ExitCode::FAILURE
+                    }
+                }
+                Err(error) => {
+                    eprintln!("content fix: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        ["translate"] => {
+            let Some(deepl) = config.deepl.clone() else {
+                eprintln!("content translate: DEEPL_API_KEY is not set");
+                return ExitCode::from(EXIT_CONFIG);
+            };
+            let deepl = match pulsars_api::deepl::Deepl::new(deepl) {
+                Ok(deepl) => deepl,
+                Err(error) => {
+                    eprintln!("content translate: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut log = |line: String| println!("{line}");
+            match pulsars_api::content::translate(&pool, &deepl, &lang, force, limit, &mut log)
+                .await
+            {
+                Ok(done) => {
+                    if done.limited {
+                        println!("Limit reached.");
+                    }
+                    println!(
+                        "Translated: {}   Up to date: {}   Failed: {}",
+                        done.translated, done.up_to_date, done.failed
+                    );
+                    if done.failed > 0 {
+                        ExitCode::FAILURE
+                    } else {
+                        ExitCode::SUCCESS
+                    }
+                }
+                Err(error) => {
+                    eprintln!("content translate: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        _ => usage(),
+    }
+}
+
+fn usage() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(EXIT_USAGE)
 }
 
 /// `pulsars-api migrate`: applies the embedded migrations, then exits.

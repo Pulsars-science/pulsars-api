@@ -340,16 +340,17 @@ variable the API reads is in the file:
 | `JWT_SIGNING_KEY_FILE`, `JWT_SIGNING_KID` | unset | the API's game-token key (`pulsars-api jwt-keygen <kid> <dir>`), mode 0600 enforced in production; unset: `POST /v1/auth/token` answers 503 |
 | `MAIL_SMTP_URL` | unset | account mails (`smtp://` or `smtps://user:pass@host:port`, the site's SMTP account); unset: mails are only logged, without their link |
 | `MAIL_FROM` | `Pulsars <noreply@blackenium.com>` | sender of account mails |
-| `DEEPL_API_KEY` | unset | DeepL's key, to translate forum posts; unset: the translation routes answer 503 `not_configured` |
+| `DEEPL_API_KEY` | unset | DeepL's key, to translate forum posts and for `pulsars-api content translate`; unset: the translation routes answer 503 `not_configured` and the command refuses to run |
 | `DEEPL_API_URL` | `https://api-free.deepl.com` | `https://api.deepl.com` for a paid plan; https only in production |
 | `DEEPL_LANGUAGES` | `fr=FR,en=EN-GB,ru=RU` | the site's languages and DeepL's `target_lang` for each |
+| `UMAMI_URL`, `UMAMI_WEBSITE_ID`, `UMAMI_USERNAME`, `UMAMI_PASSWORD` | unset | the Umami instance read by the admin dashboard (audience, visitors, popular pages), all four or none; unset: the dashboard says it is not configured |
 | `JWT_OWN_ISSUER` | `https://api.pulsars.science` | `iss` of the tokens the API signs |
 | `JWT_TOKEN_TTL_SECS` | `300` | lifetime of those tokens, 60 to 3600 |
 | `SERVICE_KEY` | unset | the site's key (`PULSARS_API_SERVICE_KEY` in Laravel), at least 32 characters; its calls are not rate limited |
 | `MESSAGES_KEY` | `openssl rand -base64 32` | **required in production**: the AES-256-GCM key of private messages, 32 bytes in base64; secret, keep a copy with the backups' secrets (without it, stored messages cannot be read); unset in development: the `/v1/conversations` routes answer 503 |
 | `MESSAGES_KEY_VERSION` | `1` | stored with each private message, 1 to 32767, for a later key rotation |
 | `REQUEST_TIMEOUT_SECS` | `10` | below nginx's `proxy_read_timeout` (30 s) |
-| `BODY_LIMIT_BYTES` | `65536` | below nginx's `client_max_body_size` (256k) |
+| `BODY_LIMIT_BYTES` | `65536` | below nginx's `client_max_body_size` (256k); two admin routes have their own limits, Laravel's (`POST /v1/admin/exams`, a PDF of 20 MiB: 21 MiB; `POST /v1/admin/exams/{slug}/import`: 16 MiB), so the proxy in front of the site must let 21 MiB through on those paths |
 | `LOG_FORMAT` | `json` | |
 | `RUST_LOG` | `info,sqlx=warn,tower_http=info` | |
 | `SHUTDOWN_GRACE_SECS` | `20` | below the unit's `TimeoutStopSec` (30) |

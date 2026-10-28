@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod cli;
 pub mod config;
+pub mod content;
 pub mod crypto;
 pub mod db;
 pub mod deepl;
@@ -21,3 +22,4 @@ pub mod redis;
 pub mod routes;
 pub mod state;
 pub mod telemetry;
+pub mod umami;

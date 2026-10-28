@@ -1,6 +1,7 @@
 //! Route tree and middleware stack.
 
 pub mod account;
+pub mod admin;
 pub mod auth;
 pub mod courses;
 pub mod cursor;
@@ -23,17 +24,17 @@ pub mod token;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{OriginalUri, Request};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use tower::ServiceBuilder;
 use tower_http::LatencyUnit;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
-use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
@@ -245,8 +246,108 @@ pub fn router(state: AppState) -> Router {
         .route("/.well-known/jwks.json", get(token::jwks))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // The administration (`admin`): called by the site from its server, like
+    // `/v1/auth/*`. Its two uploads have their own body limits, Laravel's
+    // (`mw::body_limit`).
+    let admin_json = Router::new()
+        .route("/v1/admin/stats", get(admin::dashboard::dashboard))
+        .route("/v1/admin/pending", get(admin::dashboard::pending))
+        .route(
+            "/v1/admin/settings/donation-goal",
+            get(admin::dashboard::donation_goal).put(admin::dashboard::set_donation_goal),
+        )
+        .route("/v1/admin/game/stats", get(admin::dashboard::game_stats))
+        .route(
+            "/v1/admin/languages/stats",
+            get(admin::dashboard::language_stats),
+        )
+        .route(
+            "/v1/admin/news",
+            get(admin::news::list).post(admin::news::create),
+        )
+        .route(
+            "/v1/admin/news/{slug}",
+            put(admin::news::update).delete(admin::news::delete),
+        )
+        .route("/v1/admin/news/{slug}/publish", post(admin::news::publish))
+        .route(
+            "/v1/admin/news/{slug}/unpublish",
+            post(admin::news::unpublish),
+        )
+        .route(
+            "/v1/admin/courses",
+            get(admin::courses::list).post(admin::courses::create),
+        )
+        .route("/v1/admin/courses/{slug}", delete(admin::courses::delete))
+        .route(
+            "/v1/admin/courses/{slug}/publish",
+            post(admin::courses::publish),
+        )
+        .route(
+            "/v1/admin/courses/{slug}/unpublish",
+            post(admin::courses::unpublish),
+        )
+        .route(
+            "/v1/admin/courses/{slug}/archive",
+            post(admin::courses::archive),
+        )
+        .route("/v1/admin/exams", get(admin::exams::list))
+        .route("/v1/admin/exams/{slug}", delete(admin::exams::delete))
+        .route(
+            "/v1/admin/exams/{slug}/publish",
+            post(admin::exams::publish),
+        )
+        .route(
+            "/v1/admin/exams/{slug}/unpublish",
+            post(admin::exams::unpublish),
+        )
+        .route("/v1/admin/resource-requests", get(admin::requests::list))
+        .route(
+            "/v1/admin/resource-requests/{id}/accept",
+            post(admin::requests::accept),
+        )
+        .route(
+            "/v1/admin/resource-requests/{id}/reject",
+            post(admin::requests::reject),
+        )
+        .route("/v1/admin/members", get(admin::roles::list))
+        .route(
+            "/v1/admin/members/{id}/roles/{slug}",
+            put(admin::roles::grant).delete(admin::roles::revoke),
+        )
+        .route("/v1/admin/reports", get(admin::queues::reports))
+        .route("/v1/admin/reports/{id}", patch(admin::queues::file_report))
+        .route("/v1/admin/suggestions", get(admin::queues::suggestions))
+        .route(
+            "/v1/admin/suggestions/{id}",
+            patch(admin::queues::file_suggestion),
+        )
+        .layer(from_fn(public::require_json));
+    // PDF, not JSON: no `Accept` check.
+    let admin_files = Router::new()
+        .route("/v1/admin/exams/{slug}/pdf", get(admin::exams::pdf))
+        .route(
+            "/v1/admin/resource-requests/{id}/file",
+            get(admin::requests::preview),
+        );
+    let admin_upload = Router::new()
+        .route("/v1/admin/exams", post(admin::exams::create))
+        .layer(from_fn(public::require_json))
+        .layer(DefaultBodyLimit::disable());
+    let admin_import = Router::new()
+        .route("/v1/admin/exams/{slug}/import", post(admin::exams::import))
+        .layer(from_fn(public::require_json))
+        .layer(DefaultBodyLimit::max(admin::exams::IMPORT_BODY_LIMIT));
+    let admin_uploads = admin_upload
+        .merge(admin_import)
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+    let admin = admin_json
+        .merge(admin_files)
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(admin)
         .merge(auth)
         .merge(forum)
         .merge(game_token)
@@ -258,6 +359,7 @@ pub fn router(state: AppState) -> Router {
         .merge(languages_events)
         .merge(authenticated)
         .merge(social::router(&state))
+        .merge(admin_uploads)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.
@@ -304,7 +406,7 @@ pub fn router(state: AppState) -> Router {
                 .layer(HandleErrorLayer::new(mw::handle_timeout))
                 .timeout(config.request_timeout)
                 .layer(from_fn(mw::problem_for_bare_errors))
-                .layer(RequestBodyLimitLayer::new(config.body_limit_bytes)),
+                .layer(from_fn_with_state(state.clone(), mw::body_limit)),
         )
         .with_state(state)
 }

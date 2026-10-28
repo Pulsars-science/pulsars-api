@@ -11,6 +11,7 @@
 pub mod sources;
 
 pub mod accounts;
+pub mod admin_stats;
 pub mod conversations;
 pub mod courses;
 pub mod email_tokens;

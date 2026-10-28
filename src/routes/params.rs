@@ -270,7 +270,7 @@ impl Filters {
 
 /// `%value%`, with the `LIKE` metacharacters of `value` escaped (backslash is
 /// PostgreSQL's default `LIKE` escape character).
-fn like_pattern(value: &str) -> String {
+pub(crate) fn like_pattern(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('%');
     for c in value.chars() {
