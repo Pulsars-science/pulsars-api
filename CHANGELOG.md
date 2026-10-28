@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-28
+
+### Upgrading
+
+Not a plain `deploy-api`: 0.3.0 reads the `contenu` schema that
+`deploy/sql/phase-1.sql` creates, and migrates as `pulsars_migrate`. Follow
+`deploy/sql/README.md`: the site's `DB_SEARCH_PATH`, the script (from this
+archive's `sql/`), `pg_hba.conf` and `/etc/pulsars-api/migrate.env`, then
+`deploy-api`, which stops before the switch if anything is missing or if
+`check-content` finds a difference. 0.2.0 keeps serving in between.
+
 ### Added
 
 - `GET /v1/exams/{slug}/pdf` and `GET /v1/resources/{slug}/file`: the
@@ -70,6 +81,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   generated), no longer a hand-written stand-in with only the columns the
   views read. Local and CI databases now have every table and constraint the
   site has; the demo data gained the forum theme a question requires.
+
+### Security
+
+- Dependencies with RustSec advisories published after 0.2.0 updated:
+  tokio 1.54.1 (RUSTSEC-2026-0386), rustls-webpki 0.103.16
+  (RUSTSEC-2026-0382), webpki-roots and webpki-root-certs 1.0.11
+  (RUSTSEC-2026-0381, -0383), ctutils 0.4.6 (RUSTSEC-2026-0385).
 
 ### Fixed
 
@@ -231,6 +249,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `GET /healthz` answers 503 (`down`) until Laravel's JWKS has been loaded
   once.
 
-[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Pulsars-science/pulsars-api/releases/tag/v0.1.0
