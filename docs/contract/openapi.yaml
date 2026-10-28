@@ -1557,7 +1557,6 @@ paths:
                     - { subject: all, players: 3 }
                     - { subject: chemistry, players: 1 }
                     - { subject: computer-science, players: 0 }
-                webhook: { pending: 0, dead: 0 }
                 seasons:
                   - { month: '2026-09', subject: maths, ranked_players: 6, closed_at: '2026-10-01T00:00:12Z' }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -5117,8 +5116,8 @@ components:
         xp:
           type: object
           description: |
-            Computed exactly like `App\Services\Experience::pour()`. See
-            `webhooks.md` for the scale.
+            Computed exactly like `App\Services\Experience::pour()` (the view
+            `site.member_xp`): level `n` starts at `50 × (n − 1) × n` XP.
           required: [total, level, level_start, next_level_at]
           properties:
             total: { type: integer }
@@ -5198,7 +5197,7 @@ components:
     GameAdminStats:
       type: object
       description: See `game-protocol.md` §9.1. All times UTC.
-      required: [generated_at, live, today, daily, subjects, rules, quality, ratings, webhook, seasons]
+      required: [generated_at, live, today, daily, subjects, rules, quality, ratings, seasons]
       properties:
         generated_at: { type: string, format: date-time }
         live:
@@ -5278,13 +5277,6 @@ components:
                 properties:
                   subject: { $ref: '#/components/schemas/GameSubject' }
                   players: { type: integer, minimum: 0 }
-        webhook:
-          type: object
-          description: Results webhook outbox, now.
-          required: [pending, dead]
-          properties:
-            pending: { type: integer, minimum: 0 }
-            dead: { type: integer, minimum: 0 }
         seasons:
           type: array
           description: The last 12 closed season rows, newest month first.

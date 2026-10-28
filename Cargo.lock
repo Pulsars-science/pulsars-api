@@ -1792,7 +1792,6 @@ dependencies = [
  "fred",
  "futures-util",
  "getrandom 0.4.3",
- "hmac",
  "http-body-util",
  "lettre",
  "metrics",

@@ -181,8 +181,8 @@ impl Mode {
         }
     }
 
-    /// Value of the webhook's `data.mode`.
-    pub fn webhook_key(self) -> &'static str {
+    /// Value of `site.game_results.mode`, as the site has always stored it.
+    pub fn result_key(self) -> &'static str {
         match self {
             Mode::Duel => "flash-duel",
             Mode::Room => "flash-room",

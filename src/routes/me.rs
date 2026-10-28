@@ -56,7 +56,7 @@ pub struct Xp {
 }
 
 impl Xp {
-    /// Level `n` starts at `50 × (n − 1) × n` XP (`webhooks.md` §5). The
+    /// Level `n` starts at `50 × (n − 1) × n` XP (`Experience::seuil`). The
     /// level itself comes from `site.member_xp`.
     pub fn new(total: i32, level: i32) -> Self {
         let level = i64::from(level.max(1));

@@ -18,7 +18,6 @@ and the gap is listed in the "Known gaps" section of the relevant document.
 |---|---|---|
 | [`openapi.yaml`](openapi.yaml) | Public read endpoints (`/v1/*`, `/healthz`), OpenAPI 3.1, with real examples | `pulsars-api` |
 | [`auth-jwt.md`](auth-jwt.md) | The game token: format, claims, issuing endpoint, JWKS, key rotation, errors | Laravel issues, `pulsars-api` verifies |
-| [`webhooks.md`](webhooks.md) | Match results sent from the API to Laravel: signature, idempotency, retries, current XP rules | `pulsars-api` sends, Laravel receives |
 | [`database.md`](database.md) | Schemas, roles, exposed column dictionary | both |
 | [`views.sql`](views.sql) | The `api_read` schema: one view per exposed resource | Laravel migration creates it |
 | [`postgres-migration.md`](postgres-migration.md) | Plan to move production from MySQL to PostgreSQL (not executed) | ops |
@@ -26,7 +25,7 @@ and the gap is listed in the "Known gaps" section of the relevant document.
 | [`laravel-tasks.md`](laravel-tasks.md) | What the Laravel repository must implement for the API to work | Laravel |
 
 Reading order for someone building `pulsars-api`: this README, `database.md`,
-`views.sql`, `openapi.yaml`, `auth-jwt.md`, `webhooks.md`, `game-design.md`.
+`views.sql`, `openapi.yaml`, `auth-jwt.md`, `brains.md`, `game-design.md`.
 
 ## Request flow
 
@@ -37,9 +36,8 @@ pulsars.science/jeux ──(1) POST /jeu/jeton, session cookie──▶ pulsars.
                                                  │ verifies with JWKS
                                                  │ (https://pulsars.science/.well-known/jwks.json)
                                                  │ reads site data via api_read views
-                                                 │ writes matches to game schema
-                                                 └─(4) signed webhook (private network) ──▶ pulsars.science
-                                                                                            computes XP
+                                                 │ writes matches to game schema, and
+                                                 └─(4) the results and brains to site, in the same transaction
 ```
 
 ## Glossary
@@ -60,7 +58,7 @@ table maps both.
 | **domain / subject / topic** | *(target taxonomy)* | The target three-level catalogue: domain (pôle, e.g. "Sciences"), subject (matière, e.g. "Mathématiques"), topic (thème, e.g. "Analyse"). **Not implemented**: today a course has a single free-text `theme` string, usually `"<Subject> – <Topic>"`. The API derives subject and topic from it. There is no domain level. See `database.md`. |
 | **member** | `User` | A Pulsars account. Its public face is the pseudo, avatar, bio and roles. |
 | **role** | `Role`, tables `roles`, `role_user` | Three categories: `permission` (`moderateur` < `admin` < `super-admin`), `matiere` (declared interests), `distinction` (badges). |
-| **XP / level** | `App\Services\Experience` | Experience points, **computed** from activity, never stored. See `webhooks.md`. |
+| **XP / level** | `App\Services\Experience` | Experience points, **computed** from activity, never stored (the view `site.member_xp`). |
 
 ## General conventions
 

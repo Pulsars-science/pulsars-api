@@ -44,7 +44,6 @@ pub struct Stats {
     pub rules: Vec<RulesCount>,
     pub quality: Quality,
     pub ratings: Ratings,
-    pub webhook: Webhook,
     pub seasons: Vec<Season>,
 }
 
@@ -141,12 +140,6 @@ pub struct Ratings {
 pub struct SubjectPlayers {
     pub subject: &'static str,
     pub players: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Webhook {
-    pub pending: i64,
-    pub dead: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -279,8 +272,6 @@ pub struct Recorded {
     pub rated_players: i64,
     pub provisional_players: i64,
     pub rated_by_subject: Vec<(String, i64)>,
-    pub webhook_pending: i64,
-    pub webhook_dead: i64,
     pub seasons: Vec<SeasonRow>,
 }
 
@@ -421,13 +412,6 @@ async fn read(
             .fetch_all(&mut **tx)
             .await?;
 
-    let (webhook_pending, webhook_dead): (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM game.webhook_outbox WHERE status = 'pending'),
-                (SELECT count(*) FROM game.webhook_outbox WHERE status = 'dead')",
-    )
-    .fetch_one(&mut **tx)
-    .await?;
-
     let seasons: Vec<SeasonRow> = sqlx::query_as(
         "SELECT month, subject, jsonb_array_length(standings)::bigint AS ranked_players,
                 closed_at
@@ -451,8 +435,6 @@ async fn read(
         rated_players,
         provisional_players,
         rated_by_subject,
-        webhook_pending,
-        webhook_dead,
         seasons,
     })
 }
@@ -567,10 +549,6 @@ pub fn assemble(
                 .into_iter()
                 .map(|(subject, players)| SubjectPlayers { subject, players })
                 .collect(),
-        },
-        webhook: Webhook {
-            pending: recorded.webhook_pending,
-            dead: recorded.webhook_dead,
         },
         seasons: recorded
             .seasons
@@ -851,8 +829,6 @@ mod tests {
             rated_players: 25,
             provisional_players: 18,
             rated_by_subject: vec![("maths".to_owned(), 20)],
-            webhook_pending: 2,
-            webhook_dead: 1,
             seasons: vec![SeasonRow {
                 month: "2026-09".to_owned(),
                 subject: "maths".to_owned(),
@@ -898,7 +874,6 @@ mod tests {
             json["ratings"]["by_subject"].as_array().map(Vec::len),
             Some(5)
         );
-        assert_eq!(json["webhook"], json!({"pending": 2, "dead": 1}));
         assert_eq!(
             json["seasons"],
             json!([{"month": "2026-09", "subject": "maths", "ranked_players": 4,

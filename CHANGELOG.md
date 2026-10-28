@@ -63,6 +63,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Removed
 
 - `pulsars-api check-content` and `deploy-api --no-content-check`.
+- The results webhook to Laravel: a match end now writes `site.game_results`
+  and the players' brains in its own transaction, and a season close
+  credits its rewards. `game.webhook_outbox`, `game.seasons.event_id`,
+  `site.game_results.game_event_id`, `LARAVEL_WEBHOOK_*`,
+  `pulsars-api webhooks replay`, the `webhook_*` metrics, the `webhook`
+  field of `GET /v1/game/admin/stats` and `docs/contract/webhooks.md` are
+  gone (migration `20261102000000_members`).
 
 ## [0.5.0] - 2026-10-29
 

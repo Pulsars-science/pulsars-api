@@ -1,5 +1,5 @@
 name: Contract change
-description: Propose a change to docs/contract/ (OpenAPI, JWT, webhooks, views).
+description: Propose a change to docs/contract/ (OpenAPI, JWT, brains, views).
 labels: [contract]
 body:
   - type: markdown
@@ -15,7 +15,7 @@ body:
       options:
         - openapi.yaml
         - auth-jwt.md
-        - webhooks.md
+        - brains.md
         - database.md / views.sql
         - game-design.md
         - other

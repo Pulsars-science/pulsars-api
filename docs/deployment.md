@@ -60,7 +60,7 @@ Laravel's JWKS has been loaded once.
 | P5 | A **release** of this repository built by CI (a `vX.Y.Z` tag on `main`) | none | the GitHub release page lists `pulsars-api-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` and its `.sha256` |
 
 Also useful, not blocking: A4 (token endpoint) is what makes `/v1/me` usable
-by the game front end. A5 and A6 (webhooks, XP) only matter from Phase 5.
+by the game front end. A5 and A6 (the results webhook) are obsolete: the API credits results itself.
 
 The server itself must be **x86_64** with **glibc 2.39 or newer** (CI builds
 on Ubuntu 24.04; Ubuntu 26.04 is newer, so this holds). Check once:

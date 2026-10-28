@@ -41,7 +41,9 @@ Laravel code differs.
 3. The front end opens the WebSocket to the API; the API verifies the JWT
    with Laravel's public key (JWKS).
 4. Matchmaking in Redis, match arbitrated by the API, match stored in `game`.
-5. End: HMAC-signed webhook API → Laravel, which awards the XP.
+5. End: the API writes the match, the ratings, the players' results
+   (`site.game_results`, from which XP is computed) and their brains in one
+   transaction.
 
 ## Data ownership
 
@@ -49,7 +51,7 @@ Laravel code differs.
 |---|---|---|
 | Accounts, profiles | Laravel | API (token) |
 | Courses, exercises, exams | Laravel | API, read-only |
-| XP, guilds, badges | Laravel | API sends the results |
+| XP, brains | API (results, brains ledger) | API |
 | Matches, Elo, rankings | API | Laravel through `/v1/game` |
 | Queues, live state | API (Redis) | — |
 
@@ -58,7 +60,7 @@ Laravel code differs.
 - No service writes into the other's schema.
 - The public API never exposes solutions or expected answers.
 - Players' code never runs on Pulsars' machine.
-- `/metrics`, webhooks and PostgreSQL stay on the private network.
+- `/metrics` and PostgreSQL stay on the private network.
 - JSON logs everywhere, and the `traceparent` header is propagated.
 
 ## Later: observability

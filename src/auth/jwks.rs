@@ -321,7 +321,7 @@ impl Jwks {
     }
 }
 
-/// An HTTP client (JWKS, webhooks): rustls with the `ring` provider and the
+/// An HTTP client (JWKS): rustls with the `ring` provider and the
 /// Mozilla roots (`webpki-roots`, as sqlx does), no redirects, short
 /// timeouts.
 pub(crate) fn http_client(

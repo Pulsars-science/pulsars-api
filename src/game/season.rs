@@ -6,9 +6,8 @@
 //! 1. the **standings**: accounts with at least [`MIN_RANKED_MATCHES`]
 //!    ranked matches ended in the month in that subject, by current rating
 //!    (desc), then more ranked matches in the month, then lower `user_id`;
-//! 2. a `season.ended` row in the webhook outbox, when the standings are not
-//!    empty (delivered by [`super::webhook`]);
-//! 3. the **decay** of every rating of the subject ([`decay`]);
+//! 2. the **decay** of every rating of the subject ([`decay`]);
+//! 3. the **rewards** of the standings, in brains ([`crate::db::brains`]);
 //! 4. the `game.seasons` row, whose primary key `(month, subject)` makes the
 //!    close happen once.
 //!
@@ -19,14 +18,13 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike as _, NaiveDate, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike as _, NaiveDate, Utc};
 use serde::Serialize;
-use serde_json::{Value, json};
 use sqlx::types::Json;
 use sqlx::{Connection as _, PgConnection, PgPool};
-use uuid::Uuid;
 
 use super::rules::{SUBJECT_KEYS, SubjectKey};
+use crate::db::brains;
 use crate::telemetry::names;
 
 /// Ranked matches in the month needed to appear in the standings.
@@ -121,7 +119,7 @@ pub fn decay(rating: f64, rd: f64) -> (f64, f64) {
     )
 }
 
-/// A line of the standings, as sent in `season.ended`.
+/// A line of the standings, as kept in `game.seasons.standings`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Standing {
     pub user_id: String,
@@ -134,35 +132,14 @@ pub struct Standing {
 /// What closing a month did for a subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Close {
-    /// Closed now. `event_id` is the `season.ended` outbox row, `None` when
-    /// the standings are empty (no event).
+    /// Closed now. `rewarded` is the number of accounts credited (an
+    /// account deleted since the month ended is not).
     Closed {
         standings: Vec<Standing>,
-        event_id: Option<Uuid>,
+        rewarded: usize,
     },
     /// Already closed earlier (or by another instance): nothing changed.
     AlreadyClosed,
-}
-
-/// The `season.ended` event (`brains.md` §3).
-pub fn event_body(
-    event_id: Uuid,
-    month: Month,
-    subject: SubjectKey,
-    standings: &[Standing],
-    occurred_at: DateTime<Utc>,
-) -> Value {
-    json!({
-        "event_id": event_id.to_string(),
-        "type": "season.ended",
-        "version": 1,
-        "occurred_at": occurred_at.to_rfc3339_opts(SecondsFormat::Secs, true),
-        "data": {
-            "season": month.key(),
-            "subject": subject.key(),
-            "standings": standings,
-        },
-    })
 }
 
 /// Closes `month` for `subject` in one transaction on `conn` (a savepoint
@@ -229,24 +206,7 @@ pub async fn close_month(
         })
         .collect();
 
-    // 2. The event, only for a non-empty standing.
-    let event_id = if standings.is_empty() {
-        None
-    } else {
-        let event_id = Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO game.webhook_outbox
-                    (event_id, type, body, status, attempts, next_attempt_at, created_at)
-             VALUES ($1, 'season.ended', $2, 'pending', 0, now(), now())",
-        )
-        .bind(event_id)
-        .bind(Json(event_body(event_id, month, subject, &standings, now)))
-        .execute(&mut *tx)
-        .await?;
-        Some(event_id)
-    };
-
-    // 3. Decay. Rows are locked in `user_id` order first, the order a match
+    // 2. Decay. Rows are locked in `user_id` order first, the order a match
     // end locks them in, so the two cannot deadlock.
     sqlx::query("SELECT 1 FROM game.ratings WHERE subject = $1 ORDER BY user_id FOR UPDATE")
         .bind(subject.key())
@@ -269,18 +229,33 @@ pub async fn close_month(
     .await?
     .rows_affected();
 
+    // 3. Rewards, as Laravel's `Cerveaux::crediterSaison`, once per member
+    // and subject (`saison:<month>:<subject>`). In `user_id` order, the
+    // order a match end locks accounts in.
+    let mut by_account: Vec<(i64, i64)> = standings
+        .iter()
+        .filter_map(|s| s.user_id.parse().ok().map(|id| (id, s.rank)))
+        .collect();
+    by_account.sort_unstable();
+    let mut rewarded = 0;
+    for (user_id, rank) in by_account {
+        if brains::credit_season(&mut tx, user_id, &month_key, subject.key(), rank, now).await? > 0
+        {
+            rewarded += 1;
+        }
+    }
+
     // 4. The month is closed. The advisory lock makes a conflict impossible;
     // should one happen anyway, everything above is rolled back.
     let inserted = sqlx::query(
-        "INSERT INTO game.seasons (month, subject, closed_at, standings, event_id)
-         VALUES ($1, $2, $3, $4, $5)
+        "INSERT INTO game.seasons (month, subject, closed_at, standings)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (month, subject) DO NOTHING",
     )
     .bind(&month_key)
     .bind(subject.key())
     .bind(now)
     .bind(Json(&standings))
-    .bind(event_id)
     .execute(&mut *tx)
     .await?
     .rows_affected();
@@ -296,12 +271,12 @@ pub async fn close_month(
         subject = subject.key(),
         ranked_players = standings.len(),
         ratings_decayed = decayed,
-        event_id = ?event_id,
+        rewarded,
         "duel season closed"
     );
     Ok(Close::Closed {
         standings,
-        event_id,
+        rewarded,
     })
 }
 
@@ -394,48 +369,5 @@ mod tests {
             r = decay(r, 50.0).0;
         }
         assert!((r - 1500.0).abs() < 1.0, "{r}");
-    }
-
-    #[test]
-    fn the_event_matches_the_contract() {
-        let id = Uuid::nil();
-        let standings = vec![
-            Standing {
-                user_id: "2".to_owned(),
-                rank: 1,
-                rating: 1720,
-                ranked_matches: 7,
-            },
-            Standing {
-                user_id: "1".to_owned(),
-                rank: 2,
-                rating: 1280,
-                ranked_matches: 5,
-            },
-        ];
-        let body = event_body(
-            id,
-            Month::new(2026, 10).expect("valid month"),
-            SubjectKey::parse("maths").expect("subject"),
-            &standings,
-            at("2026-11-01T00:00:04.6Z"),
-        );
-        assert_eq!(
-            body,
-            json!({
-                "event_id": "00000000-0000-0000-0000-000000000000",
-                "type": "season.ended",
-                "version": 1,
-                "occurred_at": "2026-11-01T00:00:04Z",
-                "data": {
-                    "season": "2026-10",
-                    "subject": "maths",
-                    "standings": [
-                        {"user_id": "2", "rank": 1, "rating": 1720, "ranked_matches": 7},
-                        {"user_id": "1", "rank": 2, "rating": 1280, "ranked_matches": 5},
-                    ],
-                },
-            })
-        );
     }
 }

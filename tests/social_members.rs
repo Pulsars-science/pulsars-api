@@ -152,10 +152,9 @@ async fn the_profile_shows_the_experience_and_the_forum_activity() {
     }
     for i in 0..8 {
         sqlx::query(
-            "INSERT INTO site.game_results (game_event_id, match_id, user_id, mode, ranked, outcome, ended_at)
-             VALUES ($1, $2, $3, 'duel', true, $4, '2026-10-20 12:00:00')",
+            "INSERT INTO site.game_results (match_id, user_id, mode, ranked, outcome, ended_at)
+             VALUES ($1, $2, 'duel', true, $3, '2026-10-20 12:00:00')",
         )
-        .bind(i64::from(i))
         .bind(uuid::Uuid::new_v4())
         .bind(alice.id)
         .bind(if i < 2 { "win" } else { "loss" })

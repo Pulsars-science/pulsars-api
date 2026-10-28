@@ -470,12 +470,11 @@ async fn admin_stats_count_live_and_finished_matches() {
         "rules",
         "quality",
         "ratings",
-        "webhook",
         "seasons",
     ] {
         assert!(keys.contains(&key), "{key} missing: {default}");
     }
-    assert_eq!(keys.len(), 10, "{keys:?}");
+    assert_eq!(keys.len(), 9, "{keys:?}");
     assert_eq!(
         default["live"],
         json!({"sessions": 0, "guests": 0, "queued": 0, "rooms_open": 0,
@@ -513,9 +512,6 @@ async fn admin_stats_count_live_and_finished_matches() {
         default["ratings"]["by_subject"].as_array().unwrap().len(),
         5
     );
-    for field in ["pending", "dead"] {
-        assert!(default["webhook"][field].is_i64());
-    }
     assert!(default["seasons"].as_array().unwrap().len() <= 12);
 
     let before = stats(&server, 3).await;
@@ -719,11 +715,6 @@ async fn admin_stats_count_live_and_finished_matches() {
     assert!(n(&cs["players"]) >= 2);
 
     // Cleanup.
-    sqlx::query("DELETE FROM game.webhook_outbox WHERE body->'data'->>'match_id' = $1")
-        .bind(match_id.to_string())
-        .execute(&pool)
-        .await
-        .unwrap();
     sqlx::query("DELETE FROM game.matches WHERE id = ANY($1)")
         .bind([match_id, ghost, room, duel].as_slice())
         .execute(&pool)

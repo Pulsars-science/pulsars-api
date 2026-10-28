@@ -6,10 +6,14 @@ document covers earning, the monthly duel season, and display.
 
 ## 1. Ownership
 
-**Laravel owns the currency.** Unlike XP, brains are spendable, so they are
+**The API owns the currency** (`src/db/brains.rs`, a port of Laravel's
+`App\Services\Cerveaux`). Unlike XP, brains are spendable, so they are
 **stored as a ledger**, never recomputed: the balance is the sum of the
-member's movements. The API never writes brains; it reports facts (a match
-ended, a month closed) through the signed webhook, and Laravel credits.
+member's movements. Each credit is written in the transaction of what earns
+it: a lesson completed (`PUT /v1/me/courses/{slug}/lessons/{lesson}/completion`),
+a match ended (`game::store::finish`, with the `site.game_results` rows),
+a season closed (`game::season::close_month`). There is no webhook any
+more.
 
 ### Table `site.cerveaux_mouvements`
 
@@ -37,10 +41,10 @@ and the API's public endpoints do not see it.
 | Event | Brains | Key (`cle`) | Rule |
 |---|---|---|---|
 | Lesson completed | **5** | `lecon:<lesson_id>` | Once per lesson, at the moment `lesson_progress.completed_at` is set. |
-| Match played (any mode, accounts only) | **2** | `partie:<match_id>` | From `match.completed`. |
+| Match played (any mode, accounts only) | **2** | `partie:<match_id>` | At the match end, void matches excepted. |
 | Match won | **+3** | `victoire:<match_id>` | `outcome = win`. |
 | Daily cap on matches | **20 / UTC day** | | `partie` + `victoire` of the day of `ended_at`, summed; the credit is cut to what is left (a cut credit is stored with the reduced amount, a zero credit is not stored). |
-| Monthly duel season | see §3 | `saison:<YYYY-MM>:<subject>` | From `season.ended`. |
+| Monthly duel season | see §3 | `saison:<YYYY-MM>:<subject>` | At the season close. |
 
 Lessons completed before this feature are credited once by a migration
 (backfill, same keys), and so are matches already in `game_results`, with the
@@ -55,8 +59,7 @@ previous one, **for each subject key** (`maths`, `physics`, `chemistry`,
 1. **Standings**: the accounts with **at least 5 ranked duels ended in that
    month** in that subject, ordered by their current rating (desc), ties by
    more ranked duels in the month, then lower `user_id`. Rank 1..n.
-2. **Webhook** `season.ended` (outbox row), one per subject with a non-empty
-   standing.
+2. **Rewards** in brains (table below), credited in `user_id` order.
 3. **Decay** of every rating of that subject (`game.ratings`):
    `rating = 1500 + 0.8 × (rating − 1500)`, `rd = min(350, rd + 50)` (the
    rating becomes a bit provisional again). Counters `games`/`wins`/… stay
@@ -71,30 +74,9 @@ month is closed. A month in which the API did not exist yet is closed too
 
 Implemented in `pulsars-api` (`src/game/season.rs`, details in
 `docs/game-protocol.md` §10). `game.seasons` also keeps the `event_id` of
-the outbox row (null when the standings are empty). Ranks are never shared.
+the standings. Ranks are never shared.
 
-### `season.ended` v1
-
-```json
-{
-  "event_id": "…uuidv7…",
-  "type": "season.ended",
-  "version": 1,
-  "occurred_at": "2026-11-01T00:00:04Z",
-  "data": {
-    "season": "2026-10",
-    "subject": "maths",
-    "standings": [
-      {"user_id": "2", "rank": 1, "rating": 1720, "ranked_matches": 7},
-      {"user_id": "1", "rank": 2, "rating": 1280, "ranked_matches": 5}
-    ]
-  }
-}
-```
-
-`rating` is the rating **before** the decay, rounded.
-
-### Rewards (Laravel)
+### Rewards
 
 | Rank in the subject | Brains |
 |---|---|

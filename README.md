@@ -17,8 +17,8 @@ This service runs at `api.pulsars.science` and provides:
 ## Architecture in brief
 
 ```
-pulsars.science/jeux ──JWT──▶ api.pulsars.science ──signed webhook──▶ pulsars.science
-   (Vue SPA)                   (this repository)                       (Laravel)
+pulsars.science/jeux ──JWT──▶ api.pulsars.science ◀──── pulsars.science
+   (Vue SPA)                   (this repository)          (Nuxt)
                                  │        │
                        PostgreSQL         Redis
           reads `api_read` views,      matchmaking,
@@ -29,10 +29,11 @@ pulsars.science/jeux ──JWT──▶ api.pulsars.science ──signed webhook
   short-lived EdDSA tokens that this API verifies with Laravel's public keys.
 - This API reads Laravel's data **only** through read-only views
   (`api_read`), and writes only its own `game` schema.
-- Match results go back to Laravel through a signed webhook.
+- A finished match writes its results, ratings and brains in one
+  transaction ([`brains.md`](docs/contract/brains.md)).
 
 Details: [`docs/architecture.md`](docs/architecture.md) and the contract in
-[`docs/contract/`](docs/contract/README.md) (OpenAPI spec, JWT, webhooks,
+[`docs/contract/`](docs/contract/README.md) (OpenAPI spec, JWT, brains,
 database views). The contract is the source of truth: code follows it, and
 changes to it are proposed before the code (see
 [CONTRIBUTING.md](CONTRIBUTING.md)).
@@ -67,11 +68,9 @@ endpoints such as `GET /v1/me` need a token issued by that Laravel
 
 The game WebSocket is `ws://127.0.0.1:8080/v1/game/ws`: the `Origin` must
 be one of `CORS_ALLOWED_ORIGINS`, and the first frame authenticates
-(`{"type": "auth", "guest": true}` needs no token). Match results go to
-Laravel only when `LARAVEL_WEBHOOK_URL` and `LARAVEL_WEBHOOK_SECRET` are set;
-otherwise they wait in `game.webhook_outbox`. At startup, and every 10
-minutes, the API also closes the previous UTC month's duel season if needed
-(standings, `season.ended` event, rating decay; `docs/contract/brains.md`
+(`{"type": "auth", "guest": true}` needs no token). At startup, and every
+10 minutes, the API also closes the previous UTC month's duel season if
+needed (standings, rating decay, brain rewards; `docs/contract/brains.md`
 §3): a fresh local database gets its last month closed, with empty
 standings, on the first start.
 
@@ -108,8 +107,8 @@ not deployed yet: it needs the production PostgreSQL migration, the
 | 2 | JWT authentication, `/v1/me` | done |
 | 3 | Content endpoints, rate limits | done |
 | 4 | Game (flash race): WebSocket, matchmaking, rooms, ghosts, Glicko-2, `game` schema | done; the 30 flash generators are ported to Rust (`src/flash/`) |
-| 5 | Results webhook to Laravel (outbox, signed delivery, retries) | done |
-| 5b | Brains: monthly duel season close (`season.ended`, rating decay), balance in `/v1/me` and `/v1/game/me` ([`brains.md`](docs/contract/brains.md)) | done |
+| 5 | Match results and brains written by the API itself (the results webhook to Laravel is gone) | done |
+| 5b | Brains: monthly duel season close (rewards, rating decay), balance in `/v1/me` and `/v1/game/me` ([`brains.md`](docs/contract/brains.md)) | done |
 | 5c | Admin statistics of the game, `GET /v1/game/admin/stats` (`admin` / `super-admin` role), for the Laravel admin dashboard | done |
 | 6 | Code sandbox | not needed (no code mode) |
 | 7 | Deployment (systemd, nginx, release archives) | prepared, not deployed |

@@ -72,7 +72,7 @@ A JWS in compact serialisation (RFC 7515 / RFC 7519).
 |---|---|---|---|
 | `iss` | string | Exactly `https://pulsars.science`. | Standard. Lets the API reject tokens from any other issuer, including a local Laravel. |
 | `aud` | string | Exactly `api.pulsars.science`. | Standard. A token minted for another audience (a future service) cannot be replayed here. |
-| `sub` | string | The Laravel `users.id`, **as a string** (`"42"`). | Standard; RFC 7519 makes `sub` a string. The API uses the same string everywhere (`/v1/me` `id`, webhook `user_id`). |
+| `sub` | string | The Laravel `users.id`, **as a string** (`"42"`). | Standard; RFC 7519 makes `sub` a string. The API uses the same string everywhere (`/v1/me` `id`, `site.game_results.user_id`). |
 | `iat` | number | Issue time, Unix seconds. | Standard. |
 | `nbf` | number | Equal to `iat`. | Standard; makes clock-skew handling explicit. |
 | `exp` | number | `iat + 300` (5 minutes). | Short lifetime limits a stolen token's value; nothing to revoke. |

@@ -1,8 +1,9 @@
 //! The `game` schema (`game-protocol.md` §8, `migrations/`): matches,
-//! runs, ratings, ghosts and the webhook outbox.
+//! runs, ratings and ghosts; and, at the end of a match, the results and
+//! brains of its account players in `site` (`docs/contract/brains.md`).
 
-use chrono::{DateTime, SecondsFormat, Utc};
-use serde_json::{Value, json};
+use chrono::{DateTime, Utc};
+use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -12,6 +13,7 @@ use super::glicko::{self, Rating};
 use super::protocol::EndReason;
 use super::ranking::Outcome;
 use super::rules::{QueueKey, SubjectKey};
+use crate::db::brains;
 
 /// The migrations of `migrations/`, embedded at build time.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -48,10 +50,6 @@ pub async fn pending(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
 
 pub fn timestamp(ms: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap_or_default()
-}
-
-fn rfc3339(ms: i64) -> String {
-    timestamp(ms).to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 /// The `game.matches` row of a match that starts.
@@ -111,8 +109,10 @@ pub struct RatingChange {
 }
 
 /// The end of a match in one transaction: the match row, every seat, the
-/// new ratings (ranked only) and the `match.completed` outbox row (unless
-/// void or without account players). Returns the rating change per seat.
+/// new ratings (ranked only), and for each account player (unless the
+/// match is void) a `site.game_results` row, from which the site's XP is
+/// computed, and the brains of the match. Returns the rating change per
+/// seat.
 pub async fn finish(
     pool: &PgPool,
     m: &Match,
@@ -183,17 +183,8 @@ pub async fn finish(
         .await?;
     }
 
-    let event_id = Uuid::now_v7();
-    if let Some(body) = webhook_body(event_id, m, result, &changes) {
-        sqlx::query(
-            "INSERT INTO game.webhook_outbox
-                    (event_id, type, body, status, attempts, next_attempt_at, created_at)
-             VALUES ($1, 'match.completed', $2, 'pending', 0, now(), now())",
-        )
-        .bind(event_id)
-        .bind(Json(body))
-        .execute(&mut *tx)
-        .await?;
+    for (user_id, outcome) in results(m, result) {
+        record_result(&mut tx, m, result, user_id, outcome).await?;
     }
 
     tx.commit().await?;
@@ -292,20 +283,13 @@ async fn update_ratings(
     Ok(changes)
 }
 
-/// The `match.completed` event (`webhooks.md` §3), or `None` when nothing
-/// is sent: a void match, or no account among the live players. Guests and
-/// ghosts are not listed.
-pub fn webhook_body(
-    event_id: Uuid,
-    m: &Match,
-    result: &Final,
-    changes: &[Option<RatingChange>],
-) -> Option<Value> {
+/// The account players of a match and their outcomes, or none for a void
+/// match. Guests and ghosts have no account and earn nothing.
+pub fn results(m: &Match, result: &Final) -> Vec<(i64, Outcome)> {
     if result.reason == EndReason::Void {
-        return None;
+        return Vec::new();
     }
-    let players: Vec<Value> = m
-        .seats()
+    m.seats()
         .iter()
         .enumerate()
         .filter_map(|(seat, s)| {
@@ -313,37 +297,50 @@ pub fn webhook_body(
                 SeatKind::Live(p) => p.user_id()?,
                 SeatKind::Ghost { .. } => return None,
             };
-            let (rank, outcome) = result.places.get(seat).copied()?;
-            let change = changes.get(seat).copied().flatten();
-            Some(json!({
-                "user_id": user_id.to_string(),
-                "team": null,
-                "outcome": outcome.key(),
-                "score": s.score,
-                "rank": rank,
-                "rating_before": change.map(|c| c.before),
-                "rating_after": change.map(|c| c.after),
-            }))
+            let (_, outcome) = result.places.get(seat).copied()?;
+            Some((user_id, outcome))
         })
-        .collect();
-    if players.is_empty() {
-        return None;
-    }
-    Some(json!({
-        "event_id": event_id.to_string(),
-        "type": "match.completed",
-        "version": 1,
-        "occurred_at": rfc3339(result.ended_at),
-        "data": {
-            "match_id": m.id.to_string(),
-            "mode": m.mode.webhook_key(),
-            "ranked": result.ranked,
-            "started_at": rfc3339(m.starts_at),
-            "ended_at": rfc3339(result.ended_at),
-            "end_reason": result.reason.key(),
-            "players": players,
-        },
-    }))
+        .collect()
+}
+
+/// The result of one account player, and its brains: what Laravel's
+/// `EvenementController` did with `match.completed`. An account deleted
+/// during the match is skipped; the others still count.
+async fn record_result(
+    tx: &mut Transaction<'_, Postgres>,
+    m: &Match,
+    result: &Final,
+    user_id: i64,
+    outcome: Outcome,
+) -> Result<(), sqlx::Error> {
+    // `timestamp(0)`, as Laravel stored the event's `ended_at`.
+    let ended_at = timestamp(result.ended_at - result.ended_at.rem_euclid(1000));
+    let match_id = m.id.to_string();
+    let Some(_) = brains::credit_match(
+        tx,
+        user_id,
+        &match_id,
+        outcome == Outcome::Win,
+        ended_at,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO site.game_results (match_id, user_id, mode, ranked, outcome, ended_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (match_id, user_id) DO NOTHING",
+    )
+    .bind(m.id)
+    .bind(user_id)
+    .bind(m.mode.result_key())
+    .bind(result.ranked)
+    .bind(outcome.key())
+    .bind(ended_at.naive_utc())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// A player's rating for a subject, if they ever played ranked.
