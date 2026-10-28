@@ -200,9 +200,7 @@ impl ApiError {
             Self::Unavailable(_)
             | Self::TokenUnavailable
             | Self::ServiceUnavailable { .. }
-            | Self::MessagesUnavailable => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            | Self::MessagesUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
