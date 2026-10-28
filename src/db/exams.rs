@@ -1,6 +1,7 @@
-//! Published exam papers, from `api_read.exams`, `exam_parts` and
-//! `exam_part_translations` (`docs/contract/database.md` §4). Statements
-//! only: the views have no `corrige_md` and no correction file.
+//! Published exam papers, from `contenu` through `published_exams!()`,
+//! `published_exam_parts!()` and `exam_part_translations!()`
+//! (`super::sources`, `docs/contract/database.md` §4). Statements only: the
+//! sources select no `corrige_md` and no correction file.
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -8,7 +9,8 @@ use sqlx::types::Json;
 
 macro_rules! exam_select {
     () => {
-        "SELECT x.id, x.slug, x.title, x.type::text AS type,
+        concat!(
+            "SELECT x.id, x.slug, x.title, x.type::text AS type,
                 x.competition::text AS competition, x.subject::text AS subject,
                 x.country::text AS country, x.level::text AS level, x.tracks,
                 x.session::text AS session,
@@ -17,7 +19,10 @@ macro_rules! exam_select {
                 x.part_count::int AS part_count, x.has_pdf,
                 x.official_url, x.source_url::text AS source_url,
                 x.published_at, x.description
-           FROM api_read.exams x"
+           FROM ",
+            published_exams!(),
+            " x"
+        )
     };
 }
 
@@ -119,15 +124,19 @@ pub async fn parts(
     tr: Option<&str>,
     exam_id: i64,
 ) -> Result<Vec<PartRow>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "SELECT p.id, p.position::int AS position, p.title, p.statement_md,
                 p.points::float8 AS points,
                 t.title AS tr_title, t.statement_md AS tr_statement_md
-           FROM api_read.exam_parts p
-           LEFT JOIN api_read.exam_part_translations t ON t.exam_part_id = p.id AND t.lang = $1
+           FROM ",
+        published_exam_parts!(),
+        " p
+           LEFT JOIN ",
+        exam_part_translations!(),
+        " t ON t.exam_part_id = p.id AND t.lang = $1
           WHERE p.exam_id = $2
-          ORDER BY p.position, p.id",
-    )
+          ORDER BY p.position, p.id"
+    ))
     .bind(tr)
     .bind(exam_id)
     .fetch_all(pool)

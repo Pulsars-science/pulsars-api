@@ -32,10 +32,22 @@ fn database_url() -> Option<String> {
     }
 }
 
-async fn migrated(url: &str) -> PgPool {
-    let pool = PgPool::connect(url).await.unwrap();
+/// Applies the migrations as the role allowed to create tables:
+/// `TEST_MIGRATION_DATABASE_URL` (`pulsars_migrate`), else the tests' own
+/// URL, for a database whose service role still owns its schemas.
+async fn apply_migrations(database_url: &str) {
+    let url = std::env::var("TEST_MIGRATION_DATABASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| database_url.to_owned());
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
     store::migrate(&pool).await.expect("migrations apply");
-    pool
+    pool.close().await;
+}
+
+async fn migrated(url: &str) -> PgPool {
+    apply_migrations(url).await;
+    PgPool::connect(url).await.unwrap()
 }
 
 fn at(rfc3339: &str) -> DateTime<Utc> {

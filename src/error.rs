@@ -27,6 +27,9 @@ pub const INSUFFICIENT_SCOPE: &str = "insufficient_scope";
 const INSUFFICIENT_SCOPE_CHALLENGE: &str =
     "Bearer realm=\"api.pulsars.science\", error=\"insufficient_scope\"";
 
+/// One entry of `errors`. For a query parameter, `parameter` is its name;
+/// for a JSON body, the JSON Pointer (RFC 6901) of the field at fault, `""`
+/// for the body itself (a missing field is reported there).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ParameterError {
     pub parameter: String,
@@ -37,6 +40,10 @@ pub struct ParameterError {
 pub enum ApiError {
     #[error("invalid parameter")]
     InvalidParameter(Vec<ParameterError>),
+    /// A request body that is not JSON (`errors` empty) or does not fit what
+    /// the endpoint expects (one entry per field at fault).
+    #[error("invalid body")]
+    InvalidBody(Vec<ParameterError>),
     /// A `cursor` that cannot be decoded, or was issued for another endpoint
     /// or another set of filters.
     #[error("invalid cursor")]
@@ -76,6 +83,12 @@ pub enum ApiError {
     NotAcceptable,
     #[error("payload too large")]
     PayloadTooLarge,
+    /// A `Range` that starts past the end of a file of `size` bytes.
+    #[error("range not satisfiable")]
+    RangeNotSatisfiable { size: u64 },
+    /// A body whose `Content-Type` is not `application/json`.
+    #[error("unsupported media type")]
+    UnsupportedMediaType,
     /// Over the per-minute limit; `retry_after` is in seconds.
     #[error("rate limited")]
     RateLimited { limit: u32, retry_after: u64 },
@@ -111,7 +124,9 @@ pub struct Problem {
 impl ApiError {
     pub fn status(&self) -> StatusCode {
         match self {
-            Self::InvalidParameter(_) | Self::InvalidCursor => StatusCode::BAD_REQUEST,
+            Self::InvalidParameter(_) | Self::InvalidBody(_) | Self::InvalidCursor => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } | Self::InsufficientScope { .. } => StatusCode::FORBIDDEN,
             Self::UpgradeRequired => StatusCode::UPGRADE_REQUIRED,
@@ -119,6 +134,8 @@ impl ApiError {
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::RangeNotSatisfiable { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
+            Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -129,6 +146,7 @@ impl ApiError {
     pub fn to_problem(&self) -> Problem {
         let (slug, title) = match self {
             Self::InvalidParameter(_) => ("invalid-parameter", "Invalid parameter"),
+            Self::InvalidBody(_) => ("invalid-body", "Invalid body"),
             Self::InvalidCursor => ("invalid-cursor", "Invalid cursor"),
             Self::Unauthorized { .. } => ("unauthorized", "Invalid token"),
             Self::Forbidden { .. } => ("forbidden", "Forbidden"),
@@ -138,6 +156,8 @@ impl ApiError {
             Self::MethodNotAllowed => ("method-not-allowed", "Method not allowed"),
             Self::NotAcceptable => ("not-acceptable", "Not acceptable"),
             Self::PayloadTooLarge => ("payload-too-large", "Payload too large"),
+            Self::RangeNotSatisfiable { .. } => ("range-not-satisfiable", "Range not satisfiable"),
+            Self::UnsupportedMediaType => ("unsupported-media-type", "Unsupported media type"),
             Self::RateLimited { .. } => ("rate-limited", "Too many requests"),
             Self::Timeout => ("unavailable", "Request timed out"),
             Self::Unavailable(_) => ("unavailable", "Service unavailable"),
@@ -146,6 +166,15 @@ impl ApiError {
         let detail = match self {
             Self::InvalidParameter(_) => {
                 Some("One or more query parameters are invalid.".to_owned())
+            }
+            Self::InvalidBody(errors) if errors.is_empty() => {
+                Some("The request body is not valid JSON.".to_owned())
+            }
+            Self::InvalidBody(_) => {
+                Some("The request body does not match what this endpoint expects.".to_owned())
+            }
+            Self::UnsupportedMediaType => {
+                Some("This endpoint only accepts application/json bodies.".to_owned())
             }
             Self::InvalidCursor => {
                 Some("The cursor cannot be decoded, or was issued for other filters.".to_owned())
@@ -162,6 +191,9 @@ impl ApiError {
                 Some("This endpoint only accepts WebSocket upgrades.".to_owned())
             }
             Self::Timeout => Some("The request took too long to process.".to_owned()),
+            Self::RangeNotSatisfiable { size } => Some(format!(
+                "The file has {size} bytes; the range starts past its end."
+            )),
             _ => None,
         };
         Problem {
@@ -178,6 +210,7 @@ impl ApiError {
             },
             errors: match self {
                 Self::InvalidParameter(errors) => Some(errors.clone()),
+                Self::InvalidBody(errors) if !errors.is_empty() => Some(errors.clone()),
                 _ => None,
             },
             reason: match self {
@@ -224,17 +257,17 @@ impl IntoResponse for ApiError {
         if let Self::RateLimited { retry_after, .. } = &self {
             headers.insert(header::RETRY_AFTER, HeaderValue::from(*retry_after));
         }
+        if let Self::RangeNotSatisfiable { size } = &self
+            && let Ok(value) = HeaderValue::from_str(&format!("bytes */{size}"))
+        {
+            headers.insert(header::CONTENT_RANGE, value);
+        }
         if let Self::UpgradeRequired = &self {
             headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
             headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
         }
-        if status == StatusCode::METHOD_NOT_ALLOWED {
-            // Phase 1 only serves GET routes; refined per route later.
-            headers.insert(
-                header::ALLOW,
-                HeaderValue::from_static("GET, HEAD, OPTIONS"),
-            );
-        }
+        // No `Allow` on a 405: the router adds the methods of the matched
+        // route itself, but only when the response has none yet.
         response
     }
 }
@@ -367,6 +400,42 @@ mod tests {
                 "status": 429,
                 "detail": "Limit of 60 requests per minute reached.",
             })
+        );
+    }
+
+    #[test]
+    fn invalid_body_names_fields_only_when_it_can() {
+        let json = serde_json::to_value(ApiError::InvalidBody(Vec::new()).to_problem())
+            .unwrap_or_default();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "https://api.pulsars.science/problems/invalid-body",
+                "title": "Invalid body",
+                "status": 400,
+                "detail": "The request body is not valid JSON.",
+            })
+        );
+        let json = serde_json::to_value(
+            ApiError::InvalidBody(vec![ParameterError {
+                parameter: "/email".to_owned(),
+                detail: "invalid type: integer `3`, expected a string".to_owned(),
+            }])
+            .to_problem(),
+        )
+        .unwrap_or_default();
+        assert_eq!(json["errors"][0]["parameter"], "/email");
+    }
+
+    #[test]
+    fn unsupported_media_type_is_a_415() {
+        let response = ApiError::UnsupportedMediaType.into_response();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let json =
+            serde_json::to_value(ApiError::UnsupportedMediaType.to_problem()).unwrap_or_default();
+        assert_eq!(
+            json["type"],
+            "https://api.pulsars.science/problems/unsupported-media-type"
         );
     }
 

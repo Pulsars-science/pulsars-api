@@ -91,17 +91,29 @@ Every error response has the media type `application/problem+json`:
 | `type` suffix | Status | When |
 |---|---|---|
 | `invalid-parameter` | 400 | A query parameter is malformed or out of range. Adds `"errors": [{"parameter": "limit", "detail": "must be between 1 and 100"}]`. |
+| `invalid-body` | 400 | The JSON body cannot be parsed (no `errors`), or does not fit the endpoint. In the second case `errors` names each field by JSON Pointer (RFC 6901), `""` for the body itself: ``"errors": [{"parameter": "/email", "detail": "invalid type: integer `3`, expected a string"}]``. A missing field is reported at `""`, an unknown field at its own pointer. |
 | `invalid-cursor` | 400 | The `cursor` cannot be decoded, or belongs to another endpoint or filter set. |
 | `unauthorized` | 401 | Missing, invalid or expired token. Also sets `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750). See `auth-jwt.md`. |
 | `forbidden` | 403 | Valid token, but not allowed. |
 | `not-found` | 404 | Unknown, unpublished or hidden resource. **Unpublished content answers 404, never 403**, so its existence does not leak. |
-| `method-not-allowed` | 405 | |
+| `method-not-allowed` | 405 | Sets `Allow` to the methods of that path, e.g. `GET,HEAD,OPTIONS`. |
 | `not-acceptable` | 406 | `Accept` excludes `application/json`. |
+| `payload-too-large` | 413 | The body is over the size limit. |
+| `unsupported-media-type` | 415 | A body whose `Content-Type` is not `application/json`. |
+| `range-not-satisfiable` | 416 | A file route's `Range` starts past the end of the file; `Content-Range: bytes */{size}`. |
 | `rate-limited` | 429 | See rate limits below. Sets `Retry-After`. |
 | `internal` | 500 | Never includes a stack trace, SQL or a file path. Adds `"trace_id"` so a report can be matched to logs. |
 | `unavailable` | 503 | A required dependency (PostgreSQL) is down. |
 
 The `type` URIs do not have to resolve today; they are stable identifiers.
+
+### Request bodies
+
+Endpoints that take a body take JSON: `Content-Type: application/json`,
+UTF-8, one JSON value and nothing after it. Fields the endpoint does not
+know are refused (`invalid-body`), never ignored, so a misspelt field
+cannot be silently dropped. The size limit is the server's
+`BODY_LIMIT_BYTES` (64 KiB by default) unless an endpoint documents its own.
 
 ### Pagination: cursor-based
 

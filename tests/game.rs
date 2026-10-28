@@ -165,10 +165,22 @@ async fn server(database_url: &str, redis_url: &str, settings: GameSettings) -> 
     }
 }
 
-async fn migrated(database_url: &str) -> sqlx::PgPool {
-    let pool = sqlx::PgPool::connect(database_url).await.unwrap();
+/// Applies the migrations as the role allowed to create tables:
+/// `TEST_MIGRATION_DATABASE_URL` (`pulsars_migrate`), else the tests' own
+/// URL, for a database whose service role still owns its schemas.
+async fn apply_migrations(database_url: &str) {
+    let url = std::env::var("TEST_MIGRATION_DATABASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| database_url.to_owned());
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
     store::migrate(&pool).await.expect("migrations apply");
-    pool
+    pool.close().await;
+}
+
+async fn migrated(database_url: &str) -> sqlx::PgPool {
+    apply_migrations(database_url).await;
+    sqlx::PgPool::connect(database_url).await.unwrap()
 }
 
 async fn wait_for_redis(state: &AppState) {

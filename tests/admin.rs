@@ -61,6 +61,19 @@ fn integration_urls() -> Option<(String, String)> {
     }
 }
 
+/// Applies the migrations as the role allowed to create tables:
+/// `TEST_MIGRATION_DATABASE_URL` (`pulsars_migrate`), else the tests' own
+/// URL, for a database whose service role still owns its schemas.
+async fn apply_migrations(database_url: &str) {
+    let url = std::env::var("TEST_MIGRATION_DATABASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| database_url.to_owned());
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    store::migrate(&pool).await.expect("migrations apply");
+    pool.close().await;
+}
+
 fn fast_settings() -> GameSettings {
     let mut settings = GameSettings {
         countdown: Duration::from_millis(100),
@@ -337,7 +350,7 @@ async fn admin_stats_need_a_token_with_an_admin_role() {
                 "type": "https://api.pulsars.science/problems/insufficient-scope",
                 "title": "Insufficient scope",
                 "status": 403,
-                "detail": "The game statistics need the admin or super-admin role.",
+                "detail": "This endpoint needs the admin or super-admin role.",
                 "instance": STATS,
                 "reason": "insufficient_scope",
             })
@@ -415,8 +428,8 @@ async fn admin_stats_count_live_and_finished_matches() {
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
     };
+    apply_migrations(&database_url).await;
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    store::migrate(&pool).await.expect("migrations apply");
     let server = server(&database_url, &redis_url).await;
     {
         use fred::prelude::ClientLike as _;

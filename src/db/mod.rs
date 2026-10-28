@@ -1,14 +1,22 @@
 //! PostgreSQL access.
 //!
-//! The API's role (`pulsars_api`) can read the `api_read` views and owns the
-//! `game` schema; it has no right on `site` (see `docs/contract/database.md`).
-//! Its `search_path` is `game, api_read`, so queries name views without a
-//! schema only when unambiguous; new code should qualify them anyway.
+//! The API's role (`pulsars_api`) reads `contenu` and the `api_read.member*`
+//! views, reads and writes the rows of `game` and `langues`, and has no right
+//! on `site`; it creates, alters or drops nothing (`deploy/sql/phase-1.sql`,
+//! `docs/contract/database.md` §2.1). Queries name their schema.
+//!
+//! Content is read through the macros of `sources`, never from a `contenu`
+//! table directly: they keep the published rows and the allowed columns.
+
+#[macro_use]
+pub mod sources;
 
 pub mod courses;
 pub mod exams;
 pub mod exercises;
+pub mod files;
 pub mod members;
+pub mod news;
 pub mod resources;
 
 use std::str::FromStr;

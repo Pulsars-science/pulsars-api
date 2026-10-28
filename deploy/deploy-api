@@ -18,13 +18,17 @@
 #     --no-system    do not install the systemd unit and nginx vhost
 #     --no-check     skip the final check through nginx (the local health
 #                    check always runs: it decides the rollback)
+#     --no-content-check
+#                    skip `pulsars-api check-content` (the new release reads
+#                    `contenu` exactly as the `api_read` views show it); for
+#                    the day those views are gone (phase 5)
 #
 # The first installation is described in docs/deployment.md. This script only
 # handles the deployments after it.
 #
 # It stops at the first error (`set -e`). Up to the restart, nothing the
-# running service uses has changed; after it, a failed health check puts the
-# previous release back.
+# running service uses has changed (the migrations it applies first are
+# additive); after it, a failed health check puts the previous release back.
 
 set -euo pipefail
 
@@ -34,6 +38,10 @@ SERVICE="pulsars-api"
 UNIT="/etc/systemd/system/pulsars-api.service"
 VHOST="/etc/nginx/sites-available/pulsars-api"
 ENV_FILE="/etc/pulsars-api/pulsars-api.env"
+# DATABASE_MIGRATION_URL (the pulsars_migrate account). Read by this script
+# only, never by the service. Optional: without it, migrations run with the
+# service's DATABASE_URL, which works only while that role owns its schemas.
+MIGRATE_ENV_FILE="/etc/pulsars-api/migrate.env"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/healthz}"
 PUBLIC_URL="${PUBLIC_URL:-https://api.pulsars.science/healthz}"
 # Seconds the new release gets to answer 200 on /healthz. It needs
@@ -47,12 +55,14 @@ EXIT_CONFIG=78
 ROLLBACK=false
 NO_SYSTEM=false
 NO_CHECK=false
+NO_CONTENT_CHECK=false
 
 for arg in "$@"; do
     case "$arg" in
         --rollback) ROLLBACK=true ;;
         --no-system) NO_SYSTEM=true ;;
         --no-check) NO_CHECK=true ;;
+        --no-content-check) NO_CONTENT_CHECK=true ;;
         *) echo "Unknown option: $arg" >&2; exit 1 ;;
     esac
 done
@@ -230,6 +240,31 @@ if [ "$NO_SYSTEM" = false ]; then
         fi
     fi
     ok "system files up to date"
+fi
+
+step "Migrations"
+# Applied by the new binary before the switch. Migrations are additive
+# (migrations/README.md): the release still running keeps working on the
+# migrated schema, and a failure here stops the deployment before anything
+# the service uses has changed. systemd reads both files as root, then runs
+# the command as the service account.
+"${SUDO[@]}" systemd-run --quiet --wait --pipe --collect \
+    --property=EnvironmentFile="$ENV_FILE" \
+    --property=EnvironmentFile=-"$MIGRATE_ENV_FILE" \
+    --property=User=pulsars-api \
+    "$TARGET/pulsars-api" migrate
+ok "database schema up to date"
+
+if [ "$NO_CONTENT_CHECK" = false ]; then
+    step "Content check"
+    # The new release must read, of `contenu`, exactly the rows the
+    # `api_read` views show (docs/contract/database.md §2.2). A difference
+    # stops the deployment here, before the switch.
+    "${SUDO[@]}" systemd-run --quiet --wait --pipe --collect \
+        --property=EnvironmentFile="$ENV_FILE" \
+        --property=User=pulsars-api \
+        "$TARGET/pulsars-api" check-content
+    ok "the new release reads the same content"
 fi
 
 if [ "$CURRENT" = "$RELEASE" ]; then

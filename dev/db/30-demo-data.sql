@@ -142,10 +142,12 @@ INSERT INTO exercise_attempts (user_id, exercise_id, reponse, correct) VALUES
     (2, 2, '{"texte":"3/4"}', true),
     (2, 3, '{"options":["a"]}', false);
 INSERT INTO enrollments (user_id, course_id, completed_at) VALUES (2, 1, now());
-INSERT INTO questions (id, user_id, titre, slug, corps, accepted_answer_id, created_at) VALUES
-    (1, 3, 'Pourquoi 5^0 = 1 ?', 'pourquoi-5-puissance-0', 'Je ne comprends pas.', 1, now());
+INSERT INTO forum_themes (id, nom, slug) VALUES (1, 'Mathématiques', 'mathematiques');
+INSERT INTO questions (id, forum_theme_id, user_id, titre, slug, corps, created_at) VALUES
+    (1, 1, 3, 'Pourquoi 5^0 = 1 ?', 'pourquoi-5-puissance-0', 'Je ne comprends pas.', now());
 INSERT INTO answers (id, question_id, user_id, corps, created_at) VALUES
     (1, 1, 2, 'Parce que 5^1 / 5^1 = 5^(1-1).', now());
+UPDATE questions SET accepted_answer_id = 1 WHERE id = 1;
 
 -- Brains: 5 per completed lesson for ada (15); emmy hides her balance.
 INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created_at) VALUES
@@ -155,6 +157,31 @@ INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created
 UPDATE users SET cerveaux_publics = false WHERE id = 3;
 
 -- Keep sequences ahead of the explicit ids above.
+-- Stored files (bytea, as on the Laravel `local` disk): the published
+-- statement and resource, and what must never be served: a correction, a
+-- draft exam's PDF, a pending resource's file, a file on another disk.
+INSERT INTO fichiers (id, disque, chemin, contenu, type_mime, taille, created_at, updated_at) VALUES
+    (1, 'local', 'examens/bac-2026-maths-jour-1.pdf', convert_to('%PDF-1.4 STATEMENT-BAC-2026 0123456789', 'UTF8'), 'application/pdf', 38, '2026-08-13 09:00:00', '2026-08-13 09:32:04'),
+    (2, 'local', 'examens/bac-2026-maths-jour-1-corrige.pdf', convert_to('%PDF-1.4 FILE-CORRIGE-MARKER', 'UTF8'), 'application/pdf', 28, '2026-08-13 09:00:00', '2026-08-13 09:00:00'),
+    (3, 'local', 'examens/dnb-2026.pdf', convert_to('%PDF-1.4 FILE-DRAFT-MARKER', 'UTF8'), 'application/pdf', 26, '2026-08-13 08:00:00', '2026-08-13 08:00:00'),
+    (4, 'local', 'ressources/ic901972h.pdf', convert_to('%PDF-1.4 RESOURCE-IC901972H', 'UTF8'), 'application/pdf', 27, '2026-08-07 14:44:26', '2026-08-07 14:44:26'),
+    (5, 'local', 'ressources/pending.pdf', convert_to('%PDF-1.4 FILE-PENDING-MARKER', 'UTF8'), 'application/pdf', 28, '2026-08-20 10:00:00', '2026-08-20 10:00:00'),
+    (6, 'public', 'ressources/ic901972h.pdf', convert_to('FILE-OTHER-DISK-MARKER', 'UTF8'), 'text/html', 22, '2026-08-07 14:44:26', '2026-08-07 14:44:26');
+
+-- News: one published (translated), one draft, one scheduled in the future.
+INSERT INTO actualites (id, titre, slug, chapeau, contenu_md, published_at, auteur_id, created_at, updated_at) VALUES
+    (1, 'Le russe arrive sur Pulsars', 'le-russe-arrive-sur-pulsars',
+     'L''interface parle désormais trois langues.', E'Après le français et l''anglais, **le russe**.\n\nBonne lecture !',
+     '2026-10-20 08:00:00', 1, '2026-10-19 18:00:00', '2026-10-20 08:00:00'),
+    (2, 'Annonce en préparation', 'demo-draft-news', 'NEWS-DRAFT-MARKER', 'NEWS-DRAFT-MARKER',
+     NULL, 1, '2026-10-21 09:00:00', '2026-10-21 09:00:00'),
+    (3, 'Annonce programmée', 'demo-future-news', 'NEWS-FUTURE-MARKER', 'NEWS-FUTURE-MARKER',
+     '2099-01-01 00:00:00', 1, '2026-10-21 09:00:00', '2026-10-21 09:00:00');
+
+INSERT INTO contenu_translations (traduisible_type, traduisible_id, langue, champs, source_hash, created_at, updated_at) VALUES
+    ('actualite', 1, 'en', '{"titre":"Russian comes to Pulsars","chapeau":"","contenu_md":"After French and English, **Russian**.\n\nEnjoy!"}', 'demo', now(), now()),
+    ('actualite', 2, 'en', '{"titre":"NEWS-DRAFT-MARKER","contenu_md":"NEWS-DRAFT-MARKER"}', 'demo', now(), now());
+
 SELECT setval('site.users_id_seq', (SELECT max(id) FROM users));
 SELECT setval('site.roles_id_seq', (SELECT max(id) FROM roles));
 SELECT setval('site.courses_id_seq', (SELECT max(id) FROM courses));
@@ -164,6 +191,9 @@ SELECT setval('site.exercises_id_seq', (SELECT max(id) FROM exercises));
 SELECT setval('site.exams_id_seq', (SELECT max(id) FROM exams));
 SELECT setval('site.exam_parties_id_seq', (SELECT max(id) FROM exam_parties));
 SELECT setval('site.ressources_id_seq', (SELECT max(id) FROM ressources));
+SELECT setval('site.actualites_id_seq', (SELECT max(id) FROM actualites));
+SELECT setval('site.fichiers_id_seq', (SELECT max(id) FROM fichiers));
+SELECT setval('site.forum_themes_id_seq', (SELECT max(id) FROM forum_themes));
 SELECT setval('site.questions_id_seq', (SELECT max(id) FROM questions));
 SELECT setval('site.answers_id_seq', (SELECT max(id) FROM answers));
 

@@ -1,5 +1,6 @@
-//! Published free resources, from `api_read.resources`,
-//! `resource_translations` and `licenses` (`docs/contract/database.md` §4).
+//! Published free resources, from `contenu` through `published_resources!()`,
+//! `resource_translations!()` and `contenu.licences` (`super::sources`,
+//! `docs/contract/database.md` §4).
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
@@ -8,7 +9,8 @@ use sqlx::PgPool;
 /// the oldest.
 macro_rules! resource_select {
     () => {
-        "SELECT r.id, r.slug, r.title, r.description, r.category::text AS category,
+        concat!(
+            "SELECT r.id, r.slug, r.title, r.description, r.category::text AS category,
                 r.doc_lang::text AS doc_lang, r.mode, r.attribution::text AS attribution,
                 r.license_key::text AS license_key,
                 r.license_custom::text AS license_custom,
@@ -17,9 +19,16 @@ macro_rules! resource_select {
                 coalesce(r.created_at, 'epoch'::timestamptz) AS created_at, r.updated_at,
                 t.title AS tr_title, t.description AS tr_description,
                 t.category AS tr_category
-           FROM api_read.resources r
-           LEFT JOIN api_read.licenses l ON l.key = r.license_key
-           LEFT JOIN api_read.resource_translations t ON t.resource_id = r.id AND t.lang = $1"
+           FROM ",
+            published_resources!(),
+            " r
+           LEFT JOIN ",
+            licenses!(),
+            " l ON l.key = r.license_key
+           LEFT JOIN ",
+            resource_translations!(),
+            " t ON t.resource_id = r.id AND t.lang = $1"
+        )
     };
 }
 
@@ -37,7 +46,7 @@ pub struct ResourceRow {
     pub license_key: Option<String>,
     /// Free text, meaningful only for the key `autre`.
     pub license_custom: Option<String>,
-    /// From `api_read.licenses`; null for a key it does not know.
+    /// From `contenu.licences`; null for a key it does not know.
     pub license_name: Option<String>,
     pub license_url: Option<String>,
     pub source_url: Option<String>,

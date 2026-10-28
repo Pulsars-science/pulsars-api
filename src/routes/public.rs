@@ -178,7 +178,7 @@ fn etag(body: &[u8]) -> String {
 
 /// `If-None-Match` uses the weak comparison (RFC 9110 §13.1.2): `W/` is
 /// ignored, `*` matches any current representation.
-fn matches_etag(header: &HeaderValue, etag: &str) -> bool {
+pub fn matches_etag(header: &HeaderValue, etag: &str) -> bool {
     let Ok(header) = header.to_str() else {
         return false;
     };

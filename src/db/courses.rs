@@ -1,6 +1,6 @@
-//! Courses, their chapters and lessons, from `api_read.courses`,
-//! `chapters`, `lessons`, their translation views and `subject_names`
-//! (`docs/contract/database.md` §4).
+//! Courses, their chapters and lessons, from `contenu` through the
+//! `published_*!()` and `*_translations!()` sources (`super::sources`), and
+//! the subject names of `contenu.matieres` (`docs/contract/database.md` §4).
 //!
 //! Every query takes `tr`, the language to read translations in, or `None`
 //! for the original French text. Small integer columns are cast to `int`
@@ -14,7 +14,8 @@ use sqlx::types::Json;
 /// subject name (`sn`).
 macro_rules! course_select {
     () => {
-        "SELECT c.id, c.slug, c.title, c.description, c.theme,
+        concat!(
+            "SELECT c.id, c.slug, c.title, c.description, c.theme,
                 c.subject_name, c.subject_slug, c.topic_name, c.topic_slug,
                 c.difficulty::text AS difficulty, c.levels,
                 c.duration_minutes::int AS duration_minutes, c.tags,
@@ -25,11 +26,20 @@ macro_rules! course_select {
                 c.published_at, c.updated_at,
                 t.title AS tr_title, t.description AS tr_description,
                 sn.name AS tr_subject_name,
-                ARRAY(SELECT DISTINCT a.lang::text FROM api_read.course_translations a
+                ARRAY(SELECT DISTINCT a.lang::text FROM ",
+            course_translations!(),
+            " a
                        WHERE a.course_id = c.id ORDER BY 1) AS translation_langs
-           FROM api_read.courses c
-           LEFT JOIN api_read.course_translations t ON t.course_id = c.id AND t.lang = $1
-           LEFT JOIN api_read.subject_names sn ON sn.subject_slug = c.subject_slug AND sn.lang = $1"
+           FROM ",
+            published_courses!(),
+            " c
+           LEFT JOIN ",
+            course_translations!(),
+            " t ON t.course_id = c.id AND t.lang = $1
+           LEFT JOIN ",
+            subject_names!(),
+            " sn ON sn.subject_slug = c.subject_slug AND sn.lang = $1"
+        )
     };
 }
 
@@ -85,20 +95,24 @@ pub async fn list(
 ) -> Result<Vec<CourseRow>, sqlx::Error> {
     sqlx::query_as(concat!(
         course_select!(),
-        "
+        concat!(
+            "
           WHERE ($2::text IS NULL OR c.subject_slug = $2)
             AND ($3::text IS NULL OR c.topic_slug = $3)
             AND ($4::text IS NULL OR c.difficulty = $4)
             AND ($5::text IS NULL OR $5 = ANY(c.levels))
             AND ($6::text IS NULL OR c.tags @> jsonb_build_array($6::text))
             AND ($7::text IS NULL OR EXISTS (
-                    SELECT 1 FROM api_read.course_translations x
+                    SELECT 1 FROM ",
+            course_translations!(),
+            " x
                      WHERE x.course_id = c.id AND x.lang = $7))
             AND ($8::text IS NULL OR c.title ILIKE $8 OR c.description ILIKE $8
                  OR t.title ILIKE $8 OR t.description ILIKE $8)
             AND ($9::text IS NULL OR (c.title, c.id) > ($9::text, $10::bigint))
           ORDER BY c.title, c.id
           LIMIT $11"
+        )
     ))
     .bind(tr)
     .bind(filters.subject)
@@ -142,13 +156,17 @@ pub async fn chapters(
     tr: Option<&str>,
     course_id: i64,
 ) -> Result<Vec<ChapterRow>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "SELECT ch.id, ch.position::int AS position, ch.title, t.title AS tr_title
-           FROM api_read.chapters ch
-           LEFT JOIN api_read.chapter_translations t ON t.chapter_id = ch.id AND t.lang = $1
+           FROM ",
+        published_chapters!(),
+        " ch
+           LEFT JOIN ",
+        chapter_translations!(),
+        " t ON t.chapter_id = ch.id AND t.lang = $1
           WHERE ch.course_id = $2
-          ORDER BY ch.position, ch.id",
-    )
+          ORDER BY ch.position, ch.id"
+    ))
     .bind(tr)
     .bind(course_id)
     .fetch_all(pool)
@@ -172,14 +190,18 @@ pub async fn lessons(
     tr: Option<&str>,
     course_id: i64,
 ) -> Result<Vec<LessonRef>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "SELECT l.id, l.chapter_id, l.slug, l.position::int AS position, l.title,
                 t.title AS tr_title
-           FROM api_read.lessons l
-           LEFT JOIN api_read.lesson_translations t ON t.lesson_id = l.id AND t.lang = $1
+           FROM ",
+        published_lessons!(),
+        " l
+           LEFT JOIN ",
+        lesson_translations!(),
+        " t ON t.lesson_id = l.id AND t.lang = $1
           WHERE l.course_id = $2
-          ORDER BY l.chapter_position, l.position, l.id",
-    )
+          ORDER BY l.chapter_position, l.position, l.id"
+    ))
     .bind(tr)
     .bind(course_id)
     .fetch_all(pool)
@@ -199,12 +221,16 @@ pub async fn lesson_content(
     tr: Option<&str>,
     id: i64,
 ) -> Result<Option<LessonContent>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "SELECT l.content_md, t.content_md AS tr_content_md, l.updated_at
-           FROM api_read.lessons l
-           LEFT JOIN api_read.lesson_translations t ON t.lesson_id = l.id AND t.lang = $1
-          WHERE l.id = $2",
-    )
+           FROM ",
+        published_lessons!(),
+        " l
+           LEFT JOIN ",
+        lesson_translations!(),
+        " t ON t.lesson_id = l.id AND t.lang = $1
+          WHERE l.id = $2"
+    ))
     .bind(tr)
     .bind(id)
     .fetch_optional(pool)
@@ -229,14 +255,18 @@ pub async fn exercises(
     tr: Option<&str>,
     course_id: i64,
 ) -> Result<Vec<ExerciseRef>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "SELECT e.id, e.chapter_id, e.position::int AS position, e.type::text AS type,
                 e.title, t.title AS tr_title
-           FROM api_read.exercises e
-           LEFT JOIN api_read.exercise_translations t ON t.exercise_id = e.id AND t.lang = $1
+           FROM ",
+        published_exercises!(),
+        " e
+           LEFT JOIN ",
+        exercise_translations!(),
+        " t ON t.exercise_id = e.id AND t.lang = $1
           WHERE e.course_id = $2
-          ORDER BY e.chapter_position, e.position, e.id",
-    )
+          ORDER BY e.chapter_position, e.position, e.id"
+    ))
     .bind(tr)
     .bind(course_id)
     .fetch_all(pool)
@@ -258,15 +288,19 @@ pub struct CatalogRow {
 /// subject name, then topic name; courses without a topic come first in
 /// their subject.
 pub async fn catalog(pool: &PgPool, tr: Option<&str>) -> Result<Vec<CatalogRow>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as(concat!(
         "SELECT c.subject_slug, c.subject_name, sn.name AS tr_subject_name,
                 c.topic_slug, c.topic_name, count(*)::int AS course_count
-           FROM api_read.courses c
-           LEFT JOIN api_read.subject_names sn ON sn.subject_slug = c.subject_slug AND sn.lang = $1
+           FROM ",
+        published_courses!(),
+        " c
+           LEFT JOIN ",
+        subject_names!(),
+        " sn ON sn.subject_slug = c.subject_slug AND sn.lang = $1
           GROUP BY c.subject_slug, c.subject_name, sn.name, c.topic_slug, c.topic_name
           ORDER BY coalesce(sn.name, c.subject_name), c.subject_slug,
-                   c.topic_name NULLS FIRST, c.topic_slug",
-    )
+                   c.topic_name NULLS FIRST, c.topic_slug"
+    ))
     .bind(tr)
     .fetch_all(pool)
     .await

@@ -8,7 +8,8 @@
 #
 # Produces dist/pulsars-api-v<version>-<target>.tar.gz and its .sha256. The
 # archive holds one directory: the binary, deploy-api, the systemd unit, the
-# nginx vhost, the example environment file, the licence and a VERSION file.
+# nginx vhost, the example environment file, the one-off SQL scripts of
+# deploy/sql/ (in sql/), the licence and a VERSION file.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -33,6 +34,8 @@ mkdir "$dir"
 install -m 0755 "$binary" deploy/deploy-api "$dir/"
 install -m 0644 deploy/pulsars-api.service deploy/api.pulsars.science.conf \
     deploy/pulsars-api.env.example LICENSE README.md "$dir/"
+mkdir "$dir/sql"
+install -m 0644 deploy/sql/*.sql "$dir/sql/"
 printf '%s\n' "$version" >"$dir/VERSION"
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
     git rev-parse HEAD >"$dir/COMMIT"

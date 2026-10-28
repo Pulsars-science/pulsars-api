@@ -19,7 +19,7 @@ use ed25519_dalek::SigningKey;
 use pulsars_api::auth::token::testing;
 use pulsars_api::auth::{Jwks, JwksSettings};
 use pulsars_api::config::Config;
-use pulsars_api::game::{Game, GameSettings};
+use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
 use serde_json::{Value, json};
@@ -289,11 +289,17 @@ async fn wrong_methods_answer_405_with_allow() {
     let (status, headers, body) = send(&app, request).await;
 
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-    assert!(headers.contains_key(header::ALLOW));
+    // The methods of this route, not a list shared by every route.
+    assert_eq!(headers[header::ALLOW], "GET,HEAD");
     assert_eq!(
         body["type"],
         "https://api.pulsars.science/problems/method-not-allowed"
     );
+
+    let request = Request::post("/v1/courses").body(Body::empty()).unwrap();
+    let (status, headers, _) = send(&app, request).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(headers[header::ALLOW], "GET,HEAD,OPTIONS");
 }
 
 #[tokio::test]
@@ -365,18 +371,53 @@ async fn healthz_is_degraded_without_redis() {
     assert_eq!(check(&body, "postgres")["ok"], true);
 }
 
+/// Applies the migrations as the role allowed to create tables:
+/// `TEST_MIGRATION_DATABASE_URL` (`pulsars_migrate`), else the tests' own
+/// URL, for a database whose service role still owns its schemas.
+async fn apply_migrations(database_url: &str) {
+    let url = std::env::var("TEST_MIGRATION_DATABASE_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| database_url.to_owned());
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    store::migrate(&pool).await.expect("migrations apply");
+    pool.close().await;
+}
+
+/// The grants of deploy/sql/phase-1.sql, as the service's role sees them.
 #[tokio::test]
-async fn the_api_role_reads_views_but_not_site_tables() {
+async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
     let Some((database_url, _)) = integration_urls() else {
         return;
     };
+    // The game tables must exist for the structure checks below.
+    apply_migrations(&database_url).await;
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    let denied = |error: sqlx::Error| {
+        let message = error.to_string();
+        assert!(message.contains("permission denied"), "{message}");
+    };
 
-    let denied = sqlx::query("SELECT 1 FROM site.courses LIMIT 1")
-        .execute(&pool)
+    // No access to accounts before phase 2.
+    denied(
+        sqlx::query("SELECT 1 FROM site.users LIMIT 1")
+            .execute(&pool)
+            .await
+            .expect_err("pulsars_api must not read site"),
+    );
+
+    // Content: read, never written.
+    let raw: i64 = sqlx::query_scalar("SELECT count(*) FROM contenu.courses")
+        .fetch_one(&pool)
         .await
-        .expect_err("pulsars_api must not read site");
-    assert!(denied.to_string().contains("permission denied"), "{denied}");
+        .unwrap();
+    assert!(raw > 0, "demo data is loaded");
+    denied(
+        sqlx::query("UPDATE contenu.courses SET vues = vues WHERE false")
+            .execute(&pool)
+            .await
+            .expect_err("pulsars_api must not write content"),
+    );
 
     let courses: i64 = sqlx::query_scalar("SELECT count(*) FROM api_read.courses")
         .fetch_one(&pool)
@@ -392,14 +433,34 @@ async fn the_api_role_reads_views_but_not_site_tables() {
     .unwrap();
     assert_eq!(draft, 0, "drafts are invisible");
 
-    sqlx::query("CREATE TABLE IF NOT EXISTS game.write_check (id int)")
-        .execute(&pool)
-        .await
-        .expect("pulsars_api owns the game schema");
-    sqlx::query("DROP TABLE game.write_check")
-        .execute(&pool)
-        .await
-        .unwrap();
+    // Structure belongs to pulsars_owner: `pulsars-api migrate` changes it.
+    for ddl in [
+        "CREATE TABLE game.write_check (id int)",
+        "CREATE TABLE contenu.write_check (id int)",
+        "ALTER TABLE game.ratings ADD COLUMN write_check int",
+        "DROP TABLE game.seasons",
+    ] {
+        let error = sqlx::query(ddl)
+            .execute(&pool)
+            .await
+            .expect_err("pulsars_api must not change the structure");
+        let message = error.to_string();
+        assert!(
+            message.contains("permission denied") || message.contains("must be owner"),
+            "{ddl}: {message}"
+        );
+    }
+
+    // But it writes the rows of game.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO game.ratings (user_id, subject, rating, rd, volatility, games, wins, losses, draws)
+         VALUES (999999, 'all', 1500, 350, 0.06, 0, 0, 0, 0)",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("pulsars_api writes game rows");
+    tx.rollback().await.unwrap();
 }
 
 #[tokio::test]
@@ -445,6 +506,72 @@ async fn no_answer_or_private_data_reaches_the_views() {
         "-corrige.pdf",
     ] {
         assert!(!dump.contains(marker), "`{marker}` leaked into api_read");
+    }
+}
+
+/// What the API reads of `contenu` (src/db/sources.rs) is, row for row,
+/// what the `api_read` views showed: same published rows, same columns.
+#[tokio::test]
+async fn the_content_sources_read_exactly_what_the_views_show() {
+    let Some((database_url, _)) = integration_urls() else {
+        return;
+    };
+    // contenu.matieres, contenu.licences.
+    apply_migrations(&database_url).await;
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    let comparisons = pulsars_api::db::sources::compare_with_views(&pool)
+        .await
+        .unwrap();
+    assert_eq!(comparisons.len(), pulsars_api::db::sources::SOURCES.len());
+    for c in &comparisons {
+        assert!(c.is_same(), "{c:?}");
+    }
+    let courses = comparisons.iter().find(|c| c.view == "courses").unwrap();
+    assert!(courses.rows > 0, "demo data is loaded");
+}
+
+#[tokio::test]
+async fn no_answer_or_private_data_reaches_the_content_sources() {
+    let Some((database_url, _)) = integration_urls() else {
+        return;
+    };
+    apply_migrations(&database_url).await;
+    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    let mut dump = String::new();
+    for &(view, source) in pulsars_api::db::sources::SOURCES {
+        // The sources are constants of the API, not user input.
+        let rows: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT string_agg(row_to_json(t)::text, '\n') FROM {source} t"
+        )))
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("{view}: {error}"));
+        dump.push_str(&rows.unwrap_or_default());
+    }
+    assert!(!dump.is_empty(), "demo data is loaded");
+
+    // Markers planted in dev/db/30-demo-data.sql.
+    for marker in [
+        "SOLUTION-MARKER",
+        "CORRIGE-MARKER",
+        "PROMPT-MARKER",
+        "example.invalid",
+        "demofriendtoken",
+        "not-a-real-hash",
+        "Terminale B (private)",
+        "correctes",
+        "acceptees",
+        "solution_md",
+        "corrige_md",
+        "demo-draft-course",
+        "demo-future-course",
+        "demo-pending-resource",
+        "-corrige.pdf",
+    ] {
+        assert!(
+            !dump.contains(marker),
+            "`{marker}` leaked into a content source"
+        );
     }
 }
 
@@ -1544,6 +1671,231 @@ async fn resources_filters() {
 }
 
 #[tokio::test]
+async fn news_lists_published_announcements_only() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_json(&app, "/v1/news").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(headers.contains_key(header::ETAG));
+    assert_eq!(field(&body, "slug"), [json!("le-russe-arrive-sur-pulsars")]);
+    assert_eq!(body["next_cursor"], Value::Null);
+    assert_eq!(
+        body["data"][0],
+        json!({
+            "id": 1,
+            "slug": "le-russe-arrive-sur-pulsars",
+            "lang": "fr",
+            "title": "Le russe arrive sur Pulsars",
+            "summary": "L'interface parle désormais trois langues.",
+            "author": "jikuji",
+            "published_at": "2026-10-20T08:00:00Z",
+            "updated_at": "2026-10-20T08:00:00Z",
+            "web_url": "https://pulsars.science/actualite/le-russe-arrive-sur-pulsars"
+        })
+    );
+    // The list carries no content.
+    assert!(body["data"][0].get("content_md").is_none());
+
+    let (_, _, body) = get_json(&app, "/v1/news?q=russe").await;
+    assert_eq!(field(&body, "slug").len(), 1);
+    let (_, _, body) = get_json(&app, "/v1/news?q=pr%C3%A9paration").await;
+    assert_eq!(field(&body, "slug").len(), 0, "drafts are not searchable");
+}
+
+#[tokio::test]
+async fn news_detail_falls_back_to_french_per_field() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, _, body) = get_json(&app, "/v1/news/le-russe-arrive-sur-pulsars").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["content_md"],
+        "Après le français et l'anglais, **le russe**.\n\nBonne lecture !"
+    );
+
+    let (_, _, body) = get_json(&app, "/v1/news/le-russe-arrive-sur-pulsars?lang=en").await;
+    let data = &body["data"];
+    assert_eq!(data["lang"], "en");
+    assert_eq!(data["title"], "Russian comes to Pulsars");
+    // An empty translated field keeps the French text.
+    assert_eq!(
+        data["summary"],
+        "L'interface parle désormais trois langues."
+    );
+    assert_eq!(
+        data["content_md"],
+        "After French and English, **Russian**.\n\nEnjoy!"
+    );
+}
+
+/// A file route: status, headers and the raw body.
+async fn get_file(
+    app: &Router,
+    path: &str,
+    headers: &[(header::HeaderName, &str)],
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::get(path);
+    for (name, value) in headers {
+        request = request.header(name, *value);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, headers, bytes.to_vec())
+}
+
+const BAC_PDF: &str = "/v1/exams/baccalaureat-general-2026-mathematiques-specialite-jour-1/pdf";
+const BAC_BYTES: &[u8] = b"%PDF-1.4 STATEMENT-BAC-2026 0123456789";
+
+#[tokio::test]
+async fn exam_statements_are_served_with_ranges_and_validators() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    // `Accept: application/pdf` is fine here: no JSON required.
+    let (status, headers, body) =
+        get_file(&app, BAC_PDF, &[(header::ACCEPT, "application/pdf")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, BAC_BYTES);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/pdf");
+    assert_eq!(headers[header::CONTENT_LENGTH], "38");
+    assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "inline; filename=\"baccalaureat-general-2026-mathematiques-specialite-jour-1.pdf\""
+    );
+    assert_eq!(
+        headers[header::CONTENT_SECURITY_POLICY],
+        "default-src 'none'; sandbox"
+    );
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    let etag = headers[header::ETAG].to_str().unwrap().to_owned();
+
+    // Compression would drop `Accept-Ranges`: PDF are left alone.
+    let (_, headers, body) = get_file(&app, BAC_PDF, &[(header::ACCEPT_ENCODING, "gzip")]).await;
+    assert!(headers.get(header::CONTENT_ENCODING).is_none());
+    assert_eq!(body, BAC_BYTES);
+
+    let (status, headers, body) = get_file(&app, BAC_PDF, &[(header::RANGE, "bytes=9-17")]).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, b"STATEMENT");
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes 9-17/38");
+    assert_eq!(headers[header::CONTENT_LENGTH], "9");
+
+    let (_, _, body) = get_file(&app, BAC_PDF, &[(header::RANGE, "bytes=-10")]).await;
+    assert_eq!(body, b"0123456789");
+
+    let (status, headers, body) = get_file(&app, BAC_PDF, &[(header::RANGE, "bytes=38-")]).await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes */38");
+    let problem: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        problem["type"],
+        "https://api.pulsars.science/problems/range-not-satisfiable"
+    );
+
+    // A stale partial copy gets the whole file.
+    let (status, _, body) = get_file(
+        &app,
+        BAC_PDF,
+        &[
+            (header::RANGE, "bytes=0-3"),
+            (header::IF_RANGE, "\"other\""),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, BAC_BYTES);
+    let (status, _, body) = get_file(
+        &app,
+        BAC_PDF,
+        &[(header::RANGE, "bytes=0-3"), (header::IF_RANGE, &etag)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, b"%PDF");
+
+    let (status, headers, body) = get_file(&app, BAC_PDF, &[(header::IF_NONE_MATCH, &etag)]).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(body.is_empty());
+    assert_eq!(headers[header::ETAG], etag.as_str());
+
+    let (_, headers, _) = get_file(&app, &format!("{BAC_PDF}?disposition=attachment"), &[]).await;
+    assert!(
+        headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment; ")
+    );
+    let (status, _, _) = get_file(&app, &format!("{BAC_PDF}?disposition=download"), &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn resource_files_are_served() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_file(
+        &app,
+        "/v1/resources/article-chimie-inorganique-ic901972h/file",
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"%PDF-1.4 RESOURCE-IC901972H");
+    assert_eq!(headers[header::CONTENT_TYPE], "application/pdf");
+}
+
+/// The only way to a file is a published exam's statement or a published
+/// resource's own file: never a correction, a draft's PDF, a pending
+/// resource, another disk, or a path.
+#[tokio::test]
+async fn no_correction_draft_or_path_is_ever_served_as_a_file() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    for path in [
+        // Draft exam with a PDF; published exam without one.
+        "/v1/exams/diplome-national-du-brevet-2026-mathematiques-serie-generale/pdf",
+        "/v1/exams/centrale-supelec-2026-mathematiques-1-mp-mpi/pdf",
+        "/v1/exams/baccalaureat-general-2026-mathematiques-specialite-jour-1/corrige",
+        "/v1/exams/unknown/pdf",
+        // Pending resource; link-only resource; a hosted one without its file.
+        "/v1/resources/demo-pending-resource/file",
+        "/v1/resources/unknown/file",
+        // No route takes a path.
+        "/v1/files/examens/bac-2026-maths-jour-1-corrige.pdf",
+        "/v1/exams/..%2F..%2Fexamens%2Fbac-2026-maths-jour-1-corrige.pdf/pdf",
+    ] {
+        let (status, _, body) = get_file(&app, path, &[]).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        let body = String::from_utf8_lossy(&body);
+        for marker in [
+            "FILE-CORRIGE-MARKER",
+            "FILE-DRAFT-MARKER",
+            "FILE-PENDING-MARKER",
+            "FILE-OTHER-DISK-MARKER",
+        ] {
+            assert!(!body.contains(marker), "{path} leaked {marker}");
+        }
+    }
+    let (_, _, resources) = get_json(&app, "/v1/resources?limit=100").await;
+    for slug in field(&resources, "slug") {
+        let path = format!("/v1/resources/{}/file", slug.as_str().unwrap());
+        let (_, _, body) = get_file(&app, &path, &[]).await;
+        assert!(!String::from_utf8_lossy(&body).contains("MARKER"), "{path}");
+    }
+}
+
+#[tokio::test]
 async fn unpublished_content_answers_404() {
     let Some(app) = content_app().await else {
         return;
@@ -1562,6 +1914,8 @@ async fn unpublished_content_answers_404() {
         "/v1/exercises/0",
         "/v1/exams/diplome-national-du-brevet-2026-mathematiques-serie-generale",
         "/v1/resources/demo-pending-resource",
+        "/v1/news/demo-draft-news",
+        "/v1/news/demo-future-news",
     ] {
         let (status, headers, body) = get_json(&app, path).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
@@ -1727,11 +2081,13 @@ async fn crawl(app: &Router) -> String {
         "/v1/exercises?limit=100".into(),
         "/v1/exams?limit=100".into(),
         "/v1/resources?limit=100".into(),
+        "/v1/news?limit=100".into(),
     ];
     for (list, detail) in [
         ("/v1/courses?limit=100", "/v1/courses/"),
         ("/v1/exams?limit=100", "/v1/exams/"),
         ("/v1/resources?limit=100", "/v1/resources/"),
+        ("/v1/news?limit=100", "/v1/news/"),
     ] {
         let (_, _, body) = get_json(app, list).await;
         for slug in field(&body, "slug") {
@@ -1775,6 +2131,10 @@ async fn no_draft_answer_or_personal_data_is_ever_served() {
         "the crawl saw content"
     );
     assert!(dump.contains("Mendeleïev"), "the crawl saw every lesson");
+    assert!(
+        dump.contains("Russian comes to Pulsars"),
+        "the crawl saw the news"
+    );
 
     // Markers planted in dev/db/30-demo-data.sql, keys of answer fields,
     // unpublished slugs and storage paths.
@@ -1795,6 +2155,10 @@ async fn no_draft_answer_or_personal_data_is_ever_served() {
         "demo-draft-course",
         "demo-future-course",
         "demo-pending-resource",
+        "demo-draft-news",
+        "demo-future-news",
+        "NEWS-DRAFT-MARKER",
+        "NEWS-FUTURE-MARKER",
         "diplome-national-du-brevet",
         "Brouillon",
         "Invisible",

@@ -39,6 +39,8 @@ tags:
   - name: exercises
   - name: exams
   - name: resources
+  - name: news
+    description: Announcements of the team, as on https://pulsars.science/actualite.
   - name: account
   - name: game
     description: |
@@ -595,6 +597,54 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /v1/exams/{slug}/pdf:
+    get:
+      tags: [exams]
+      operationId: getExamPdf
+      summary: The statement PDF of a published exam
+      description: |
+        The file itself, read from the site's storage. Never the correction,
+        never a draft's file. `pdf_url` in the exam still points to the
+        site, which counts downloads. Supports `Range` (one range), `If-Range`,
+        `If-None-Match` and `HEAD`; `Accept` is not checked.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, example: baccalaureat-general-2026-mathematiques-specialite-jour-1 }
+        - $ref: '#/components/parameters/Disposition'
+      responses:
+        '200': { $ref: '#/components/responses/File' }
+        '206': { $ref: '#/components/responses/FilePart' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '416': { $ref: '#/components/responses/RangeNotSatisfiable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/resources/{slug}/file:
+    get:
+      tags: [resources]
+      operationId: getResourceFile
+      summary: The hosted file of a published resource
+      description: |
+        Only for `mode = host`. Same behaviour as `/v1/exams/{slug}/pdf`;
+        `download_url` still points to the site, which counts downloads.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, example: misselbooks-abstract-algebra }
+        - $ref: '#/components/parameters/Disposition'
+      responses:
+        '200': { $ref: '#/components/responses/File' }
+        '206': { $ref: '#/components/responses/FilePart' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '416': { $ref: '#/components/responses/RangeNotSatisfiable' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /v1/resources:
     get:
       tags: [resources]
@@ -690,6 +740,83 @@ paths:
                       created_at: '2026-08-07T14:44:26Z'
                       updated_at: '2026-08-07T14:44:26Z'
                       web_url: https://pulsars.science/ressources/article-chimie-inorganique-ic901972h
+        '304': { $ref: '#/components/responses/NotModified' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/news:
+    get:
+      tags: [news]
+      operationId: listNews
+      summary: Published announcements
+      description: |
+        Only announcements whose `published_at` is set and past: a null date
+        is a draft, a future one is scheduled. Newest first (`published_at`
+        descending, then `id` descending). Without their content: see
+        `/v1/news/{slug}`. `q` searches the title and the summary.
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Search'
+      responses:
+        '200':
+          description: A page of announcements
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/News' }
+                  next_cursor: { $ref: '#/components/schemas/NextCursor' }
+              examples:
+                page:
+                  value:
+                    data:
+                      - id: 1
+                        slug: le-russe-arrive-sur-pulsars
+                        lang: fr
+                        title: Le russe arrive sur Pulsars
+                        summary: L'interface parle désormais trois langues.
+                        author: jikuji
+                        published_at: '2026-10-20T08:00:00Z'
+                        updated_at: '2026-10-20T08:00:00Z'
+                        web_url: https://pulsars.science/actualite/le-russe-arrive-sur-pulsars
+                    next_cursor: null
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/news/{slug}:
+    get:
+      tags: [news]
+      operationId: getNews
+      summary: One published announcement, with its Markdown content
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string, example: le-russe-arrive-sur-pulsars }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The announcement
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/NewsDetail' }
         '304': { $ref: '#/components/responses/NotModified' }
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
@@ -976,6 +1103,11 @@ components:
         Case-insensitive substring search on title and description, in the
         original text and in the translation for `lang`. Minimum 2 characters.
       schema: { type: string, minLength: 2, maxLength: 100 }
+    Disposition:
+      name: disposition
+      in: query
+      description: '`inline` (default) to show the file in the browser, `attachment` to save it.'
+      schema: { type: string, enum: [inline, attachment], default: inline }
     CourseSlug:
       name: slug
       in: path
@@ -999,6 +1131,31 @@ components:
       schema: { type: integer, example: 12 }
 
   responses:
+    File:
+      description: The whole file
+      headers:
+        ETag: { $ref: '#/components/headers/ETag' }
+        Accept-Ranges: { schema: { type: string, const: bytes } }
+        Content-Disposition: { schema: { type: string, example: 'inline; filename="misselbooks-abstract-algebra.pdf"' } }
+        Cache-Control: { schema: { type: string, example: 'public, max-age=3600' } }
+      content:
+        application/pdf:
+          schema: { type: string, format: binary }
+    FilePart:
+      description: One byte range of the file
+      headers:
+        Content-Range: { schema: { type: string, example: bytes 0-1023/562229 } }
+        ETag: { $ref: '#/components/headers/ETag' }
+      content:
+        application/pdf:
+          schema: { type: string, format: binary }
+    RangeNotSatisfiable:
+      description: The range starts past the end of the file
+      headers:
+        Content-Range: { schema: { type: string, example: 'bytes */562229' } }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     NotModified:
       description: The `If-None-Match` value matches; no body.
     BadRequest:
@@ -1619,6 +1776,34 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         web_url: { type: string, format: uri }
+
+    News:
+      type: object
+      required: [id, slug, lang, title, summary, author, published_at, updated_at, web_url]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        lang: { $ref: '#/components/schemas/LangCode' }
+        title: { type: string }
+        summary:
+          type: [string, 'null']
+          description: The lead paragraph (`chapeau`). Translatable.
+        author:
+          type: [string, 'null']
+          description: Pseudo of the team member who wrote it.
+        published_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        web_url: { type: string, format: uri }
+
+    NewsDetail:
+      allOf:
+        - $ref: '#/components/schemas/News'
+        - type: object
+          required: [content_md]
+          properties:
+            content_md:
+              type: string
+              description: Markdown, translated when a translation has it, else French.
 
     Role:
       type: object
