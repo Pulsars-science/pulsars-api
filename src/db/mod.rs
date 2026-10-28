@@ -15,6 +15,7 @@ pub mod courses;
 pub mod exams;
 pub mod exercises;
 pub mod members;
+pub mod news;
 pub mod resources;
 
 use std::str::FromStr;

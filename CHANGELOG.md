@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `GET /v1/news` and `GET /v1/news/{slug}`: the team's published
+  announcements (`contenu.actualites`), newest first, with `q`, `lang` and
+  cursor pagination; the detail adds the Markdown content. Drafts (no date)
+  and scheduled ones (future date) answer 404, as on the site.
 - `extract::Json<T>`, the extractor for JSON request bodies of the write
   endpoints to come. Its rejections are problems in this API's vocabulary:
   415 `unsupported-media-type` for a `Content-Type` other than

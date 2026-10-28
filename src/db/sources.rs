@@ -216,6 +216,21 @@ macro_rules! published_resources {
     };
 }
 
+/// Published news (`Actualite::scopePubliees()`): visibility rests on the
+/// publication date alone; null is a draft, future is scheduled.
+macro_rules! published_news {
+    () => {
+        "(SELECT a.id, a.slug, a.titre AS title, a.chapeau AS summary,
+                a.contenu_md AS content_md, u.pseudo AS author_pseudo,
+                a.published_at AT TIME ZONE 'UTC' AS published_at,
+                a.updated_at AT TIME ZONE 'UTC' AS updated_at
+           FROM contenu.actualites a
+           LEFT JOIN api_read.members u ON u.id = a.auteur_id
+          WHERE a.published_at IS NOT NULL
+            AND a.published_at <= (now() AT TIME ZONE 'UTC'))"
+    };
+}
+
 /// Translations of one kind of content (`traduisible_type`), restricted to
 /// the rows of `$parent` (a `published_*!()` subquery). `$fields` are the
 /// translated columns, read from the `champs` JSON (`t.f`); never
@@ -316,6 +331,19 @@ macro_rules! exam_part_translations {
             published_exam_parts!(),
             "nullif(f.champs ->> 'titre', '') AS title,
              nullif(f.champs ->> 'enonce_md', '') AS statement_md"
+        )
+    };
+}
+
+macro_rules! news_translations {
+    () => {
+        translations!(
+            "actualite",
+            "news_id",
+            published_news!(),
+            "nullif(f.champs ->> 'titre', '') AS title,
+             nullif(f.champs ->> 'chapeau', '') AS summary,
+             nullif(f.champs ->> 'contenu_md', '') AS content_md"
         )
     };
 }
