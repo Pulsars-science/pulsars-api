@@ -16,6 +16,7 @@ pub mod email_tokens;
 pub mod exams;
 pub mod exercises;
 pub mod files;
+pub mod forum;
 pub mod language_stats;
 pub mod languages;
 pub mod members;
