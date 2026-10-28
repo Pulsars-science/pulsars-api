@@ -135,6 +135,14 @@ pub enum ApiError {
     Timeout,
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    /// An outside service an endpoint needs is not configured
+    /// (`not_configured`) or did not answer properly (`upstream_failed`):
+    /// 503 with that `reason`.
+    #[error("service unavailable: {reason}")]
+    ServiceUnavailable {
+        reason: &'static str,
+        detail: String,
+    },
     /// `POST /v1/auth/token` without a signing key configured.
     #[error("token unavailable")]
     TokenUnavailable,
@@ -186,7 +194,9 @@ impl ApiError {
                 StatusCode::TOO_MANY_REQUESTS
             }
             Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Unavailable(_) | Self::TokenUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Unavailable(_) | Self::TokenUnavailable | Self::ServiceUnavailable { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -214,7 +224,9 @@ impl ApiError {
                 ("rate-limited", "Too many requests")
             }
             Self::Timeout => ("unavailable", "Request timed out"),
-            Self::Unavailable(_) => ("unavailable", "Service unavailable"),
+            Self::Unavailable(_) | Self::ServiceUnavailable { .. } => {
+                ("unavailable", "Service unavailable")
+            }
             Self::TokenUnavailable => ("token-unavailable", "Game tokens unavailable"),
             Self::Internal(_) => ("internal", "Internal error"),
         };
@@ -239,7 +251,9 @@ impl ApiError {
                 "This link is unknown, already used, expired, or was sent to another address."
                     .to_owned(),
             ),
-            Self::Conflict { detail, .. } => Some(detail.clone()),
+            Self::Conflict { detail, .. } | Self::ServiceUnavailable { detail, .. } => {
+                Some(detail.clone())
+            }
             Self::TokenUnavailable => Some("Game tokens are temporarily unavailable.".to_owned()),
             Self::TooManyAttempts { retry_after } => Some(format!(
                 "Too many attempts. Try again in {retry_after} seconds."
@@ -293,13 +307,16 @@ impl ApiError {
             reason: match self {
                 Self::Unauthorized { reason, .. } => Some(reason.code()),
                 Self::InsufficientScope { .. } => Some(INSUFFICIENT_SCOPE),
-                Self::Conflict { reason, .. } => Some(reason),
+                Self::Conflict { reason, .. } | Self::ServiceUnavailable { reason, .. } => {
+                    Some(reason)
+                }
                 _ => None,
             },
             trace_id: match self {
-                Self::Internal(_) | Self::Unavailable(_) | Self::Timeout => {
-                    telemetry::current_trace_id()
-                }
+                Self::Internal(_)
+                | Self::Unavailable(_)
+                | Self::Timeout
+                | Self::ServiceUnavailable { .. } => telemetry::current_trace_id(),
                 _ => None,
             },
         }

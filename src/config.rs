@@ -108,7 +108,38 @@ pub struct Config {
     /// Where account mails go (`MAIL_SMTP_URL`, `MAIL_FROM`). `None`: they
     /// are only logged, without their link.
     pub mail: Option<MailConfig>,
+    /// Translation of forum posts (`DEEPL_API_KEY`, `DEEPL_API_URL`,
+    /// `DEEPL_LANGUAGES`). `None` without a key: the translation routes
+    /// answer 503 `not_configured`, as Laravel did.
+    pub deepl: Option<DeeplConfig>,
 }
+
+/// DeepL, which translates forum posts (Laravel's `services.deepl`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeeplConfig {
+    pub key: Secret,
+    /// `https://api-free.deepl.com` or `https://api.deepl.com`, without
+    /// trailing slash.
+    pub url: String,
+    /// The site's languages and DeepL's `target_lang` for each.
+    pub languages: Vec<(String, String)>,
+}
+
+impl DeeplConfig {
+    /// DeepL's `target_lang` for one of the site's languages.
+    pub fn target(&self, lang: &str) -> Option<&str> {
+        self.languages
+            .iter()
+            .find(|(site, _)| site == lang)
+            .map(|(_, deepl)| deepl.as_str())
+    }
+}
+
+/// DeepL's free endpoint, as in Laravel's `config/services.php`.
+pub const DEEPL_URL: &str = "https://api-free.deepl.com";
+
+/// The site's languages and their DeepL target, as in Laravel.
+pub const DEEPL_LANGUAGES: &str = "fr=FR,en=EN-GB,ru=RU";
 
 /// The SMTP server of account mails (`docs/contract/auth-sessions.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +321,10 @@ impl Config {
         let signer_kid = reader.optional_raw("JWT_SIGNING_KID");
         let own_issuer = reader.optional("JWT_OWN_ISSUER", API_ISSUER, |v| Ok(v.to_owned()));
         let token_ttl = reader.optional("JWT_TOKEN_TTL_SECS", "300", |v| parse_range(v, 60, 3600));
+        let deepl_key = reader.optional_raw("DEEPL_API_KEY");
+        let deepl_url_raw = reader.optional_raw("DEEPL_API_URL");
+        let deepl_languages =
+            reader.optional("DEEPL_LANGUAGES", DEEPL_LANGUAGES, parse_deepl_languages);
         let service_key = match reader.optional_raw("SERVICE_KEY") {
             Some(key) if key.chars().count() < SERVICE_KEY_MIN_CHARS => {
                 reader.problems.push(format!(
@@ -368,6 +403,25 @@ impl Config {
                 }
             }
         });
+
+        let deepl_url = environment.and_then(|env| {
+            let raw = deepl_url_raw.unwrap_or_else(|| DEEPL_URL.to_owned());
+            match parse_http_url(&raw, env) {
+                Ok(url) => Some(url.trim_end_matches('/').to_owned()),
+                Err(message) => {
+                    reader.problems.push(format!("DEEPL_API_URL: {message}"));
+                    None
+                }
+            }
+        });
+        let deepl = match (deepl_key, deepl_url, deepl_languages) {
+            (Some(key), Some(url), Some(languages)) => Some(DeeplConfig {
+                key: Secret::new(key),
+                url,
+                languages,
+            }),
+            _ => None,
+        };
 
         if let (Some(bind), Some(metrics)) = (bind_addr, metrics_addr) {
             if !is_internal(metrics.ip()) {
@@ -456,6 +510,7 @@ impl Config {
                     .unwrap_or(crate::auth::password::DEFAULT_MEMORY_KIB),
                 token_signer,
                 mail,
+                deepl,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
@@ -578,6 +633,28 @@ fn load_signer(
         .try_into()
         .map_err(|_| problem(format!("{path} does not hold a 32-byte seed")))?;
     Ok((kid.to_owned(), ed25519_dalek::SigningKey::from_bytes(&seed)))
+}
+
+/// `fr=FR,en=EN-GB`: the site's language, `=`, DeepL's `target_lang`.
+fn parse_deepl_languages(value: &str) -> Result<Vec<(String, String)>, String> {
+    let message = || "must look like `fr=FR,en=EN-GB,ru=RU`".to_owned();
+    value
+        .split(',')
+        .map(|pair| {
+            let (site, deepl) = pair.split_once('=').ok_or_else(message)?;
+            let (site, deepl) = (site.trim(), deepl.trim());
+            let valid = |s: &str| {
+                !s.is_empty()
+                    && s.len() <= 10
+                    && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            };
+            if valid(site) && valid(deepl) {
+                Ok((site.to_owned(), deepl.to_owned()))
+            } else {
+                Err(message())
+            }
+        })
+        .collect()
 }
 
 fn parse_range(value: &str, min: u32, max: u32) -> Result<u32, String> {
@@ -902,6 +979,41 @@ mod tests {
         .expect_err("invalid");
         assert_eq!(err.problems.len(), 2);
         assert!(!err.to_string().contains("short"));
+    }
+
+    #[test]
+    fn deepl_needs_a_key_and_has_laravel_defaults() {
+        assert_eq!(with(&[]).expect("valid").deepl, None);
+        let config = with(&[("DEEPL_API_KEY", "a-key:fx")]).expect("valid");
+        let deepl = config.deepl.expect("configured");
+        assert_eq!(deepl.url, "https://api-free.deepl.com");
+        assert_eq!(deepl.target("en"), Some("EN-GB"));
+        assert_eq!(deepl.target("ru"), Some("RU"));
+        assert_eq!(deepl.target("de"), None);
+        assert!(!format!("{deepl:?}").contains("a-key"));
+
+        let config = with(&[
+            ("DEEPL_API_KEY", "k"),
+            ("DEEPL_API_URL", "https://api.deepl.com/"),
+            ("DEEPL_LANGUAGES", "fr=FR, en=EN-US"),
+        ])
+        .expect("valid");
+        let deepl = config.deepl.expect("configured");
+        assert_eq!(deepl.url, "https://api.deepl.com");
+        assert_eq!(deepl.target("en"), Some("EN-US"));
+
+        let error = with(&[
+            ("DEEPL_API_URL", "http://deepl.example"),
+            ("DEEPL_LANGUAGES", "fr"),
+        ])
+        .expect_err("invalid");
+        assert_eq!(
+            error.problems,
+            vec![
+                "DEEPL_LANGUAGES: must look like `fr=FR,en=EN-GB,ru=RU`",
+                "DEEPL_API_URL: must use https in production",
+            ]
+        );
     }
 
     #[test]

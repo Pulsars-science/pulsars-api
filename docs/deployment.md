@@ -340,6 +340,9 @@ variable the API reads is in the file:
 | `JWT_SIGNING_KEY_FILE`, `JWT_SIGNING_KID` | unset | the API's game-token key (`pulsars-api jwt-keygen <kid> <dir>`), mode 0600 enforced in production; unset: `POST /v1/auth/token` answers 503 |
 | `MAIL_SMTP_URL` | unset | account mails (`smtp://` or `smtps://user:pass@host:port`, the site's SMTP account); unset: mails are only logged, without their link |
 | `MAIL_FROM` | `Pulsars <noreply@blackenium.com>` | sender of account mails |
+| `DEEPL_API_KEY` | unset | DeepL's key, to translate forum posts; unset: the translation routes answer 503 `not_configured` |
+| `DEEPL_API_URL` | `https://api-free.deepl.com` | `https://api.deepl.com` for a paid plan; https only in production |
+| `DEEPL_LANGUAGES` | `fr=FR,en=EN-GB,ru=RU` | the site's languages and DeepL's `target_lang` for each |
 | `JWT_OWN_ISSUER` | `https://api.pulsars.science` | `iss` of the tokens the API signs |
 | `JWT_TOKEN_TTL_SECS` | `300` | lifetime of those tokens, 60 to 3600 |
 | `SERVICE_KEY` | unset | the site's key (`PULSARS_API_SERVICE_KEY` in Laravel), at least 32 characters; its calls are not rate limited |
