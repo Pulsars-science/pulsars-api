@@ -996,7 +996,7 @@ fn course_basics_fr() -> Value {
         "chapter_count": 2,
         "lesson_count": 4,
         "exercise_count": 5,
-        "available_langs": ["fr", "en"],
+        "available_langs": ["fr", "en", "ru"],
         "published_at": "2026-08-17T09:27:34Z",
         "updated_at": "2026-08-17T09:27:34Z",
         "web_url": "https://pulsars.science/cours/les-bases-du-calcul",
@@ -1671,6 +1671,137 @@ async fn resources_filters() {
 }
 
 #[tokio::test]
+async fn russian_is_served_field_by_field_with_french_fallback() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_json(&app, "/v1/courses/les-bases-du-calcul?lang=ru").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CONTENT_LANGUAGE], "ru");
+    let course = &body["data"];
+    assert_eq!(course["lang"], "ru");
+    assert_eq!(course["title"], "Основы вычислений");
+    // Empty in Russian: the French text.
+    assert!(
+        course["description"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("Priorités opératoires")),
+        "{course}"
+    );
+    assert_eq!(course["available_langs"], json!(["fr", "en", "ru"]));
+    // No Russian chapter title: French, and said so.
+    assert_eq!(course["chapters"][0]["lang"], "fr");
+
+    let (_, _, body) = get_json(&app, "/v1/courses?available_in=ru").await;
+    assert_eq!(field(&body, "slug"), [json!("les-bases-du-calcul")]);
+}
+
+#[tokio::test]
+async fn courses_can_be_listed_newest_first_by_numbered_pages() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (_, _, body) = get_json(&app, "/v1/courses?sort=recent").await;
+    assert_eq!(
+        field(&body, "slug"),
+        [
+            json!("chimie-le-tableau-periodique"),
+            json!("les-bases-du-calcul")
+        ]
+    );
+    assert!(body.get("total").is_none(), "cursor pages carry no total");
+
+    // Cursors follow the order they were made in.
+    let (_, _, first) = get_json(&app, "/v1/courses?sort=recent&limit=1").await;
+    let cursor = first["next_cursor"].as_str().expect("a next page");
+    let (status, _, second) = get_json(
+        &app,
+        &format!("/v1/courses?sort=recent&limit=1&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(field(&second, "slug"), [json!("les-bases-du-calcul")]);
+    let (status, _, _) = get_json(
+        &app,
+        &format!("/v1/courses?sort=title&limit=1&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a cursor belongs to its order"
+    );
+
+    for (page, slug) in [
+        (1, "chimie-le-tableau-periodique"),
+        (2, "les-bases-du-calcul"),
+    ] {
+        let (status, _, body) = get_json(
+            &app,
+            &format!("/v1/courses?sort=recent&limit=1&page={page}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(field(&body, "slug"), [json!(slug)], "page {page}");
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["next_cursor"], Value::Null);
+    }
+    let (_, _, body) = get_json(&app, "/v1/courses?sort=recent&limit=1&page=3").await;
+    assert_eq!(body["data"], json!([]));
+    assert_eq!(body["total"], 2, "past the end, still the total");
+    let (_, _, body) = get_json(
+        &app,
+        "/v1/courses?page=1&theme=Chimie%20%E2%80%93%20La%20mati%C3%A8re",
+    )
+    .await;
+    assert_eq!(
+        field(&body, "slug"),
+        [json!("chimie-le-tableau-periodique")]
+    );
+    assert_eq!(body["total"], 1);
+    let (_, _, body) = get_json(&app, "/v1/courses?page=1&theme=Nothing").await;
+    assert_eq!(body["total"], 0);
+
+    let (status, _, body) = get_json(&app, &format!("/v1/courses?page=2&cursor={cursor}")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body["errors"],
+        json!([{"parameter": "page", "detail": "cannot be combined with `cursor`"}])
+    );
+    let (_, _, body) = get_json(&app, "/v1/courses?page=0&sort=new").await;
+    assert_eq!(
+        body["errors"],
+        json!([
+            {"parameter": "sort", "detail": "must be one of: title, recent"},
+            {"parameter": "page", "detail": "must be between 1 and 1000"}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn exams_have_numbered_pages_and_filter_values() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (_, _, body) = get_json(&app, "/v1/exams?page=2&limit=1").await;
+    assert_eq!(body["total"], 2, "{body}");
+    assert_eq!(
+        field(&body, "slug"),
+        [json!(
+            "baccalaureat-general-2026-mathematiques-specialite-jour-1"
+        )]
+    );
+    let (status, headers, body) = get_json(&app, "/v1/exams/facets").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(headers.contains_key(header::ETAG));
+    // The draft's `3e` is not there.
+    assert_eq!(
+        body,
+        json!({"data": {"levels": ["CPGE", "Terminale"], "countries": ["FR"]}})
+    );
+}
+
+#[tokio::test]
 async fn news_lists_published_announcements_only() {
     let Some(app) = content_app().await else {
         return;
@@ -1957,7 +2088,7 @@ async fn invalid_parameters_are_all_reported() {
             "status": 400,
             "detail": "One or more query parameters are invalid.",
             "errors": [
-                {"parameter": "lang", "detail": "must be one of: fr, en"},
+                {"parameter": "lang", "detail": "must be one of: fr, en, ru"},
                 {"parameter": "limit", "detail": "must be between 1 and 100"},
                 {"parameter": "topic", "detail": "requires `subject`"},
                 {"parameter": "q", "detail": "must be between 2 and 100 characters"},

@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `lang=ru`: Russian translations, falling back to French per object and
+  per field as English does. `available_in=ru`, and `ru` in
+  `available_langs`.
+- `GET /v1/courses`: `sort=recent` (latest published first), `theme`, and
+  `page` for numbered pages, answered with `total`.
+- `GET /v1/exams`: `page` and `total`.
+- `GET /v1/exams/facets`: the levels and countries of published exams.
+
 ## [0.3.0] - 2026-10-28
 
 ### Upgrading

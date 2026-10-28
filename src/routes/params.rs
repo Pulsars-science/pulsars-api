@@ -18,16 +18,20 @@ pub const MAX_LIMIT: u32 = 100;
 const SEARCH_MIN_CHARS: usize = 2;
 const SEARCH_MAX_CHARS: usize = 100;
 
+/// Highest `page` accepted: past it, a client should filter.
+pub const MAX_PAGE: u32 = 1000;
+
 /// Longest cursor accepted.
 const CURSOR_MAX_BYTES: usize = 512;
 
-/// Content language (`?lang=fr|en`).
+/// Content language (`?lang=fr|en|ru`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
     /// The source language.
     #[default]
     Fr,
     En,
+    Ru,
 }
 
 impl Lang {
@@ -35,6 +39,7 @@ impl Lang {
         match self {
             Self::Fr => "fr",
             Self::En => "en",
+            Self::Ru => "ru",
         }
     }
 
@@ -44,11 +49,12 @@ impl Lang {
         match self {
             Self::Fr => None,
             Self::En => Some("en"),
+            Self::Ru => Some("ru"),
         }
     }
 }
 
-pub const LANGS: &[&str] = &["fr", "en"];
+pub const LANGS: &[&str] = &["fr", "en", "ru"];
 pub const DIFFICULTIES: &[&str] = &["debutant", "intermediaire", "avance"];
 pub const LEVELS: &[&str] = &["college", "lycee", "superieur"];
 pub const EXERCISE_TYPES: &[&str] = &["qcm", "reponse_courte", "reponse_libre"];
@@ -118,6 +124,7 @@ impl Params {
     pub fn lang(&mut self) -> Lang {
         match self.pick("lang", LANGS) {
             Some("en") => Lang::En,
+            Some("ru") => Lang::Ru,
             _ => Lang::Fr,
         }
     }
@@ -157,6 +164,17 @@ impl Params {
             return None;
         }
         Some(raw)
+    }
+
+    /// `page`, numbered from 1, for clients that show page numbers. Never
+    /// part of the fingerprint, and never with `cursor`.
+    pub fn page(&mut self, cursor_given: bool) -> Option<u32> {
+        self.raw("page")?;
+        let page = self.integer("page", 1, MAX_PAGE, 1);
+        if cursor_given {
+            self.error("page", "cannot be combined with `cursor`");
+        }
+        Some(page)
     }
 
     /// A free string of at most `max_chars` characters.

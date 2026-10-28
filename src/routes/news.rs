@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::courses::timestamp;
 use super::cursor;
-use super::params::Params;
+use super::params::{Lang, Params};
 use super::public::{self, Data, Pagination, PublicResult, served, translated};
 use crate::db::news::{self, NewsDetailRow, NewsRow};
 use crate::links;
@@ -65,7 +65,7 @@ pub async fn list(
     let page = pagination.page(
         rows,
         |row| cursor::time_id(row.published_at, row.id),
-        to_news,
+        |row| to_news(row, lang),
     );
     public::json(&headers, lang, &page)
 }
@@ -93,12 +93,12 @@ pub async fn show(
         &headers,
         lang,
         &Data {
-            data: to_detail(row),
+            data: to_detail(row, lang),
         },
     )
 }
 
-fn to_news(row: NewsRow) -> News {
+fn to_news(row: NewsRow, lang: Lang) -> News {
     let (title, is_tr) = translated(row.title, row.tr_title);
     let summary = match row.summary {
         Some(original) => Some(translated(original, row.tr_summary).0),
@@ -108,7 +108,7 @@ fn to_news(row: NewsRow) -> News {
         id: row.id,
         web_url: links::news(&row.slug),
         slug: row.slug,
-        lang: served(is_tr),
+        lang: served(lang, is_tr),
         title,
         summary,
         author: row.author_pseudo,
@@ -117,9 +117,9 @@ fn to_news(row: NewsRow) -> News {
     }
 }
 
-fn to_detail(row: NewsDetailRow) -> NewsDetail {
+fn to_detail(row: NewsDetailRow, lang: Lang) -> NewsDetail {
     NewsDetail {
         content_md: translated(row.content_md, row.tr_content_md).0,
-        news: to_news(row.news),
+        news: to_news(row.news, lang),
     }
 }

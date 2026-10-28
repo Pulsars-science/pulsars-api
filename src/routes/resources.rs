@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::courses::timestamp;
 use super::cursor;
-use super::params::{Params, RESOURCE_MODES};
+use super::params::{Lang, Params, RESOURCE_MODES};
 use super::public::{self, Data, Pagination, PublicResult, served, translated};
 use crate::db::resources::{self, ResourceFilters, ResourceRow};
 use crate::links;
@@ -85,7 +85,7 @@ pub async fn list(
     let page = pagination.page(
         rows,
         |row| cursor::time_id(row.created_at, row.id),
-        to_resource,
+        |row| to_resource(row, lang),
     );
     public::json(&headers, lang, &page)
 }
@@ -113,12 +113,12 @@ pub async fn show(
         &headers,
         lang,
         &Data {
-            data: to_resource(row),
+            data: to_resource(row, lang),
         },
     )
 }
 
-fn to_resource(row: ResourceRow) -> Resource {
+fn to_resource(row: ResourceRow, lang: Lang) -> Resource {
     let (title, is_tr) = translated(row.title, row.tr_title);
     let description = match row.description {
         Some(original) => Some(translated(original, row.tr_description).0),
@@ -147,7 +147,7 @@ fn to_resource(row: ResourceRow) -> Resource {
         web_url: links::resource(&row.slug),
         download_url: hosted.then(|| links::resource_download(&row.slug)),
         slug: row.slug,
-        lang: served(is_tr),
+        lang: served(lang, is_tr),
         title,
         description,
         category,
@@ -192,28 +192,38 @@ mod tests {
 
     #[test]
     fn custom_licences_show_the_uploader_text() {
-        let r = to_resource(row(
-            Some("autre"),
-            Some("Licence Art Libre 1.3"),
-            Some("Autre (à préciser)"),
-        ));
+        let r = to_resource(
+            row(
+                Some("autre"),
+                Some("Licence Art Libre 1.3"),
+                Some("Autre (à préciser)"),
+            ),
+            Lang::Fr,
+        );
         assert_eq!(
             r.license.map(|l| l.name).as_deref(),
             Some("Licence Art Libre 1.3")
         );
-        let r = to_resource(row(Some("autre"), None, Some("Autre (à préciser)")));
+        let r = to_resource(
+            row(Some("autre"), None, Some("Autre (à préciser)")),
+            Lang::Fr,
+        );
         assert_eq!(
             r.license.map(|l| l.name).as_deref(),
             Some("Autre (à préciser)")
         );
-        let r = to_resource(row(Some("unknown-key"), None, None));
+        let r = to_resource(row(Some("unknown-key"), None, None), Lang::Fr);
         assert_eq!(r.license.map(|l| l.name).as_deref(), Some("unknown-key"));
-        assert!(to_resource(row(None, None, None)).license.is_none());
+        assert!(
+            to_resource(row(None, None, None), Lang::Fr)
+                .license
+                .is_none()
+        );
     }
 
     #[test]
     fn links_have_no_download_or_size() {
-        let r = to_resource(row(None, None, None));
+        let r = to_resource(row(None, None, None), Lang::Fr);
         assert_eq!(r.download_url, None);
         assert_eq!(r.size_bytes, None);
         assert_eq!(r.source_url.as_deref(), Some("https://example.org/x.pdf"));

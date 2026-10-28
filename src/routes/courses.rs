@@ -10,8 +10,11 @@ use serde_json::Value;
 
 use super::cursor;
 use super::params::{DIFFICULTIES, LANGS, LEVELS, Lang, Params};
+
+/// `sort` of `GET /v1/courses`.
+const SORTS: &[&str] = &["title", "recent"];
 use super::public::{self, Data, Pagination, PublicResult, served, translated};
-use crate::db::courses::{self, CatalogRow, CourseFilters, CourseRow};
+use crate::db::courses::{self, After, CatalogRow, CourseFilters, CourseRow, Sort};
 use crate::links;
 use crate::state::AppState;
 
@@ -182,41 +185,77 @@ pub async fn list(
     let difficulty = params.one_of("difficulty", DIFFICULTIES);
     let level = params.one_of("level", LEVELS);
     let tag = params.text("tag", 50);
+    let theme = params.text("theme", 50);
     let available_in = params.one_of("available_in", LANGS);
     let search = params.search();
+    let sort = match params.one_of("sort", SORTS) {
+        Some("recent") => Sort::Recent,
+        _ => Sort::Title,
+    };
+    let page = params.page(cursor.is_some());
     let filters = params.finish()?;
 
     let pagination = Pagination::new("courses", lang, &filters, limit);
-    let after = match cursor {
-        Some(c) => Some(cursor::text_id_key(&cursor::decode(
-            &c,
-            &pagination.fingerprint,
-        )?)?),
-        None => None,
+    let after = match (page, &cursor) {
+        (Some(page), _) => After::Offset(pagination.offset(page)),
+        (None, Some(c)) => {
+            let key = cursor::decode(c, &pagination.fingerprint)?;
+            match sort {
+                Sort::Title => {
+                    let (title, id) = cursor::text_id_key(&key)?;
+                    After::Title(title, id)
+                }
+                Sort::Recent => {
+                    let (at, id) = cursor::time_id_key(&key)?;
+                    After::Recent(at, id)
+                }
+            }
+        }
+        (None, None) => After::Start,
     };
+    let course_filters = CourseFilters {
+        subject: subject.as_deref(),
+        topic: topic.as_deref(),
+        difficulty,
+        level,
+        tag: tag.as_deref(),
+        theme: theme.as_deref(),
+        // French is the source language: every course has it.
+        translated_in: available_in.filter(|l| *l != "fr"),
+        search: search.as_deref(),
+    };
+    let tr = lang.translation();
     let rows = courses::list(
         &state.db,
-        lang.translation(),
-        &CourseFilters {
-            subject: subject.as_deref(),
-            topic: topic.as_deref(),
-            difficulty,
-            level,
-            tag: tag.as_deref(),
-            // French is the source language: every course has it.
-            translated_in: available_in.filter(|l| *l != "fr"),
-            search: search.as_deref(),
-        },
-        after.as_ref().map(|(title, id)| (title.as_str(), *id)),
+        tr,
+        &course_filters,
+        sort,
+        after,
         pagination.fetch(),
     )
     .await?;
-    let page = pagination.page(
-        rows,
-        |row| vec![Value::from(row.title.clone()), Value::from(row.id)],
-        to_summary,
-    );
-    public::json(&headers, lang, &page)
+    let body = match page {
+        Some(_) => {
+            let total = match rows.first() {
+                Some(row) => row.total,
+                // Past the last page: count from the first one.
+                None => courses::list(&state.db, tr, &course_filters, sort, After::Start, 1)
+                    .await?
+                    .first()
+                    .map_or(0, |row| row.total),
+            };
+            pagination.numbered(rows, total, |row| to_summary(row, lang))
+        }
+        None => pagination.page(
+            rows,
+            |row| match sort {
+                Sort::Title => vec![Value::from(row.title.clone()), Value::from(row.id)],
+                Sort::Recent => cursor::time_id(row.published_at, row.id),
+            },
+            |row| to_summary(row, lang),
+        ),
+    };
+    public::json(&headers, lang, &body)
 }
 
 pub async fn show(
@@ -247,7 +286,7 @@ pub async fn show(
             Chapter {
                 position: chapter.position,
                 title,
-                lang: served(is_tr),
+                lang: served(lang, is_tr),
                 lessons: lessons
                     .iter()
                     .filter(|l| l.chapter_id == chapter.id)
@@ -257,7 +296,7 @@ pub async fn show(
                             slug: l.slug.clone(),
                             position: l.position,
                             title,
-                            lang: served(is_tr),
+                            lang: served(lang, is_tr),
                         }
                     })
                     .collect(),
@@ -271,7 +310,7 @@ pub async fn show(
                             position: e.position,
                             kind: e.kind.clone(),
                             title,
-                            lang: served(is_tr),
+                            lang: served(lang, is_tr),
                         }
                     })
                     .collect(),
@@ -281,7 +320,7 @@ pub async fn show(
 
     let body = Data {
         data: CourseDetail {
-            summary: to_summary(course),
+            summary: to_summary(course, lang),
             chapters,
         },
     };
@@ -292,12 +331,14 @@ fn course_not_found(slug: &str, path: &str) -> public::PublicError {
     public::not_found(format!("No published course has the slug '{slug}'."), path)
 }
 
-fn to_summary(row: CourseRow) -> CourseSummary {
+fn to_summary(row: CourseRow, lang: Lang) -> CourseSummary {
     let (title, is_tr) = translated(row.title, row.tr_title);
     let (description, _) = translated(row.description, row.tr_description);
     let mut available_langs = vec!["fr"];
-    if row.translation_langs.iter().any(|l| l == "en") {
-        available_langs.push("en");
+    for code in ["en", "ru"] {
+        if row.translation_langs.iter().any(|l| l == code) {
+            available_langs.push(code);
+        }
     }
     let tags = match row.tags.0 {
         Value::Array(items) => items
@@ -310,7 +351,7 @@ fn to_summary(row: CourseRow) -> CourseSummary {
         id: row.id,
         web_url: links::course(&row.slug),
         slug: row.slug,
-        lang: served(is_tr),
+        lang: served(lang, is_tr),
         title,
         description,
         theme: row.theme,
@@ -433,19 +474,19 @@ pub async fn lesson(
     let body = Data {
         data: Lesson {
             slug: current.slug.clone(),
-            lang: served(is_tr),
+            lang: served(lang, is_tr),
             title,
             position: current.position,
             content_md: translated(content.content_md, content.tr_content_md).0,
             chapter: ChapterRef {
                 position: chapter.position,
                 title: chapter_title,
-                lang: served(chapter_tr),
+                lang: served(lang, chapter_tr),
             },
             course: CourseRef {
                 slug: course.slug.clone(),
                 title: course_title,
-                lang: served(course_tr),
+                lang: served(lang, course_tr),
             },
             previous: index.checked_sub(1).and_then(link),
             next: link(index + 1),

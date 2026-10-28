@@ -121,6 +121,7 @@ INSERT INTO ressources (id, titre, slug, description, categorie, langue, auteur_
 -- English translations, including fields the views must drop.
 INSERT INTO contenu_translations (traduisible_type, traduisible_id, langue, champs, source_hash, created_at, updated_at) VALUES
     ('course', 1, 'en', '{"titre":"The basics of the calculation","description":"Operational priorities, fractions, powers and percentages. Everything you need to calculate correctly, without a calculator. No prior knowledge required."}', 'demo', now(), now()),
+    ('course', 1, 'ru', '{"titre":"Основы вычислений","description":""}', 'demo', now(), now()),
     ('chapter', 1, 'en', '{"titre":"The order of operations"}', 'demo', now(), now()),
     ('lesson', 1, 'en', '{"titre":"Operational priorities","contenu_md":"What is `2 + 3 x 4` equal to?\n\n## The rule\n\n…"}', 'demo', now(), now()),
     ('lesson', 2, 'en', '{"titre":"Fractions","contenu_md":""}', 'demo', now(), now()),

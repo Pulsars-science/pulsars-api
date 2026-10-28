@@ -129,24 +129,29 @@ cannot be silently dropped. The size limit is the server's
   sort key of the last returned row plus its `id` (keyset pagination), and a
   hash of the filters it was issued for; reusing it with other filters gives
   `400 invalid-cursor`.
-- Each list endpoint has one fixed, documented sort order, ending with `id` as
-  a tie-breaker. There is no total count: it would cost a full scan per page.
+- Each list endpoint has a fixed, documented sort order, ending with `id` as
+  a tie-breaker. `GET /v1/courses` also takes `sort=recent`.
+- There is no total count on cursor pages. `GET /v1/courses` and
+  `GET /v1/exams` also take `page` (from 1, not with `cursor`) for clients
+  that show numbered pages, as the site does: the answer then has `total`
+  and `next_cursor: null`. Both tables are small, so the count is cheap
+  there.
 
-### Content language: `?lang=fr|en`
+### Content language: `?lang=fr|en|ru`
 
 - All content was written in **French** (`fr`, the source language,
-  `config/localisation.php` → `source`). English translations live in the
-  `contenu_translations` table and cover most courses, chapters, lessons,
-  exercises, exam parts and resources.
-- `?lang=` accepts `fr` or `en`. When absent, the API serves the original
+  `config/localisation.php` → `source`). English and Russian translations live
+  in the `contenu_translations` table. English covers most courses,
+  chapters, lessons, exercises, exam parts and resources.
+- `?lang=` accepts `fr`, `en` or `ru`. When absent, the API serves the original
   language (`fr`). `Accept-Language` is **not** used: the query string keeps
   responses cacheable without `Vary`.
 - Translation falls back **per object and per field**: a missing or empty
   translated field is replaced by the original, exactly like
   `App\Models\Concerns\Traduisible::t()`.
 - Every translatable object in a response carries a `lang` field: the language
-  actually served for that object. It is `en` when at least the main text field
-  (title) came from the English translation, `fr` otherwise.
+  actually served for that object. It is the requested language when at least the
+  main text field (title) came from its translation, `fr` otherwise.
 - Responses carry `Content-Language: <requested lang>`.
 - Some fields are never translated, whatever `lang` says (known gaps): QCM option
   texts, exam titles and descriptions, topic names, resource category in
