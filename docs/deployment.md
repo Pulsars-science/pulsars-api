@@ -346,6 +346,8 @@ variable the API reads is in the file:
 | `JWT_OWN_ISSUER` | `https://api.pulsars.science` | `iss` of the tokens the API signs |
 | `JWT_TOKEN_TTL_SECS` | `300` | lifetime of those tokens, 60 to 3600 |
 | `SERVICE_KEY` | unset | the site's key (`PULSARS_API_SERVICE_KEY` in Laravel), at least 32 characters; its calls are not rate limited |
+| `MESSAGES_KEY` | `openssl rand -base64 32` | **required in production**: the AES-256-GCM key of private messages, 32 bytes in base64; secret, keep a copy with the backups' secrets (without it, stored messages cannot be read); unset in development: the `/v1/conversations` routes answer 503 |
+| `MESSAGES_KEY_VERSION` | `1` | stored with each private message, 1 to 32767, for a later key rotation |
 | `REQUEST_TIMEOUT_SECS` | `10` | below nginx's `proxy_read_timeout` (30 s) |
 | `BODY_LIMIT_BYTES` | `65536` | below nginx's `client_max_body_size` (256k) |
 | `LOG_FORMAT` | `json` | |

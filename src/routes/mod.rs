@@ -18,6 +18,7 @@ pub mod oauth;
 pub mod params;
 pub mod public;
 pub mod resources;
+pub mod social;
 pub mod token;
 
 use axum::Router;
@@ -256,6 +257,7 @@ pub fn router(state: AppState) -> Router {
         .merge(game_ws)
         .merge(languages_events)
         .merge(authenticated)
+        .merge(social::router(&state))
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.

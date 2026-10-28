@@ -66,6 +66,20 @@ tags:
       Flash duels (`docs/game-protocol.md`). Matches themselves run over the
       WebSocket `GET /v1/game/ws` (protocol §3), which is not described
       here.
+  - name: members
+    description: |
+      Public profiles and the pseudo search (`ProfilPublicController`), and
+      follows (`AbonnementController`). Called by the site from its server.
+  - name: friends
+    description: Friend requests and the friend QR code (`AmitieController`, `AmiQrController`).
+  - name: rooms
+    description: |
+      Rooms, their threads and invitation links (`Salon*Controller`,
+      `InvitationSalonController`). Threads are polled with `?after={id}`.
+  - name: conversations
+    description: |
+      Private messages between friends (`DiscussionController`,
+      `MessagePriveController`), sealed at rest with `MESSAGES_KEY`.
 
 paths:
   /healthz:
@@ -2352,6 +2366,712 @@ paths:
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/Problem' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /v1/members:
+    get:
+      tags: [members]
+      operationId: searchMembers
+      summary: Search members by pseudo
+      description: |
+        Members whose pseudo contains `search` (alias `q`), ignoring case, by
+        pseudo, 24 per page (`ProfilPublicController::index`). Without a term
+        (after trimming), the list is empty: the site publishes no directory
+        of its members. Public. `Cache-Control: no-store`.
+      parameters:
+        - { name: search, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: q, in: query, description: Alias of `search`., schema: { type: string, maxLength: 100 } }
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          description: One page of members
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor, total]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/MemberSummary' } }
+                  next_cursor: { type: 'null' }
+                  total: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/members/{pseudo}:
+    get:
+      tags: [members]
+      operationId: getMemberProfile
+      summary: A public profile
+      description: |
+        `ProfilPublicController::show`. Public; with `Pulsars-Session`, the
+        answer adds where the reader stands (`friendship`, `following`).
+        Never an e-mail, a locale, social logins or a moderation state.
+        `brains` is `null` when the member hides it, except for themselves.
+      parameters:
+        - $ref: '#/components/parameters/Pseudo'
+        - $ref: '#/components/parameters/OptionalSession'
+      responses:
+        '200':
+          description: The profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/MemberProfile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/members/{pseudo}/follow:
+    parameters:
+      - $ref: '#/components/parameters/Pseudo'
+      - $ref: '#/components/parameters/SessionToken'
+    post:
+      tags: [members]
+      operationId: followMember
+      summary: Follow a member (PUT does the same)
+      description: |
+        `Abonnements::suivre`: one way, without approval. When the other
+        member follows back, they become friends (`origine = abonnement`),
+        and a pending request between them is accepted. Following oneself
+        does nothing.
+      responses:
+        '200': { $ref: '#/components/responses/FollowResult' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [members]
+      operationId: putFollowMember
+      summary: Follow a member
+      responses:
+        '200': { $ref: '#/components/responses/FollowResult' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [members]
+      operationId: unfollowMember
+      summary: Stop following a member
+      description: A friendship born of the mutual follow goes too; one born of a request stays.
+      responses:
+        '200': { $ref: '#/components/responses/FollowResult' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/members/{pseudo}/friend-requests:
+    post:
+      tags: [friends]
+      operationId: requestFriendship
+      summary: Ask a member to be friends
+      description: |
+        `AmitieController::store`. 20 per minute per member. `201` when
+        sent; `200` when already friends (a success in Laravel); `409`
+        `request_pending` when a request of either side waits.
+      parameters:
+        - $ref: '#/components/parameters/Pseudo'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendshipStateResponse' }
+        '201': { $ref: '#/components/responses/FriendshipStateResponse' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/friends:
+    get:
+      tags: [friends]
+      operationId: listFriends
+      summary: Friends, requests received and requests sent
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The three lists, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [friends, received, sent]
+                    properties:
+                      friends: { type: array, items: { $ref: '#/components/schemas/FriendLine' } }
+                      received: { type: array, items: { $ref: '#/components/schemas/FriendLine' } }
+                      sent: { type: array, items: { $ref: '#/components/schemas/FriendLine' } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /v1/friends/{id}/accept:
+    post:
+      tags: [friends]
+      operationId: acceptFriendship
+      summary: Accept a request received
+      description: '`404` unless the member is in it; `403` for the member who asked. Idempotent.'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendshipStateResponse' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/friends/{id}:
+    delete:
+      tags: [friends]
+      operationId: removeFriendship
+      summary: Remove a friend, or withdraw or refuse a request
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Removed. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/friend-qr:
+    get:
+      tags: [friends]
+      operationId: getFriendQr
+      summary: The member's friend QR code
+      description: |
+        Laravel drew the QR code as an SVG on the server
+        (`AmiQrController::svg`). The API gives the token and the link the
+        code encodes, `https://pulsars.science/ami/{token}`: the site draws
+        it. The token is made the first time.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendQr' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /v1/me/friend-qr/regenerate:
+    post:
+      tags: [friends]
+      operationId: regenerateFriendQr
+      summary: A new friend QR code; the previous one stops working
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendQr' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /v1/friends/scan:
+    post:
+      tags: [friends]
+      operationId: scanFriendQr
+      summary: Befriend the owner of a scanned QR code
+      description: |
+        `AmiQrController::scan`, posted by the site's `/ami/{token}` page.
+        Friends at once, without a request; a pending request of either side
+        is accepted. 30 per minute per member. `404` for a token no longer
+        valid, `422` (`token`, `self`) for one's own code.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              additionalProperties: false
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Friends
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [state, friendship_id, member]
+                    properties:
+                      state: { type: string, enum: [friends, already_friends] }
+                      friendship_id: { type: integer }
+                      member: { $ref: '#/components/schemas/MemberRef' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/rooms:
+    get:
+      tags: [rooms]
+      operationId: listRooms
+      summary: The public rooms and the member's private ones
+      description: Busiest first (`Room::visiblesPar`). Not paginated, as in Laravel.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The rooms
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/RoomListed' } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [rooms]
+      operationId: createRoom
+      summary: Create a room; its creator owns it
+      description: |
+        The slug is `contenu.slugify(name)` (`salon` when nothing is left),
+        with `-xxxx` appended when taken. Strings are trimmed, blank ones
+        are null, as Laravel's middlewares did.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name: { type: string, minLength: 2, maxLength: 50 }
+                description: { type: [string, 'null'], maxLength: 280 }
+                type: { type: string, enum: [public, prive] }
+      responses:
+        '201': { $ref: '#/components/responses/RoomOpened' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [rooms]
+      operationId: getRoom
+      summary: A room, its latest messages and the reader's rights
+      description: |
+        `404` for a private room the reader is not in (moderators excepted).
+        Opening it marks it read for a member, as Laravel did.
+      responses:
+        '200': { $ref: '#/components/responses/RoomOpened' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [rooms]
+      operationId: deleteRoom
+      summary: Delete a room, with its messages and links (owner or moderator)
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/rooms/{slug}/members:
+    post:
+      tags: [rooms]
+      operationId: joinRoom
+      summary: Join a public room
+      description: Idempotent. `403` for a private room, entered by an invitation link only.
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: A member. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/rooms/{slug}/members/me:
+    delete:
+      tags: [rooms]
+      operationId: leaveRoom
+      summary: Leave a room
+      description: Its owner cannot (`422`, `room`, `owner`); they delete it instead.
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Left, or was not in it. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}/read:
+    post:
+      tags: [rooms]
+      operationId: markRoomRead
+      summary: Clear the member's unread count of a room
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Marked. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/rooms/{slug}/messages:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [rooms]
+      operationId: listRoomMessages
+      summary: The thread of a room, oldest first; poll it with `after`
+      description: |
+        Laravel's pages reloaded the thread every five seconds; there is no
+        WebSocket. `after` gives what came after the last message shown;
+        `before` pages back. Marks the room read for a member.
+      parameters:
+        - $ref: '#/components/parameters/ThreadAfter'
+        - $ref: '#/components/parameters/ThreadBefore'
+        - $ref: '#/components/parameters/ThreadLimit'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/RoomMessage' } }
+                  has_more: { type: boolean, description: 'More messages lie beyond these, in the direction asked.' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [rooms]
+      operationId: postRoomMessage
+      summary: Write in a room
+      description: |
+        Writing in a public room joins it; in a private one, only its
+        members write (`403`). Muted members cannot write (`403`). The body
+        is trimmed, 1 to 2000 characters, plain text.
+      requestBody: { $ref: '#/components/requestBodies/MessageBody' }
+      responses:
+        '201':
+          description: Posted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/RoomMessage' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}/invitations:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [rooms]
+      operationId: listRoomInvitations
+      summary: The invitation links of a room (owner or moderator)
+      responses:
+        '200':
+          description: Newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [room, invitations]
+                    properties:
+                      room: { $ref: '#/components/schemas/RoomInfo' }
+                      invitations: { type: array, items: { $ref: '#/components/schemas/RoomInvitation' } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [rooms]
+      operationId: createRoomInvitation
+      summary: A new invitation link (owner or moderator)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                duration_days: { type: [integer, 'null'], minimum: 1, maximum: 365, description: '`null`: never expires.' }
+                max_uses: { type: [integer, 'null'], minimum: 1, maximum: 10000, description: '`null`: no limit.' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/RoomInvitation' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}/invitations/{token}:
+    delete:
+      tags: [rooms]
+      operationId: revokeRoomInvitation
+      summary: Revoke a link of this room (owner or moderator)
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/InviteToken'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Revoked. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/invitations/{token}:
+    get:
+      tags: [rooms]
+      operationId: getRoomInvitation
+      summary: The landing page of an invitation link
+      description: Shows the room without joining it; no use is counted.
+      parameters:
+        - $ref: '#/components/parameters/InviteToken'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The link and its room
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [valid, invalid_reason, invited_by, room, already_member]
+                    properties:
+                      valid: { type: boolean }
+                      invalid_reason: { $ref: '#/components/schemas/InvalidReason' }
+                      invited_by: { type: [string, 'null'] }
+                      room: { $ref: '#/components/schemas/RoomInfo' }
+                      already_member: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/invitations/{token}/accept:
+    post:
+      tags: [rooms]
+      operationId: acceptRoomInvitation
+      summary: Join the room of a valid link
+      description: |
+        A use is counted only for a member not in the room yet. `422`
+        (`invitation`: `revoked`, `expired` or `exhausted`) for a link that
+        no longer works.
+      parameters:
+        - $ref: '#/components/parameters/InviteToken'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: A member of the room
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [room_slug]
+                    properties:
+                      room_slug: { type: string }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/conversations:
+    parameters:
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [conversations]
+      operationId: listConversations
+      summary: The member's private conversations, and the friends to write to
+      description: |
+        Latest first. Every `/v1/conversations` route answers `503`
+        `messages-unavailable` on a server without `MESSAGES_KEY`
+        (development only).
+      responses:
+        '200':
+          description: Conversations and friends
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [conversations, friends]
+                    properties:
+                      conversations: { type: array, items: { $ref: '#/components/schemas/ConversationLine' } }
+                      friends:
+                        type: array
+                        description: In natural order of pseudo, ignoring case.
+                        items: { $ref: '#/components/schemas/Correspondent' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [conversations]
+      operationId: openConversation
+      summary: The conversation with a friend, started if needed
+      description: '`201` when started, `200` when found. `403` unless friends; `422` (`pseudo`, `self`) with oneself.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pseudo]
+              additionalProperties: false
+              properties:
+                pseudo: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ConversationId' }
+        '201': { $ref: '#/components/responses/ConversationId' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /v1/conversations/{id}:
+    get:
+      tags: [conversations]
+      operationId: getConversation
+      summary: A conversation and its latest messages
+      description: '`404` unless the member is in it. Marks read what the other member sent, as Laravel did.'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The conversation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id, with, is_friend, messages, has_older]
+                    properties:
+                      id: { type: integer }
+                      with: { $ref: '#/components/schemas/Correspondent' }
+                      is_friend: { type: boolean, description: '`false`: readable, closed to new messages.' }
+                      messages: { type: array, items: { $ref: '#/components/schemas/DirectMessage' } }
+                      has_older: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /v1/conversations/{id}/read:
+    post:
+      tags: [conversations]
+      operationId: markConversationRead
+      summary: Mark read what the other member sent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Marked. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /v1/conversations/{id}/messages:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [conversations]
+      operationId: listDirectMessages
+      summary: The thread, oldest first; poll it with `after`
+      description: Marks read as opening does.
+      parameters:
+        - $ref: '#/components/parameters/ThreadAfter'
+        - $ref: '#/components/parameters/ThreadBefore'
+        - $ref: '#/components/parameters/ThreadLimit'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/DirectMessage' } }
+                  has_more: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [conversations]
+      operationId: postDirectMessage
+      summary: Write to a friend
+      description: |
+        60 per minute per member. `404` unless in the conversation, `403`
+        when no longer friends or muted. Sealed at rest with AES-256-GCM.
+      requestBody: { $ref: '#/components/requestBodies/MessageBody' }
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/DirectMessage' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Problem' }
+
 
 components:
   securitySchemes:
@@ -2434,6 +3154,42 @@ components:
       in: path
       required: true
       schema: { type: string, example: les-bases-du-calcul }
+    OptionalSession:
+      name: Pulsars-Session
+      in: header
+      required: false
+      description: A session token, when the reader is signed in.
+      schema: { type: string, minLength: 43, maxLength: 43 }
+    Pseudo:
+      name: pseudo
+      in: path
+      required: true
+      description: A member's pseudo, exactly.
+      schema: { type: string }
+    RoomSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string }
+    InviteToken:
+      name: token
+      in: path
+      required: true
+      schema: { type: string, maxLength: 40 }
+    ThreadAfter:
+      name: after
+      in: query
+      description: Only messages after this id, oldest first (polling).
+      schema: { type: integer, minimum: 0 }
+    ThreadBefore:
+      name: before
+      in: query
+      description: The latest messages before this id. Not with `after`.
+      schema: { type: integer, minimum: 0 }
+    ThreadLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
 
   headers:
     ETag:
@@ -2691,6 +3447,65 @@ components:
             title: Too many requests
             status: 429
             detail: Limit of 60 requests per minute reached.
+    FollowResult:
+      description: Where the member stands with the other one now
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [following, friendship]
+                properties:
+                  following: { type: boolean }
+                  friendship: { $ref: '#/components/schemas/FriendshipState' }
+    FriendshipStateResponse:
+      description: The friendship
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data: { $ref: '#/components/schemas/FriendshipState' }
+    FriendQr:
+      description: The token and the link the QR code encodes
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [token, url]
+                properties:
+                  token: { type: string, pattern: '^[a-z0-9]{24}$' }
+                  url: { type: string, format: uri, example: 'https://pulsars.science/ami/3f9k2m0q7x1b8n4c6v5z2l0p' }
+    RoomOpened:
+      description: A room, as its page shows it
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data: { $ref: '#/components/schemas/RoomDetail' }
+    ConversationId:
+      description: The conversation
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: integer }
 
   examples:
     CoursesPage:
@@ -3679,3 +4494,183 @@ components:
         source_lang: { type: [string, 'null'], description: What DeepL detected, lower case., example: en }
         target_lang: { type: string, enum: [en, fr, ru] }
         cached: { type: boolean, description: Served from the stored translation of the same text. }
+    MemberRole:
+      allOf:
+        - $ref: '#/components/schemas/Role'
+        - type: object
+          required: [level]
+          properties:
+            level: { type: integer, description: 'Permission level (`niveau`); 0 for a subject or a distinction.' }
+    MemberSummary:
+      type: object
+      required: [id, pseudo, avatar_url, bio, roles]
+      properties:
+        id: { type: string, example: '42' }
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+        bio: { type: [string, 'null'], maxLength: 280 }
+        roles:
+          type: array
+          description: Highest permission first.
+          items: { $ref: '#/components/schemas/MemberRole' }
+    MemberRef:
+      type: object
+      required: [id, pseudo, avatar_url]
+      properties:
+        id: { type: string }
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+    XpDetail:
+      type: object
+      description: '`Experience::pour`. Level n starts at 50 × (n − 1) × n XP.'
+      required: [total, level, level_start, next_level_at, in_level, for_level, breakdown]
+      properties:
+        total: { type: integer }
+        level: { type: integer, minimum: 1 }
+        level_start: { type: integer }
+        next_level_at: { type: integer }
+        in_level: { type: integer, description: XP inside the current level. }
+        for_level: { type: integer, description: XP the current level spans. }
+        breakdown:
+          type: array
+          items:
+            type: object
+            required: [key, count, unit_points, xp]
+            properties:
+              key: { type: string, enum: [lesson, exercise, course, question, answer, accepted_answer, games] }
+              count: { type: integer }
+              unit_points: { type: integer }
+              xp: { type: integer, description: 'For `games`, capped at 30 a day (UTC), wins counting 5 more.' }
+    FriendshipState:
+      type: object
+      required: [state, id]
+      properties:
+        state: { type: string, enum: [visitor, self, none, friends, sent, received] }
+        id: { type: [integer, 'null'], description: The friendship, to accept or remove it. }
+    MemberProfile:
+      allOf:
+        - $ref: '#/components/schemas/MemberSummary'
+        - type: object
+          required: [school_level, class, member_since, question_count, answer_count, profile_url, xp, brains, friendship, following]
+          properties:
+            school_level: { type: [string, 'null'] }
+            class: { type: [string, 'null'] }
+            member_since: { type: [string, 'null'], format: date-time }
+            question_count: { type: integer, description: Forum questions, deleted ones aside. }
+            answer_count: { type: integer }
+            profile_url: { type: string, format: uri }
+            xp: { $ref: '#/components/schemas/XpDetail' }
+            brains:
+              type: [object, 'null']
+              required: [balance, private]
+              properties:
+                balance: { type: integer }
+                private: { type: boolean, description: Hidden from others; only its owner gets it. }
+            friendship: { $ref: '#/components/schemas/FriendshipState' }
+            following:
+              type: [object, 'null']
+              description: '`null` for a visitor or on one''s own profile.'
+              required: [following]
+              properties:
+                following: { type: boolean }
+    FriendLine:
+      type: object
+      required: [friendship_id, member, since]
+      properties:
+        friendship_id: { type: integer }
+        member:
+          type: object
+          required: [id, pseudo, avatar_url, bio]
+          properties:
+            id: { type: string }
+            pseudo: { type: string }
+            avatar_url: { type: [string, 'null'], format: uri }
+            bio: { type: [string, 'null'] }
+        since: { type: [string, 'null'], format: date-time }
+    RoomType:
+      type: string
+      enum: [public, prive]
+      description: As Laravel stores it. `prive` rooms are entered by invitation only.
+    RoomInfo:
+      type: object
+      required: [name, slug, description, type, is_private, member_count]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        description: { type: [string, 'null'] }
+        type: { $ref: '#/components/schemas/RoomType' }
+        is_private: { type: boolean }
+        member_count: { type: integer }
+    RoomListed:
+      allOf:
+        - $ref: '#/components/schemas/RoomInfo'
+        - type: object
+          required: [message_count, joined]
+          properties:
+            message_count: { type: integer }
+            joined: { type: boolean }
+    RoomDetail:
+      allOf:
+        - $ref: '#/components/schemas/RoomInfo'
+        - type: object
+          required: [viewer, messages, has_older]
+          properties:
+            viewer:
+              type: object
+              required: [joined, can_write, can_manage]
+              properties:
+                joined: { type: boolean }
+                can_write: { type: boolean, description: 'A member, or anyone in a public room (writing joins it).' }
+                can_manage: { type: boolean, description: The owner or a site moderator. }
+            messages:
+              type: array
+              description: The 100 latest, oldest first.
+              items: { $ref: '#/components/schemas/RoomMessage' }
+            has_older: { type: boolean }
+    RoomMessage:
+      type: object
+      required: [id, body, author, author_id, sent_at]
+      properties:
+        id: { type: integer }
+        body: { type: string, description: Plain text. }
+        author: { type: [string, 'null'], description: 'Pseudo; `null` once the account is deleted.' }
+        author_id: { type: [string, 'null'] }
+        sent_at: { type: [string, 'null'], format: date-time }
+    InvalidReason:
+      type: [string, 'null']
+      enum: [revoked, expired, exhausted, null]
+    RoomInvitation:
+      type: object
+      required: [token, url, creator, uses, max_uses, expires_at, valid, invalid_reason]
+      properties:
+        token: { type: string }
+        url: { type: string, format: uri, description: 'https://pulsars.science/salons/invite/{token}' }
+        creator: { type: [string, 'null'] }
+        uses: { type: integer }
+        max_uses: { type: [integer, 'null'] }
+        expires_at: { type: [string, 'null'], format: date-time }
+        valid: { type: boolean }
+        invalid_reason: { $ref: '#/components/schemas/InvalidReason' }
+    Correspondent:
+      type: object
+      required: [pseudo, avatar_url]
+      properties:
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+    ConversationLine:
+      type: object
+      required: [id, with, last_message, last_message_from_me, last_message_at, unread_count]
+      properties:
+        id: { type: integer }
+        with: { $ref: '#/components/schemas/Correspondent' }
+        last_message: { type: [string, 'null'], description: In clear. }
+        last_message_from_me: { type: boolean }
+        last_message_at: { type: [string, 'null'], format: date-time }
+        unread_count: { type: integer }
+    DirectMessage:
+      allOf:
+        - $ref: '#/components/schemas/RoomMessage'
+        - type: object
+          required: [read]
+          properties:
+            read: { type: boolean, description: The recipient opened it. }

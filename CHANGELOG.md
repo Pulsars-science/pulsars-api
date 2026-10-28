@@ -42,6 +42,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   restore questions; hide, delete and restore answers. Muting members
   (`PUT` and `DELETE /v1/moderation/members/{id}/mute`), only those of a
   lower permission level.
+- The social part of the site (step D; tags `members`, `friends`, `rooms`,
+  `conversations`): the pseudo search and public profiles, follows, friend
+  requests and the friend QR code, rooms with their invitation links, and
+  private messages between friends, polled with `?after={id}`. Private
+  messages are sealed with AES-256-GCM under `MESSAGES_KEY` (required in
+  production). Migration `20261104000000_social`.
 
 ### Removed
 
