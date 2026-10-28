@@ -15,6 +15,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `page` for numbered pages, answered with `total`.
 - `GET /v1/exams`: `page` and `total`.
 - `GET /v1/exams/facets`: the levels and countries of published exams.
+- Lessons carry their `id`, in a course's outline and in a lesson.
 
 ## [0.3.0] - 2026-10-28
 

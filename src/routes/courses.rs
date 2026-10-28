@@ -154,6 +154,7 @@ pub struct Chapter {
 
 #[derive(Debug, Serialize)]
 pub struct LessonItem {
+    pub id: i64,
     pub slug: String,
     pub position: i32,
     pub title: String,
@@ -293,6 +294,7 @@ pub async fn show(
                     .map(|l| {
                         let (title, is_tr) = translated(l.title.clone(), l.tr_title.clone());
                         LessonItem {
+                            id: l.id,
                             slug: l.slug.clone(),
                             position: l.position,
                             title,
@@ -387,6 +389,7 @@ pub fn timestamp(at: DateTime<Utc>) -> String {
 
 #[derive(Debug, Serialize)]
 pub struct Lesson {
+    pub id: i64,
     pub slug: String,
     pub lang: &'static str,
     pub title: String,
@@ -473,6 +476,7 @@ pub async fn lesson(
 
     let body = Data {
         data: Lesson {
+            id: current.id,
             slug: current.slug.clone(),
             lang: served(lang, is_tr),
             title,

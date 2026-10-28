@@ -1140,8 +1140,8 @@ async fn course_detail_matches_the_openapi_example() {
     expected["chapters"] = json!([
         {"position": 1, "title": "L'ordre des opérations", "lang": "fr",
          "lessons": [
-            {"slug": "priorites-operatoires", "position": 1, "title": "Les priorités opératoires", "lang": "fr"},
-            {"slug": "les-fractions", "position": 2, "title": "Les fractions", "lang": "fr"},
+            {"id": 1, "slug": "priorites-operatoires", "position": 1, "title": "Les priorités opératoires", "lang": "fr"},
+            {"id": 2, "slug": "les-fractions", "position": 2, "title": "Les fractions", "lang": "fr"},
          ],
          "exercises": [
             {"id": 1, "position": 1, "type": "qcm", "title": "Appliquer les priorités", "lang": "fr"},
@@ -1149,8 +1149,8 @@ async fn course_detail_matches_the_openapi_example() {
          ]},
         {"position": 2, "title": "Puissances et pourcentages", "lang": "fr",
          "lessons": [
-            {"slug": "les-puissances", "position": 1, "title": "Les puissances", "lang": "fr"},
-            {"slug": "les-pourcentages", "position": 2, "title": "Les pourcentages", "lang": "fr"},
+            {"id": 3, "slug": "les-puissances", "position": 1, "title": "Les puissances", "lang": "fr"},
+            {"id": 4, "slug": "les-pourcentages", "position": 2, "title": "Les pourcentages", "lang": "fr"},
          ],
          "exercises": [
             {"id": 3, "position": 1, "type": "qcm", "title": "Vrai ou faux sur les puissances", "lang": "fr"},

@@ -285,8 +285,8 @@ paths:
                       title: L'ordre des opérations
                       lang: fr
                       lessons:
-                        - { slug: priorites-operatoires, position: 1, title: Les priorités opératoires, lang: fr }
-                        - { slug: les-fractions, position: 2, title: Les fractions, lang: fr }
+                        - { id: 1, slug: priorites-operatoires, position: 1, title: Les priorités opératoires, lang: fr }
+                        - { id: 2, slug: les-fractions, position: 2, title: Les fractions, lang: fr }
                       exercises:
                         - { id: 1, position: 1, type: qcm, title: Appliquer les priorités, lang: fr }
                         - { id: 2, position: 2, type: reponse_courte, title: Simplifier une fraction, lang: fr }
@@ -294,8 +294,8 @@ paths:
                       title: Puissances et pourcentages
                       lang: fr
                       lessons:
-                        - { slug: les-puissances, position: 1, title: Les puissances, lang: fr }
-                        - { slug: les-pourcentages, position: 2, title: Les pourcentages, lang: fr }
+                        - { id: 3, slug: les-puissances, position: 1, title: Les puissances, lang: fr }
+                        - { id: 4, slug: les-pourcentages, position: 2, title: Les pourcentages, lang: fr }
                       exercises:
                         - { id: 3, position: 1, type: qcm, title: Vrai ou faux sur les puissances, lang: fr }
                         - { id: 4, position: 2, type: reponse_courte, title: Calculer un pourcentage, lang: fr }
@@ -338,6 +338,7 @@ paths:
                 fr:
                   value:
                     data:
+                      id: 1
                       slug: priorites-operatoires
                       lang: fr
                       title: Les priorités opératoires
@@ -352,6 +353,7 @@ paths:
                 en:
                   value:
                     data:
+                      id: 1
                       slug: priorites-operatoires
                       lang: en
                       title: Operational priorities
@@ -1616,8 +1618,9 @@ components:
                     type: array
                     items:
                       type: object
-                      required: [slug, position, title, lang]
+                      required: [id, slug, position, title, lang]
                       properties:
+                        id: { type: integer, description: 'Stable id, as in the site''s progress.' }
                         slug: { type: string }
                         position: { type: integer }
                         title: { type: string }
@@ -1643,8 +1646,9 @@ components:
 
     Lesson:
       type: object
-      required: [slug, lang, title, position, content_md, chapter, course, previous, next, updated_at, web_url]
+      required: [id, slug, lang, title, position, content_md, chapter, course, previous, next, updated_at, web_url]
       properties:
+        id: { type: integer }
         slug: { type: string }
         lang: { $ref: '#/components/schemas/LangCode' }
         title: { type: string }
