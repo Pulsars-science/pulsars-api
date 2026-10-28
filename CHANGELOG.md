@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrading
+
+- A migration (`20261029000000_auth_sessions`): `deploy-api` applies it as
+  `pulsars_migrate`. It gives `pulsars_api` the login columns of
+  `site.users`.
+
+### Added
+
+- `/v1/auth/*` (`docs/contract/auth-sessions.md`): log in by e-mail or
+  pseudo (ignoring case), sign up with Laravel's rules, sessions as opaque
+  tokens in `site.auth_sessions` (`Pulsars-Session`), log out, change a
+  password (also for accounts made through Google), and, with the service
+  key, open a session for an account or reset its password. Bcrypt in
+  Laravel's `$2y$` format; per-action limits on logins and sign-ups.
+- `422 invalid-body` with a `code` per field, `invalid-credentials`,
+  `session-invalid`.
+- `BCRYPT_COST` (default 12).
+
 ## [0.4.0] - 2026-10-28
 
 ### Upgrading

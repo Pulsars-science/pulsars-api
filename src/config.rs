@@ -96,6 +96,8 @@ pub struct Config {
     /// site, from the same machine) are not rate limited. `None`: every
     /// request is.
     pub service_key: Option<Secret>,
+    /// `BCRYPT_COST` of the hashes the API writes (12, as Laravel).
+    pub bcrypt_cost: u32,
 }
 
 /// `LARAVEL_WEBHOOK_URL`, `LARAVEL_WEBHOOK_SECRET` and the optional
@@ -214,6 +216,7 @@ impl Config {
             reader.optional_raw("LARAVEL_WEBHOOK_HOST"),
             &mut reader.problems,
         );
+        let bcrypt_cost = reader.optional("BCRYPT_COST", "12", |v| parse_range(v, 4, 31));
         let service_key = match reader.optional_raw("SERVICE_KEY") {
             Some(key) if key.chars().count() < SERVICE_KEY_MIN_CHARS => {
                 reader.problems.push(format!(
@@ -348,6 +351,7 @@ impl Config {
                 shutdown_grace,
                 webhook,
                 service_key,
+                bcrypt_cost: bcrypt_cost.unwrap_or(12),
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],

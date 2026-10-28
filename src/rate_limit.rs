@@ -139,7 +139,7 @@ pub async fn rate_limit(State(state): State<AppState>, request: Request, next: N
 
 /// Whether the request carries the configured service key, compared in
 /// constant time.
-fn is_service(state: &AppState, headers: &HeaderMap) -> bool {
+pub fn is_service(state: &AppState, headers: &HeaderMap) -> bool {
     let (Some(key), Some(given)) = (&state.config.service_key, headers.get(SERVICE_KEY)) else {
         return false;
     };
@@ -169,20 +169,43 @@ async fn identify(state: &AppState, parts: &mut axum::http::request::Parts) -> C
 /// Counts one request for `client`. `None` when Redis cannot answer: the
 /// request is then let through.
 async fn count(redis: &fred::prelude::Client, client: &Client, limit: u32) -> Option<Decision> {
+    hit(redis, &client.key(), limit, WINDOW_SECS).await
+}
+
+/// Counts one attempt of a per-action limit (`auth-sessions.md`: login,
+/// sign-up), in a window of `window_secs` started by the first attempt.
+/// `None` when Redis cannot answer: the attempt is let through, as for the
+/// per-client limits.
+pub async fn attempt(
+    redis: &fred::prelude::Client,
+    action: &str,
+    who: &str,
+    limit: u32,
+    window_secs: i64,
+) -> Option<Decision> {
+    let key = format!("{KEY_PREFIX}:{action}:{who}");
+    hit(redis, &key, limit, window_secs).await
+}
+
+async fn hit(
+    redis: &fred::prelude::Client,
+    key: &str,
+    limit: u32,
+    window_secs: i64,
+) -> Option<Decision> {
     // Without a connection, a command would wait for the reconnection: do
     // not make content requests wait on Redis.
     if !redis.is_connected() {
         redis_failed("not connected");
         return None;
     }
-    let key = client.key();
     let pipeline = redis.pipeline();
     let queued: Result<(), fred::error::Error> = async {
-        pipeline.incr::<(), _>(&key).await?;
+        pipeline.incr::<(), _>(key).await?;
         pipeline
-            .expire::<(), _>(&key, WINDOW_SECS, Some(ExpireOptions::NX))
+            .expire::<(), _>(key, window_secs, Some(ExpireOptions::NX))
             .await?;
-        pipeline.ttl::<(), _>(&key).await?;
+        pipeline.ttl::<(), _>(key).await?;
         Ok(())
     }
     .await;
@@ -198,7 +221,7 @@ async fn count(redis: &fred::prelude::Client, client: &Client, limit: u32) -> Op
             reset: u64::try_from(ttl)
                 .ok()
                 .filter(|t| *t > 0)
-                .unwrap_or(WINDOW_SECS as u64),
+                .unwrap_or(window_secs as u64),
         }),
         Ok(Err(error)) => {
             redis_failed(&error.to_string());

@@ -336,6 +336,7 @@ variable the API reads is in the file:
 | `METRICS_ADDR` | `127.0.0.1:9464` | loopback or private only, enforced |
 | `RATE_LIMIT_ANONYMOUS_PER_MINUTE` | `60` | D7 |
 | `RATE_LIMIT_AUTHENTICATED_PER_MINUTE` | `120` | D7 |
+| `BCRYPT_COST` | `12` | cost of the password hashes the API writes, as Laravel's `BCRYPT_ROUNDS`; 4 in tests |
 | `SERVICE_KEY` | unset | the site's key (`PULSARS_API_SERVICE_KEY` in Laravel), at least 32 characters; its calls are not rate limited |
 | `REQUEST_TIMEOUT_SECS` | `10` | below nginx's `proxy_read_timeout` (30 s) |
 | `BODY_LIMIT_BYTES` | `65536` | below nginx's `client_max_body_size` (256k) |

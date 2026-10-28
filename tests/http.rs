@@ -398,13 +398,42 @@ async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
         assert!(message.contains("permission denied"), "{message}");
     };
 
-    // No access to accounts before phase 2.
-    denied(
-        sqlx::query("SELECT 1 FROM site.users LIMIT 1")
-            .execute(&pool)
-            .await
-            .expect_err("pulsars_api must not read site"),
-    );
+    // Accounts (phase 2): the login columns of site.users, nothing else
+    // of site.
+    let logins: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM site.users WHERE password IS NOT NULL OR email_verified_at IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(logins > 0, "demo accounts are loaded");
+    for query in [
+        "SELECT two_factor_secret FROM site.users LIMIT 1",
+        "SELECT two_factor_recovery_codes FROM site.users LIMIT 1",
+        "SELECT remember_token FROM site.users LIMIT 1",
+        "SELECT * FROM site.users LIMIT 1",
+        "SELECT 1 FROM site.sessions LIMIT 1",
+        "SELECT 1 FROM site.direct_messages LIMIT 1",
+        "SELECT 1 FROM site.passkeys LIMIT 1",
+        "SELECT 1 FROM site.personal_access_tokens LIMIT 1",
+        "SELECT 1 FROM site.password_reset_tokens LIMIT 1",
+        "SELECT 1 FROM site.comptes_sociaux LIMIT 1",
+        "UPDATE site.users SET email = email WHERE false",
+        "UPDATE site.users SET email_verified_at = now() WHERE false",
+        "DELETE FROM site.users WHERE false",
+    ] {
+        denied(sqlx::query(query).execute(&pool).await.expect_err(query));
+    }
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("UPDATE site.users SET password = password, updated_at = updated_at WHERE false")
+        .execute(&mut *tx)
+        .await
+        .expect("pulsars_api changes passwords");
+    sqlx::query("SELECT count(*) FROM site.auth_sessions")
+        .execute(&mut *tx)
+        .await
+        .expect("pulsars_api reads sessions");
+    tx.rollback().await.unwrap();
 
     // Content: read, never written.
     let raw: i64 = sqlx::query_scalar("SELECT count(*) FROM contenu.courses")

@@ -1,5 +1,6 @@
 //! Route tree and middleware stack.
 
+pub mod auth;
 pub mod courses;
 pub mod cursor;
 pub mod exams;
@@ -19,7 +20,7 @@ use axum::extract::{OriginalUri, Request};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post, put};
 use tower::ServiceBuilder;
 use tower_http::LatencyUnit;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -112,8 +113,22 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
 
+    // Accounts and sessions: called by the site from its server, never by a
+    // browser (no CORS layer: a cross-origin browser request is refused).
+    let auth = Router::new()
+        .route("/v1/auth/login", post(auth::login))
+        .route("/v1/auth/register", post(auth::register))
+        .route("/v1/auth/session", get(auth::session))
+        .route("/v1/auth/logout", post(auth::logout))
+        .route("/v1/auth/sessions", post(auth::open_for))
+        .route("/v1/auth/password", put(auth::change_password))
+        .route("/v1/auth/password/reset", post(auth::reset_password))
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(auth)
         .merge(content)
         .merge(files)
         .merge(game_public)
