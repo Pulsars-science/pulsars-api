@@ -99,6 +99,10 @@ pub struct Config {
     /// site, from the same machine) are not rate limited. `None`: every
     /// request is.
     pub service_key: Option<Secret>,
+    /// The key private messages are sealed with (`MESSAGES_KEY`,
+    /// `MESSAGES_KEY_VERSION`). Required in production; `None` in
+    /// development: the private message routes answer 503.
+    pub messages_key: Option<MessagesKey>,
     /// `ARGON2_MEMORY_KIB`: memory cost of the password hashes the API
     /// writes (19 456 KiB). Lowered only by the tests.
     pub argon2_memory_kib: u32,
@@ -154,6 +158,24 @@ pub struct MailConfig {
 /// Sender of account mails when `MAIL_FROM` is not set, as in the site's
 /// `docs/EMAIL.md`.
 pub const MAIL_FROM: &str = "Pulsars <noreply@blackenium.com>";
+
+/// The AES-256-GCM key of private messages (`src/crypto.rs`): 32 random
+/// bytes in base64 (`openssl rand -base64 32`), and the version stored with
+/// each message it seals, so a later key can take over.
+#[derive(Clone, PartialEq, Eq)]
+pub struct MessagesKey {
+    pub version: i16,
+    pub key: [u8; 32],
+}
+
+impl fmt::Debug for MessagesKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessagesKey")
+            .field("version", &self.version)
+            .field("key", &"***")
+            .finish()
+    }
+}
 
 /// What the API needs to issue game tokens (`docs/contract/auth-jwt.md`).
 #[derive(Clone)]
@@ -335,6 +357,29 @@ impl Config {
             key => key.map(Secret::new),
         };
 
+        let messages_key_raw = reader.optional_raw("MESSAGES_KEY");
+        let messages_key_version = reader.optional("MESSAGES_KEY_VERSION", "1", |v| {
+            parse_range(v, 1, i16::MAX as u32).map(|n| n as i16)
+        });
+        let messages_key = match (messages_key_raw, environment) {
+            (Some(raw), _) => match parse_messages_key(&raw) {
+                Ok(key) => messages_key_version.map(|version| MessagesKey { version, key }),
+                Err(message) => {
+                    reader.problems.push(format!("MESSAGES_KEY: {message}"));
+                    None
+                }
+            },
+            (None, Some(Environment::Production)) => {
+                reader.problems.push(
+                    "MESSAGES_KEY: required in production (32 random bytes in base64: \
+                     openssl rand -base64 32)"
+                        .to_owned(),
+                );
+                None
+            }
+            (None, _) => None,
+        };
+
         let token_signer = match (signer_file, signer_kid) {
             (None, None) => None,
             (Some(file), Some(kid)) => match load_signer(&file, &kid, environment) {
@@ -506,6 +551,7 @@ impl Config {
                 shutdown_grace,
                 webhook,
                 service_key,
+                messages_key,
                 argon2_memory_kib: argon2_memory_kib
                     .unwrap_or(crate::auth::password::DEFAULT_MEMORY_KIB),
                 token_signer,
@@ -655,6 +701,23 @@ fn parse_deepl_languages(value: &str) -> Result<Vec<(String, String)>, String> {
             }
         })
         .collect()
+}
+
+/// 32 bytes in standard base64, padded or not. The value is never echoed.
+fn parse_messages_key(value: &str) -> Result<[u8; 32], String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+
+    let bytes = STANDARD
+        .decode(value)
+        .or_else(|_| STANDARD_NO_PAD.decode(value))
+        .map_err(|_| "is not base64".to_owned())?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+        format!(
+            "must decode to 32 bytes, not {} (openssl rand -base64 32)",
+            bytes.len()
+        )
+    })
 }
 
 fn parse_range(value: &str, min: u32, max: u32) -> Result<u32, String> {
@@ -807,6 +870,7 @@ mod tests {
             ),
             ("REDIS_URL", "redis://localhost:6379"),
             ("JWKS_URL", "https://pulsars.science/.well-known/jwks.json"),
+            ("MESSAGES_KEY", "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="),
         ]
     }
 
@@ -1147,5 +1211,40 @@ mod tests {
             Config::from_vars(base().into_iter().chain([("SERVICE_KEY", key.as_str())])).unwrap();
         assert_eq!(config.service_key, Some(Secret::new(key.clone())));
         assert_eq!(with(&[]).unwrap().service_key, None);
+    }
+
+    #[test]
+    fn the_messages_key_is_32_bytes_of_base64() {
+        let config = with(&[]).unwrap();
+        let key = config.messages_key.expect("a key");
+        assert_eq!((key.version, key.key), (1, [7u8; 32]));
+        assert!(!format!("{key:?}").contains('7'), "the key never shows in Debug");
+
+        let config = with(&[("MESSAGES_KEY_VERSION", "3")]).unwrap();
+        assert_eq!(config.messages_key.map(|k| k.version), Some(3));
+        let problems = with(&[("MESSAGES_KEY_VERSION", "0")]).unwrap_err().problems;
+        assert_eq!(
+            problems,
+            ["MESSAGES_KEY_VERSION: must be an integer between 1 and 32767"]
+        );
+
+        let problems = with(&[("MESSAGES_KEY", "c2hvcnQ=")]).unwrap_err().problems;
+        assert_eq!(
+            problems,
+            ["MESSAGES_KEY: must decode to 32 bytes, not 5 (openssl rand -base64 32)"]
+        );
+        let problems = with(&[("MESSAGES_KEY", "not base64!")]).unwrap_err().problems;
+        assert_eq!(problems, ["MESSAGES_KEY: is not base64"]);
+
+        // Required in production, optional in development.
+        let vars = base().into_iter().filter(|(k, _)| *k != "MESSAGES_KEY");
+        let problems = Config::from_vars(vars).unwrap_err().problems;
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].starts_with("MESSAGES_KEY: required in production"));
+        let vars = base()
+            .into_iter()
+            .filter(|(k, _)| *k != "MESSAGES_KEY")
+            .map(|(k, v)| (k, if k == "PULSARS_ENV" { "development" } else { v }));
+        assert_eq!(Config::from_vars(vars).unwrap().messages_key, None);
     }
 }
