@@ -11,6 +11,7 @@ pub mod extract;
 pub mod flash;
 pub mod game;
 pub mod links;
+pub mod mail;
 pub mod middleware;
 pub mod rate_limit;
 pub mod redis;

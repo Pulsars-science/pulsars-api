@@ -122,15 +122,28 @@ struct Server {
 }
 
 async fn server(database_url: &str, redis_url: &str, settings: GameSettings) -> Server {
+    server_with(database_url, redis_url, settings, &[]).await
+}
+
+async fn server_with(
+    database_url: &str,
+    redis_url: &str,
+    settings: GameSettings,
+    extra: &[(&str, &str)],
+) -> Server {
     let keys = Keys::start().await;
-    let config = Config::from_vars([
-        ("PULSARS_ENV", "development"),
-        ("DATABASE_URL", database_url),
-        ("REDIS_URL", redis_url),
-        ("JWKS_URL", keys.url.as_str()),
-        ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
-        ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
-    ])
+    let config = Config::from_vars(
+        [
+            ("PULSARS_ENV", "development"),
+            ("DATABASE_URL", database_url),
+            ("REDIS_URL", redis_url),
+            ("JWKS_URL", keys.url.as_str()),
+            ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
+            ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
+        ]
+        .into_iter()
+        .chain(extra.iter().copied()),
+    )
     .expect("valid test config");
     let jwks = Jwks::with_settings(
         &config.jwks_url,
@@ -144,6 +157,7 @@ async fn server(database_url: &str, redis_url: &str, settings: GameSettings) -> 
     jwks.refresh().await.expect("JWKS loads");
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
+        mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), settings),
         db,
         redis: redis::connect(&config).unwrap(),
@@ -370,6 +384,63 @@ async fn sessions_must_authenticate_first_and_in_time() {
     );
     forged.send(json!({"type": "auth", "token": token})).await;
     assert_eq!(forged.closed().await, (4001, "bad_signature".to_owned()));
+}
+
+#[tokio::test]
+async fn tokens_the_api_signs_open_a_game_session() {
+    use base64::Engine as _;
+    let Some((database_url, redis_url)) = integration_urls() else {
+        return;
+    };
+    apply_migrations(&database_url).await;
+    let dir = std::env::temp_dir().join(format!("pulsars-ws-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("key");
+    std::fs::write(
+        &path,
+        base64::engine::general_purpose::STANDARD.encode([5u8; 32]),
+    )
+    .unwrap();
+    let file = path.to_str().unwrap().to_owned();
+    let own_kid = "2026-10-ed25519-8";
+    let server = server_with(
+        &database_url,
+        &redis_url,
+        fast_settings(),
+        &[
+            ("JWT_SIGNING_KEY_FILE", &file),
+            ("JWT_SIGNING_KID", own_kid),
+        ],
+    )
+    .await;
+    wait_for_redis(&server.state).await;
+
+    let signer = server.state.config.token_signer.clone().expect("signer");
+    let sub = fresh_user().to_string();
+    let mut claims = testing::claims(&sub, chrono::Utc::now().timestamp());
+    claims["iss"] = json!("https://api.pulsars.science");
+    claims["name"] = json!("api-signed");
+    let token = pulsars_api::routes::token::sign(&signer, &claims);
+
+    let mut client = Client::connect(&server, Some(ORIGIN)).await.unwrap();
+    client.send(json!({"type": "auth", "token": token})).await;
+    let ok = client.until("auth.ok").await;
+    assert_eq!(ok["player"]["user_id"], json!(sub));
+    assert_eq!(ok["player"]["guest"], false);
+
+    // Single use, as for the site's tokens.
+    let mut again = Client::connect(&server, Some(ORIGIN)).await.unwrap();
+    again.send(json!({"type": "auth", "token": token})).await;
+    assert_eq!(again.closed().await.0, 4003);
+
+    // The site's issuer with the API's key: refused.
+    claims["iss"] = json!("https://pulsars.science");
+    claims["jti"] = json!(uuid::Uuid::now_v7().to_string());
+    let forged = pulsars_api::routes::token::sign(&signer, &claims);
+    let mut client = Client::connect(&server, Some(ORIGIN)).await.unwrap();
+    client.send(json!({"type": "auth", "token": forged})).await;
+    assert_eq!(client.closed().await, (4001, "unknown_kid".to_owned()));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]

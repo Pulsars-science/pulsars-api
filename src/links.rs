@@ -21,6 +21,22 @@ pub fn encode(value: &str, keep_slashes: bool) -> String {
     out
 }
 
+/// The link of an address verification mail:
+/// `https://pulsars.science/email/verifier/{token}`.
+pub fn email_verification(token: &str) -> String {
+    format!("{SITE_URL}/email/verifier/{}", encode(token, false))
+}
+
+/// The link of a password reset mail, as Laravel's `ResetPassword` builds
+/// it: `https://pulsars.science/reset-password/{token}?email={email}`.
+pub fn password_reset(token: &str, email: &str) -> String {
+    format!(
+        "{SITE_URL}/reset-password/{}?email={}",
+        encode(token, false),
+        encode(email, false)
+    )
+}
+
 /// `https://pulsars.science/membres/{pseudo}`.
 pub fn member(pseudo: &str) -> String {
     format!("{SITE_URL}/membres/{}", encode(pseudo, false))

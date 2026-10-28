@@ -1,5 +1,7 @@
 //! Route tree and middleware stack.
 
+pub mod account;
+pub mod auth;
 pub mod courses;
 pub mod cursor;
 pub mod exams;
@@ -9,9 +11,11 @@ pub mod game;
 pub mod health;
 pub mod me;
 pub mod news;
+pub mod oauth;
 pub mod params;
 pub mod public;
 pub mod resources;
+pub mod token;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
@@ -19,7 +23,7 @@ use axum::extract::{OriginalUri, Request};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get, post, put};
 use tower::ServiceBuilder;
 use tower_http::LatencyUnit;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -112,8 +116,45 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
 
+    // Accounts and sessions: called by the site from its server, never by a
+    // browser (no CORS layer: a cross-origin browser request is refused).
+    let auth = Router::new()
+        .route("/v1/auth/login", post(auth::login))
+        .route("/v1/auth/register", post(auth::register))
+        .route("/v1/auth/session", get(auth::session))
+        .route("/v1/auth/logout", post(auth::logout))
+        .route("/v1/auth/sessions", post(auth::open_for))
+        .route("/v1/auth/password", put(auth::change_password))
+        .route("/v1/auth/password/reset", post(auth::reset_password))
+        .route("/v1/auth/password/forgot", post(account::forgot))
+        .route(
+            "/v1/auth/password/reset-with-token",
+            post(account::reset_with_token),
+        )
+        .route("/v1/auth/email/verification", post(account::send_again))
+        .route("/v1/auth/email/verify", post(account::verify))
+        .route("/v1/auth/oauth/resolve", post(oauth::resolve))
+        .route("/v1/auth/oauth/{provider}", delete(oauth::unlink))
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
+    // The game token, asked by the game front end with the session cookie:
+    // its own origin check and credentialed CORS (`token::browser_guard`).
+    let game_token = Router::new()
+        .route("/v1/auth/token", post(token::issue).options(preflight))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
+        .layer(from_fn_with_state(state.clone(), token::browser_guard));
+
+    // The API's public signing key, for anyone verifying its tokens.
+    let jwks = Router::new()
+        .route("/.well-known/jwks.json", get(token::jwks))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(auth)
+        .merge(game_token)
+        .merge(jwks)
         .merge(content)
         .merge(files)
         .merge(game_public)

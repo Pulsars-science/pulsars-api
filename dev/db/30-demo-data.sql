@@ -10,8 +10,14 @@ SET search_path = site;
 
 INSERT INTO users (id, pseudo, name, email, bio, niveau_scolaire, classe, locale, friend_token, password, created_at, updated_at) VALUES
     (1, 'jikuji', 'jikuji', 'demo-admin@example.invalid', NULL, NULL, NULL, 'fr', 'demofriendtokenadmin00000', 'not-a-real-hash', '2026-08-07 14:44:15', '2026-08-07 14:44:15'),
-    (2, 'ada', 'ada', 'demo-ada@example.invalid', 'Mathématiques et café.', 'lycee', 'Terminale B (private)', 'en', 'demofriendtokenada0000000', 'not-a-real-hash', '2026-08-10 09:00:00', '2026-08-10 09:00:00'),
-    (3, 'emmy', 'emmy', 'demo-emmy@example.invalid', NULL, 'superieur', NULL, NULL, 'demofriendtokenemmy000000', 'not-a-real-hash', '2026-08-11 10:00:00', '2026-08-11 10:00:00');
+    (2, 'ada', 'ada', 'demo-ada@example.invalid', 'Mathématiques et café.', 'lycee', 'Terminale B (private)', 'en', 'demofriendtokenada0000000', '$2y$04$XPWujD27Gwicj4vAhoXicOM2f.CDc44PWAG/oq2UeToLwvQxFUbQC', '2026-08-10 09:00:00', '2026-08-10 09:00:00'),
+    (3, 'emmy', 'emmy', 'demo-emmy@example.invalid', NULL, 'superieur', NULL, NULL, 'demofriendtokenemmy000000', NULL, '2026-08-11 10:00:00', '2026-08-11 10:00:00');
+
+-- ada logs in with « secret-pass »: a hash made by PHP's password_hash()
+-- (cost 4), as Laravel stores them. emmy signed up through Google: no
+-- password at all.
+UPDATE users SET email_verified_at = '2026-08-10 09:05:00', onboarding_at = '2026-08-10 09:10:00'
+ WHERE id = 2;
 
 INSERT INTO roles (id, slug, nom, categorie, couleur, niveau, ordre) VALUES
     (1, 'super-admin', 'Super admin', 'permission', '#d1544f', 3, 0),

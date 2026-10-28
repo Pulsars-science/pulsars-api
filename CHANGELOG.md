@@ -6,7 +6,62 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-10-28
+## [0.5.0] - 2026-10-29
+
+### Upgrading
+
+- From 0.2.0 (0.3.0 and 0.4.0 were never installed): `deploy/sql/README.md`,
+  phase 1 (steps 1 to 7), then phase 2 (steps 8 to 10).
+
+- Two migrations (`20261029000000_auth_sessions`,
+  `20261030000000_auth_roles`): `deploy-api` applies them as
+  `pulsars_migrate`. They give `pulsars_api` the login columns of
+  `site.users` and read access to the permission roles. A third
+  (`20261031000000_email_tokens`) adds the links sent by mail and lets the
+  API mark addresses verified and link Google accounts.
+- Optional: `MAIL_SMTP_URL` (and `MAIL_FROM`) for the account mails; unset,
+  they are only logged, without their link.
+- Optional: the API's game-token key (`pulsars-api jwt-keygen`, then
+  `JWT_SIGNING_KEY_FILE` and `JWT_SIGNING_KID`).
+
+### Added
+
+- Account mails sent by the API (`lettre`, SMTP), in fr/en/ru with the
+  site's wording: `POST /v1/auth/email/verification` and
+  `/v1/auth/email/verify` (verification link, 24 h, sent on sign-up too),
+  `POST /v1/auth/password/forgot` (never says whether the account exists,
+  one mail a minute per account) and `/v1/auth/password/reset-with-token`
+  (60 min, revokes every session). Links are single-use token hashes in
+  `site.email_tokens`.
+- `POST /v1/auth/oauth/resolve` (service key): finds, links or creates the
+  account of a Google identity with the site's rules, then opens a
+  session; `DELETE /v1/auth/oauth/{provider}` unlinks, except the last way
+  to log in.
+- Problems `invalid-token` (422) and `conflict` (409, with a `reason`).
+
+- `/v1/auth/*` (`docs/contract/auth-sessions.md`): log in by e-mail or
+  pseudo (ignoring case), sign up with Laravel's rules, sessions as opaque
+  tokens in `site.auth_sessions` (`Pulsars-Session`), log out, change a
+  password (also for accounts made through Google), and, with the service
+  key, open a session for an account or reset its password. Bcrypt in
+  Laravel's `$2y$` format; per-action limits on logins and sign-ups.
+- `422 invalid-body` with a `code` per field, `invalid-credentials`,
+  `session-invalid`.
+- `BCRYPT_COST` (default 12).
+- `POST /v1/auth/token`: the API issues the game token itself, from the
+  member's session (`pulsars_auth` cookie or `Pulsars-Session`), with the
+  same origin checks, gates and body as Laravel's `/jeu/jeton`. Signed with
+  the API's own key, `iss` `https://api.pulsars.science`; 503
+  `token-unavailable` without a key.
+- `GET /.well-known/jwks.json` on the API: its public signing key.
+- `pulsars-api jwt-keygen <kid> <dir>`: makes that key.
+
+### Changed
+
+- Game tokens are accepted from two issuers: the API's own (verified with
+  its key, no network) and the site's (its JWKS), as before.
+
+## [0.4.0] - 2026-10-28 (never tagged: its changes ship in 0.5.0)
 
 ### Upgrading
 
@@ -274,7 +329,8 @@ archive's `sql/`), `pg_hba.conf` and `/etc/pulsars-api/migrate.env`, then
 - `GET /healthz` answers 503 (`down`) until Laravel's JWKS has been loaded
   once.
 
-[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.5.0
 [0.4.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.1.0...v0.2.0

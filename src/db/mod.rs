@@ -1,8 +1,9 @@
 //! PostgreSQL access.
 //!
 //! The API's role (`pulsars_api`) reads `contenu` and the `api_read.member*`
-//! views, reads and writes the rows of `game` and `langues`, and has no right
-//! on `site`; it creates, alters or drops nothing (`deploy/sql/phase-1.sql`,
+//! views, reads and writes the rows of `game` and `langues`, and of `site`
+//! only the login columns of `users` and `auth_sessions` (`accounts`,
+//! `sessions`); it creates, alters or drops nothing (`deploy/sql/phase-1.sql`,
 //! `docs/contract/database.md` §2.1). Queries name their schema.
 //!
 //! Content is read through the macros of `sources`, never from a `contenu`
@@ -11,13 +12,17 @@
 #[macro_use]
 pub mod sources;
 
+pub mod accounts;
 pub mod courses;
+pub mod email_tokens;
 pub mod exams;
 pub mod exercises;
 pub mod files;
 pub mod members;
 pub mod news;
 pub mod resources;
+pub mod sessions;
+pub mod social;
 
 use std::str::FromStr;
 use std::time::Duration;

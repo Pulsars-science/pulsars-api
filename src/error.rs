@@ -34,6 +34,21 @@ const INSUFFICIENT_SCOPE_CHALLENGE: &str =
 pub struct ParameterError {
     pub parameter: String,
     pub detail: String,
+    /// A stable code for clients that translate the message (`taken`,
+    /// `too_short`…; `auth-sessions.md`). Absent where there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
+}
+
+impl ParameterError {
+    /// A body field at fault, with its code.
+    pub fn field(parameter: &str, code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            parameter: parameter.to_owned(),
+            detail: detail.into(),
+            code: Some(code),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +59,27 @@ pub enum ApiError {
     /// the endpoint expects (one entry per field at fault).
     #[error("invalid body")]
     InvalidBody(Vec<ParameterError>),
+    /// A well-formed body whose values break the endpoint's rules (a pseudo
+    /// already taken, a password too short): 422, one entry per field.
+    #[error("invalid fields")]
+    InvalidFields(Vec<ParameterError>),
+    /// Unknown login, wrong password, or an account without a password.
+    #[error("invalid credentials")]
+    InvalidCredentials,
+    /// A `Pulsars-Session` that is missing, unknown, expired or revoked.
+    #[error("session invalid")]
+    SessionInvalid,
+    /// A link token sent by mail that is unknown, used, expired, or was
+    /// sent to another address: 422 on `token`.
+    #[error("invalid token")]
+    InvalidToken,
+    /// The request conflicts with an account's state; `reason` says how
+    /// (`taken`, `email_unverified`, `last_login_method`).
+    #[error("conflict: {reason}")]
+    Conflict {
+        reason: &'static str,
+        detail: String,
+    },
     /// A `cursor` that cannot be decoded, or was issued for another endpoint
     /// or another set of filters.
     #[error("invalid cursor")]
@@ -92,10 +128,16 @@ pub enum ApiError {
     /// Over the per-minute limit; `retry_after` is in seconds.
     #[error("rate limited")]
     RateLimited { limit: u32, retry_after: u64 },
+    /// Over a per-action limit (login attempts, sign-ups).
+    #[error("too many attempts")]
+    TooManyAttempts { retry_after: u64 },
     #[error("request timed out")]
     Timeout,
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    /// `POST /v1/auth/token` without a signing key configured.
+    #[error("token unavailable")]
+    TokenUnavailable,
     /// The message is logged, never sent.
     #[error("internal error: {0}")]
     Internal(String),
@@ -127,7 +169,11 @@ impl ApiError {
             Self::InvalidParameter(_) | Self::InvalidBody(_) | Self::InvalidCursor => {
                 StatusCode::BAD_REQUEST
             }
-            Self::Unauthorized { .. } => StatusCode::UNAUTHORIZED,
+            Self::InvalidFields(_) | Self::InvalidCredentials | Self::InvalidToken => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            Self::Conflict { .. } => StatusCode::CONFLICT,
+            Self::Unauthorized { .. } | Self::SessionInvalid => StatusCode::UNAUTHORIZED,
             Self::Forbidden { .. } | Self::InsufficientScope { .. } => StatusCode::FORBIDDEN,
             Self::UpgradeRequired => StatusCode::UPGRADE_REQUIRED,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
@@ -136,9 +182,11 @@ impl ApiError {
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RangeNotSatisfiable { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::RateLimited { .. } | Self::TooManyAttempts { .. } => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
             Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Unavailable(_) | Self::TokenUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -146,7 +194,11 @@ impl ApiError {
     pub fn to_problem(&self) -> Problem {
         let (slug, title) = match self {
             Self::InvalidParameter(_) => ("invalid-parameter", "Invalid parameter"),
-            Self::InvalidBody(_) => ("invalid-body", "Invalid body"),
+            Self::InvalidBody(_) | Self::InvalidFields(_) => ("invalid-body", "Invalid body"),
+            Self::InvalidCredentials => ("invalid-credentials", "Invalid credentials"),
+            Self::SessionInvalid => ("session-invalid", "Invalid session"),
+            Self::InvalidToken => ("invalid-token", "Invalid link"),
+            Self::Conflict { .. } => ("conflict", "Conflict"),
             Self::InvalidCursor => ("invalid-cursor", "Invalid cursor"),
             Self::Unauthorized { .. } => ("unauthorized", "Invalid token"),
             Self::Forbidden { .. } => ("forbidden", "Forbidden"),
@@ -158,9 +210,12 @@ impl ApiError {
             Self::PayloadTooLarge => ("payload-too-large", "Payload too large"),
             Self::RangeNotSatisfiable { .. } => ("range-not-satisfiable", "Range not satisfiable"),
             Self::UnsupportedMediaType => ("unsupported-media-type", "Unsupported media type"),
-            Self::RateLimited { .. } => ("rate-limited", "Too many requests"),
+            Self::RateLimited { .. } | Self::TooManyAttempts { .. } => {
+                ("rate-limited", "Too many requests")
+            }
             Self::Timeout => ("unavailable", "Request timed out"),
             Self::Unavailable(_) => ("unavailable", "Service unavailable"),
+            Self::TokenUnavailable => ("token-unavailable", "Game tokens unavailable"),
             Self::Internal(_) => ("internal", "Internal error"),
         };
         let detail = match self {
@@ -173,6 +228,22 @@ impl ApiError {
             Self::InvalidBody(_) => {
                 Some("The request body does not match what this endpoint expects.".to_owned())
             }
+            Self::InvalidFields(_) => Some("One or more fields are invalid.".to_owned()),
+            Self::InvalidCredentials => {
+                Some("These credentials do not match any account.".to_owned())
+            }
+            Self::SessionInvalid => {
+                Some("The session is missing, unknown, expired or revoked.".to_owned())
+            }
+            Self::InvalidToken => Some(
+                "This link is unknown, already used, expired, or was sent to another address."
+                    .to_owned(),
+            ),
+            Self::Conflict { detail, .. } => Some(detail.clone()),
+            Self::TokenUnavailable => Some("Game tokens are temporarily unavailable.".to_owned()),
+            Self::TooManyAttempts { retry_after } => Some(format!(
+                "Too many attempts. Try again in {retry_after} seconds."
+            )),
             Self::UnsupportedMediaType => {
                 Some("This endpoint only accepts application/json bodies.".to_owned())
             }
@@ -211,11 +282,18 @@ impl ApiError {
             errors: match self {
                 Self::InvalidParameter(errors) => Some(errors.clone()),
                 Self::InvalidBody(errors) if !errors.is_empty() => Some(errors.clone()),
+                Self::InvalidFields(errors) => Some(errors.clone()),
+                Self::InvalidToken => Some(vec![ParameterError::field(
+                    "token",
+                    "invalid",
+                    "is unknown, used, expired or for another address",
+                )]),
                 _ => None,
             },
             reason: match self {
                 Self::Unauthorized { reason, .. } => Some(reason.code()),
                 Self::InsufficientScope { .. } => Some(INSUFFICIENT_SCOPE),
+                Self::Conflict { reason, .. } => Some(reason),
                 _ => None,
             },
             trace_id: match self {
@@ -254,8 +332,15 @@ impl IntoResponse for ApiError {
                 HeaderValue::from_static(INSUFFICIENT_SCOPE_CHALLENGE),
             );
         }
-        if let Self::RateLimited { retry_after, .. } = &self {
+        if let Self::RateLimited { retry_after, .. } | Self::TooManyAttempts { retry_after } = &self
+        {
             headers.insert(header::RETRY_AFTER, HeaderValue::from(*retry_after));
+        }
+        if let Self::SessionInvalid = &self {
+            headers.insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Session realm=\"api.pulsars.science\""),
+            );
         }
         if let Self::RangeNotSatisfiable { size } = &self
             && let Ok(value) = HeaderValue::from_str(&format!("bytes */{size}"))
@@ -335,6 +420,7 @@ mod tests {
         let problem = ApiError::InvalidParameter(vec![ParameterError {
             parameter: "limit".to_owned(),
             detail: "must be between 1 and 100".to_owned(),
+            code: None,
         }])
         .to_problem();
         let json = serde_json::to_value(&problem).unwrap_or_default();
@@ -420,6 +506,7 @@ mod tests {
             ApiError::InvalidBody(vec![ParameterError {
                 parameter: "/email".to_owned(),
                 detail: "invalid type: integer `3`, expected a string".to_owned(),
+                code: None,
             }])
             .to_problem(),
         )

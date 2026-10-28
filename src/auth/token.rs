@@ -198,6 +198,12 @@ impl Unverified<'_> {
         &self.kid
     }
 
+    /// The `iss` the token claims, before any check: only to choose which
+    /// key set verifies it. [`Self::verify`] still compares it.
+    pub fn claimed_issuer(&self) -> Option<&str> {
+        self.claims.get("iss").and_then(Value::as_str)
+    }
+
     /// Steps 5-10, with the key the JWKS holds for [`Self::kid`]. `now` is in
     /// Unix seconds.
     pub fn verify(
