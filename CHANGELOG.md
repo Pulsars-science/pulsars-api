@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Changed
+
+- The API owns the whole database (PLAN-REFONTE.md): one migration creates
+  the `site`, `contenu`, `game` and `langues` schemas from scratch, without
+  Laravel's own tables, and a second one the reference data (roles, forum
+  themes, licences, subjects, official sources, Mandarin). The earlier
+  migrations are folded into them: install on an empty database only
+  (`deploy/sql/README.md`).
+- `deploy/sql/roles.sql` replaces `phase-1.sql`: `pulsars_owner`,
+  `pulsars_migrate` and `pulsars_api`, which now reads and writes every
+  table. `pulsars_site` and the `api_read` views are gone; member profiles
+  come from the `site.member*` views.
+- Passwords are argon2id (`ARGON2_MEMORY_KIB`, default 19 456), no longer
+  bcrypt (`BCRYPT_COST` is gone).
+
+### Added
+
+- The languages section: `GET /v1/languages`, `/v1/languages/{code}`,
+  `/v1/languages/{code}/levels/{level}`, `POST /v1/languages/events` and
+  `GET /v1/languages/admin/stats` (`docs/languages.md`).
+- `pulsars-api create-admin <pseudo> <email>` (password on standard input)
+  and `pulsars-api import-content <old database url> <author>`.
+- Member extractors for the site's routes (`src/auth/member.rs`): the
+  session of `Pulsars-Session`, with the permission level of its roles.
+
+### Removed
+
+- `pulsars-api check-content` and `deploy-api --no-content-check`.
+
 ## [0.5.0] - 2026-10-29
 
 ### Upgrading

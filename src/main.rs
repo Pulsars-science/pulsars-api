@@ -44,8 +44,8 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    // `pulsars-api migrate`, `pulsars-api check-content`,
-    // `pulsars-api webhooks replay <event_id>` (docs/contract/webhooks.md §7).
+    // `pulsars-api migrate`, `create-admin`, `import-content`,
+    // `webhooks replay <event_id>` (docs/contract/webhooks.md §7).
     if !args.is_empty() {
         return command(&config, &args).await;
     }
@@ -59,8 +59,9 @@ async fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: pulsars-api [migrate | check-content | webhooks replay <event_id> \
-                     | jwt-keygen <kid> <dir>]";
+const USAGE: &str = "usage: pulsars-api [migrate | create-admin <pseudo> <email> \
+                     | import-content <old database url> <author pseudo> \
+                     | webhooks replay <event_id> | jwt-keygen <kid> <dir>]";
 
 /// `pulsars-api jwt-keygen <kid> <dir>`: writes a new Ed25519 seed to
 /// `<dir>/<kid>.key` (mode 0600, never over an existing file), in the format
@@ -102,15 +103,18 @@ fn jwt_keygen(kid: &str, dir: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// One-off commands: `migrate`, `check-content` and
+/// One-off commands: `migrate`, `create-admin`, `import-content` and
 /// `webhooks replay <event_id>`.
 async fn command(config: &Config, args: &[String]) -> ExitCode {
-    if let [command] = args {
-        match command.as_str() {
-            "migrate" => return migrate_command(config).await,
-            "check-content" => return check_content_command(config).await,
-            _ => {}
+    match args {
+        [command] if command == "migrate" => return migrate_command(config).await,
+        [command, pseudo, email] if command == "create-admin" => {
+            return create_admin_command(config, pseudo, email).await;
         }
+        [command, source, author] if command == "import-content" => {
+            return import_content_command(config, source, author).await;
+        }
+        _ => {}
     }
     let [group, action, event_id] = args else {
         eprintln!("{USAGE}");
@@ -147,10 +151,18 @@ async fn command(config: &Config, args: &[String]) -> ExitCode {
     }
 }
 
-/// `pulsars-api check-content`: compares what the API reads of `contenu`
-/// with the `api_read` views it replaces, on the real data. Fails when a
-/// single row differs (deploy/sql/README.md, phase 1).
-async fn check_content_command(config: &Config) -> ExitCode {
+/// `EX_USAGE` from sysexits.h.
+const EXIT_USAGE: u8 = 64;
+
+/// `pulsars-api create-admin <pseudo> <email>`: the first account
+/// (`pulsars_api::cli`), its password read from standard input.
+async fn create_admin_command(config: &Config, pseudo: &str, email: &str) -> ExitCode {
+    let mut password = String::new();
+    if std::io::stdin().read_line(&mut password).is_err() {
+        eprintln!("cannot read the password from standard input");
+        return ExitCode::from(EXIT_USAGE);
+    }
+    let password = password.trim_end_matches(['\r', '\n']).to_owned();
     let pool = match db::connect_lazy(config) {
         Ok(pool) => pool,
         Err(error) => {
@@ -158,33 +170,65 @@ async fn check_content_command(config: &Config) -> ExitCode {
             return ExitCode::from(EXIT_CONFIG);
         }
     };
-    let comparisons = match db::sources::compare_with_views(&pool).await {
-        Ok(comparisons) => comparisons,
+    match pulsars_api::cli::create_admin(&pool, config.argon2_memory_kib, pseudo, email, password)
+        .await
+    {
+        Ok(id) => {
+            println!("account {id} ({pseudo}) created, super-admin");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("create-admin: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `pulsars-api import-content <old database url> <author pseudo>`: copies
+/// the content of the old database (`pulsars_api::cli`).
+async fn import_content_command(config: &Config, source: &str, author: &str) -> ExitCode {
+    let dest = match db::connect_lazy(config) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("invalid DATABASE_URL: {error}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let source = match sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(source)
+        .await
+    {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("cannot connect to the old database: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let admin = match pulsars_api::cli::account_id(&dest, author).await {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!("no account `{author}`: run `pulsars-api create-admin` first");
+            return ExitCode::FAILURE;
+        }
         Err(error) => {
             eprintln!("database error: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let mut same = true;
-    for c in &comparisons {
-        let verdict = if c.is_same() { "same" } else { "DIFFERENT" };
-        println!(
-            "{:<24} {:>6} rows  {:>4} missing  {:>4} extra  {verdict}",
-            c.view, c.rows, c.missing, c.extra
-        );
-        same &= c.is_same();
-    }
-    if same {
-        println!("content: the API reads exactly what the api_read views show");
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("content: some rows differ from the api_read views");
-        ExitCode::FAILURE
+    match pulsars_api::cli::import_content(&source, &dest, admin).await {
+        Ok(imported) => {
+            for (table, rows) in imported.tables {
+                println!("{table:<22} {rows:>7} rows");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("import-content: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
-
-/// `EX_USAGE` from sysexits.h.
-const EXIT_USAGE: u8 = 64;
 
 /// `pulsars-api migrate`: applies the embedded migrations, then exits.
 ///

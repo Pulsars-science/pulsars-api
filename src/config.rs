@@ -99,8 +99,9 @@ pub struct Config {
     /// site, from the same machine) are not rate limited. `None`: every
     /// request is.
     pub service_key: Option<Secret>,
-    /// `BCRYPT_COST` of the hashes the API writes (12, as Laravel).
-    pub bcrypt_cost: u32,
+    /// `ARGON2_MEMORY_KIB`: memory cost of the password hashes the API
+    /// writes (19 456 KiB). Lowered only by the tests.
+    pub argon2_memory_kib: u32,
     /// The key the API signs game tokens with (`JWT_SIGNING_KEY_FILE`,
     /// `JWT_SIGNING_KID`). `None`: `POST /v1/auth/token` answers 503.
     pub token_signer: Option<TokenSigner>,
@@ -262,7 +263,9 @@ impl Config {
             reader.optional_raw("LARAVEL_WEBHOOK_HOST"),
             &mut reader.problems,
         );
-        let bcrypt_cost = reader.optional("BCRYPT_COST", "12", |v| parse_range(v, 4, 31));
+        let argon2_memory_kib = reader.optional("ARGON2_MEMORY_KIB", "19456", |v| {
+            parse_range(v, 8, 4_194_304)
+        });
         let mail_from = reader.optional("MAIL_FROM", MAIL_FROM, |v| {
             v.parse::<lettre::message::Mailbox>()
                 .map(|_| v.to_owned())
@@ -449,7 +452,8 @@ impl Config {
                 shutdown_grace,
                 webhook,
                 service_key,
-                bcrypt_cost: bcrypt_cost.unwrap_or(12),
+                argon2_memory_kib: argon2_memory_kib
+                    .unwrap_or(crate::auth::password::DEFAULT_MEMORY_KIB),
                 token_signer,
                 mail,
             }),

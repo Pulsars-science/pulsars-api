@@ -470,7 +470,7 @@ pub async fn leaderboard(
                 r.user_id, mb.pseudo, mb.avatar_path, r.rating, r.rd,
                 r.games, r.wins, r.losses, r.draws
            FROM game.ratings r
-           JOIN api_read.members mb ON mb.id = r.user_id
+           JOIN site.members mb ON mb.id = r.user_id
           WHERE r.subject = $1 AND r.games > 0
           ORDER BY r.rating DESC, r.games DESC, r.user_id
           LIMIT $2",
@@ -499,7 +499,7 @@ pub async fn my_ratings(pool: &PgPool, user_id: i64) -> Result<Vec<MyRating>, sq
         "SELECT r.subject, r.rating, r.rd, r.games, r.wins, r.losses, r.draws,
                 1 + (SELECT count(*)
                        FROM game.ratings o
-                       JOIN api_read.members mb ON mb.id = o.user_id
+                       JOIN site.members mb ON mb.id = o.user_id
                       WHERE o.subject = r.subject AND o.games > 0
                         AND round(o.rating) > round(r.rating)) AS rank
            FROM game.ratings r

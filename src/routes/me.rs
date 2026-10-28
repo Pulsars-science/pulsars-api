@@ -3,7 +3,7 @@
 //!
 //! What `https://pulsars.science/membres/{pseudo}` shows to anyone, minus
 //! school level and class. Never e-mail, locale, social logins or moderation
-//! state: the `api_read` views do not even have those columns.
+//! state.
 
 use axum::Json;
 use axum::extract::{OriginalUri, State};
@@ -57,7 +57,7 @@ pub struct Xp {
 
 impl Xp {
     /// Level `n` starts at `50 × (n − 1) × n` XP (`webhooks.md` §5). The
-    /// level itself comes from `api_read.member_xp`.
+    /// level itself comes from `site.member_xp`.
     pub fn new(total: i32, level: i32) -> Self {
         let level = i64::from(level.max(1));
         Self {

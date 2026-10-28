@@ -24,8 +24,8 @@ use tower::ServiceExt as _;
 
 const DEAD_JWKS: &str = "http://127.0.0.1:1/.well-known/jwks.json";
 const SERVICE_KEY: &str = "test-service-key-0123456789abcdef-0123";
-/// ada's password in dev/db/30-demo-data.sql, hashed by PHP.
-const ADA_PASSWORD: &str = "secret-pass";
+/// ada's password in dev/db/30-demo-data.sql.
+const ADA_PASSWORD: &str = "secret-pass-demo";
 
 struct Env {
     app: Router,
@@ -62,7 +62,7 @@ async fn env_with(extra: &[(&str, &str)]) -> Option<Env> {
             ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
             ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
             ("SERVICE_KEY", SERVICE_KEY),
-            ("BCRYPT_COST", "4"),
+            ("ARGON2_MEMORY_KIB", "64"),
         ]
         .into_iter()
         .chain(extra.iter().copied())
@@ -398,7 +398,7 @@ async fn sign_up_reports_every_mistake_with_a_code() {
 }
 
 #[tokio::test]
-async fn sign_up_creates_an_account_laravel_can_read_and_opens_a_session() {
+async fn sign_up_creates_an_account_and_opens_a_session() {
     let Some(env) = env().await else { return };
     let (pseudo, email, password, token) = sign_up(&env.app).await;
 
@@ -412,7 +412,7 @@ async fn sign_up_creates_an_account_laravel_can_read_and_opens_a_session() {
     assert_eq!(user["locale"], "ru");
     assert!(body["data"]["session"].get("token").is_none());
 
-    // As Laravel's CreateNewUser writes it: name = pseudo, a `$2y$` hash.
+    // name = pseudo, an argon2id hash.
     let owner = sqlx::PgPool::connect(&owner_url(&env.database_url))
         .await
         .unwrap();
@@ -423,8 +423,8 @@ async fn sign_up_creates_an_account_laravel_can_read_and_opens_a_session() {
             .await
             .unwrap();
     assert_eq!(name, pseudo);
-    assert!(hash.starts_with("$2y$04$"), "{hash}");
-    assert!(bcrypt::verify(&password, &hash).unwrap());
+    assert!(hash.starts_with("$argon2id$v=19$m=64,"), "{hash}");
+    assert!(pulsars_api::auth::password::verify(password.clone(), hash).await);
 
     let (status, _) = login(&env.app, &pseudo.to_uppercase(), &password).await;
     assert_eq!(status, StatusCode::OK);

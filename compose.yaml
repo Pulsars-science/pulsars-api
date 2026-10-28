@@ -4,7 +4,7 @@
 #   docker compose down -v     stop and delete the data (re-runs the init)
 #
 # PostgreSQL runs scripts/dev-db-init.sh on its first start: roles, schemas,
-# demo data and the api_read views from dev/db/25-api-read.sql.
+# the tables of migrations/ and the demo data of dev/db/30-demo-data.sql.
 
 services:
   postgres:

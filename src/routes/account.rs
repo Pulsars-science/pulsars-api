@@ -12,9 +12,10 @@ use axum::response::Response;
 use serde::Deserialize;
 
 use super::auth::{
-    self, AccountUser, Caller, Data, check_password, current, digest, empty, hash, limit,
-    new_token, no_store,
+    self, AccountUser, Caller, Data, check_password, current, digest, empty, limit, new_token,
+    no_store,
 };
+use crate::auth::password;
 use crate::db::accounts::{self, AccountRow};
 use crate::db::email_tokens::{self, Kind};
 use crate::db::sessions;
@@ -187,7 +188,7 @@ pub async fn reset_with_token(
     let user_id = email_tokens::use_reset(&state.db, &digest(&body.token), body.email.trim())
         .await?
         .ok_or(ApiError::InvalidToken)?;
-    let hash = hash(state.config.bcrypt_cost, body.password).await?;
+    let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
     accounts::set_password(&state.db, user_id, &hash).await?;
     sessions::revoke_others(&state.db, user_id, None).await?;
     Ok(empty())

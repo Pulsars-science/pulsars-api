@@ -871,7 +871,7 @@ async fn the_leaderboard_is_public_and_skips_deleted_accounts() {
     let server = server(&database_url, &redis_url, fast_settings()).await;
 
     let member: (i64, String) =
-        sqlx::query_as("SELECT id, pseudo FROM api_read.members ORDER BY id LIMIT 1")
+        sqlx::query_as("SELECT id, pseudo FROM site.members ORDER BY id LIMIT 1")
             .fetch_one(&pool)
             .await
             .unwrap();
