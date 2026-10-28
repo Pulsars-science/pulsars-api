@@ -23,8 +23,8 @@
 # handles the deployments after it.
 #
 # It stops at the first error (`set -e`). Up to the restart, nothing the
-# running service uses has changed; after it, a failed health check puts the
-# previous release back.
+# running service uses has changed (the migrations it applies first are
+# additive); after it, a failed health check puts the previous release back.
 
 set -euo pipefail
 
@@ -34,6 +34,10 @@ SERVICE="pulsars-api"
 UNIT="/etc/systemd/system/pulsars-api.service"
 VHOST="/etc/nginx/sites-available/pulsars-api"
 ENV_FILE="/etc/pulsars-api/pulsars-api.env"
+# DATABASE_MIGRATION_URL (the pulsars_migrate account). Read by this script
+# only, never by the service. Optional: without it, migrations run with the
+# service's DATABASE_URL, which works only while that role owns its schemas.
+MIGRATE_ENV_FILE="/etc/pulsars-api/migrate.env"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/healthz}"
 PUBLIC_URL="${PUBLIC_URL:-https://api.pulsars.science/healthz}"
 # Seconds the new release gets to answer 200 on /healthz. It needs
@@ -231,6 +235,19 @@ if [ "$NO_SYSTEM" = false ]; then
     fi
     ok "system files up to date"
 fi
+
+step "Migrations"
+# Applied by the new binary before the switch. Migrations are additive
+# (migrations/README.md): the release still running keeps working on the
+# migrated schema, and a failure here stops the deployment before anything
+# the service uses has changed. systemd reads both files as root, then runs
+# the command as the service account.
+"${SUDO[@]}" systemd-run --quiet --wait --pipe --collect \
+    --property=EnvironmentFile="$ENV_FILE" \
+    --property=EnvironmentFile=-"$MIGRATE_ENV_FILE" \
+    --property=User=pulsars-api \
+    "$TARGET/pulsars-api" migrate
+ok "database schema up to date"
 
 if [ "$CURRENT" = "$RELEASE" ]; then
     step "Restart ($RELEASE is already current)"

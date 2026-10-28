@@ -35,7 +35,8 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    // `pulsars-api webhooks replay <event_id>` (docs/contract/webhooks.md §7).
+    // `pulsars-api migrate`, `pulsars-api webhooks replay <event_id>`
+    // (docs/contract/webhooks.md §7).
     let args: Vec<String> = std::env::args().skip(1).collect();
     if !args.is_empty() {
         return command(&config, &args).await;
@@ -50,10 +51,17 @@ async fn main() -> ExitCode {
     }
 }
 
-/// One-off commands. Only `webhooks replay <event_id>` exists.
+const USAGE: &str = "usage: pulsars-api [migrate | webhooks replay <event_id>]";
+
+/// One-off commands: `migrate` and `webhooks replay <event_id>`.
 async fn command(config: &Config, args: &[String]) -> ExitCode {
+    if let [command] = args
+        && command == "migrate"
+    {
+        return migrate_command(config).await;
+    }
     let [group, action, event_id] = args else {
-        eprintln!("usage: pulsars-api [webhooks replay <event_id>]");
+        eprintln!("{USAGE}");
         return ExitCode::from(EXIT_USAGE);
     };
     if group != "webhooks" || action != "replay" {
@@ -90,23 +98,78 @@ async fn command(config: &Config, args: &[String]) -> ExitCode {
 /// `EX_USAGE` from sysexits.h.
 const EXIT_USAGE: u8 = 64;
 
-/// Applies the `game` migrations, retrying while the database is down: the
-/// API starts without it, like the rest of the service.
-async fn migrate(pool: sqlx::PgPool) {
+/// `pulsars-api migrate`: applies the embedded migrations, then exits.
+///
+/// Connects with `DATABASE_MIGRATION_URL` (the `pulsars_migrate` role, which
+/// may create tables), or `DATABASE_URL` when it is not set, as long as the
+/// service's role still owns its schemas. `deploy-api` runs it before
+/// switching to a new release; the service itself never migrates.
+async fn migrate_command(config: &Config) -> ExitCode {
+    let url = std::env::var("DATABASE_MIGRATION_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
+    let source = if url.is_some() {
+        "DATABASE_MIGRATION_URL"
+    } else {
+        "DATABASE_URL"
+    };
+    let url = url.unwrap_or_else(|| config.database_url.expose().to_owned());
+    let pool = match sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect(&url)
+        .await
+    {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("cannot connect with {source}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let before = match store::pending(&pool).await {
+        Ok(pending) => pending,
+        Err(error) => {
+            eprintln!("cannot read the applied migrations: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = store::migrate(&pool).await {
+        eprintln!("migrations failed (with {source}): {error}");
+        return ExitCode::FAILURE;
+    }
+    match before.as_slice() {
+        [] => println!("migrations: nothing to apply"),
+        versions => println!(
+            "migrations: applied {}",
+            versions
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+    pool.close().await;
+    ExitCode::SUCCESS
+}
+
+/// Waits until every embedded migration is applied, checking again with a
+/// growing delay while the database is down or behind. The service does not
+/// migrate (its role may not create tables): `pulsars-api migrate` does.
+async fn wait_for_schema(pool: sqlx::PgPool) {
     let mut wait = std::time::Duration::from_secs(1);
     loop {
-        match store::migrate(&pool).await {
-            Ok(()) => {
-                tracing::info!("game schema migrations applied");
+        match store::pending(&pool).await {
+            Ok(pending) if pending.is_empty() => {
+                tracing::info!("database schema up to date");
                 return;
             }
-            Err(error) => {
-                tracing::error!(error = %error, retry_secs = wait.as_secs(),
-                    "cannot apply the game schema migrations");
-                tokio::time::sleep(wait).await;
-                wait = (wait * 2).min(std::time::Duration::from_secs(60));
-            }
+            Ok(pending) => tracing::error!(pending = ?pending, retry_secs = wait.as_secs(),
+                "migrations not applied: run `pulsars-api migrate`"),
+            Err(error) => tracing::error!(error = %error, retry_secs = wait.as_secs(),
+                "cannot check the database schema"),
         }
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(std::time::Duration::from_secs(60));
     }
 }
 
@@ -124,7 +187,7 @@ async fn run(config: Config) -> Result<(), String> {
     let migrations = tokio::spawn({
         let db = db.clone();
         async move {
-            migrate(db.clone()).await;
+            wait_for_schema(db.clone()).await;
             // Runs forever; aborted at shutdown with this task.
             season::run_closer(db).await;
         }

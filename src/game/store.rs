@@ -13,9 +13,37 @@ use super::protocol::EndReason;
 use super::ranking::Outcome;
 use super::rules::{QueueKey, SubjectKey};
 
-/// Runs the migrations of `migrations/` (the `game` schema only).
+/// The migrations of `migrations/`, embedded at build time.
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
+/// Runs the migrations of `migrations/`. Needs a role that may create
+/// tables: `pulsars_migrate` (`pulsars-api migrate`), never the service's.
 pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    sqlx::migrate!("./migrations").run(pool).await
+    MIGRATOR.run(pool).await
+}
+
+/// Versions of the embedded migrations that the database has not applied
+/// (successfully), oldest first. Only reads `game._sqlx_migrations`, so the
+/// service's role can call it; a database never migrated has them all
+/// pending.
+pub async fn pending(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
+    let exists: bool =
+        sqlx::query_scalar("SELECT to_regclass('game._sqlx_migrations') IS NOT NULL")
+            .fetch_one(pool)
+            .await?;
+    let applied: Vec<i64> = if exists {
+        sqlx::query_scalar("SELECT version FROM game._sqlx_migrations WHERE success")
+            .fetch_all(pool)
+            .await?
+    } else {
+        Vec::new()
+    };
+    Ok(MIGRATOR
+        .iter()
+        .filter(|m| m.migration_type.is_up_migration())
+        .map(|m| m.version)
+        .filter(|version| !applied.contains(version))
+        .collect())
 }
 
 pub fn timestamp(ms: i64) -> DateTime<Utc> {
