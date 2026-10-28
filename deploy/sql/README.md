@@ -8,15 +8,35 @@ s'exécutent dans une transaction. L'archive de release les contient (`sql/`).
 |---|---|---|
 | `phase-1.sql` | `phase-1-retour.sql` | rôles `pulsars_owner` / `pulsars_migrate`, schéma `contenu`, plus aucun droit de structure pour `pulsars_site` et `pulsars_api` (`docs/contract/database.md` §2.1) |
 
-## Phase 1 en production, dans l'ordre
+## Phase 1 en production, dans l'ordre (0.2.0 → 0.3.0)
 
 Chaque étape laisse le site en marche. Une commande par ligne.
 
-### 1. L'API qui ne migre plus au démarrage
+La 0.3.0 lit `contenu` : elle ne peut s'installer qu'**après** le script.
+Pendant ce temps, la 0.2.0 continue de servir : elle lit les vues `api_read`,
+qui suivent les tables déplacées. Ne pas la redémarrer entre les étapes 3
+et 5 : au démarrage, elle essaierait de migrer avec un rôle qui n'en a plus
+le droit (elle sert quand même, en l'écrivant au journal).
 
-Déployer la release qui contient ce dossier, comme d'habitude (`deploy-api`).
-Sans `/etc/pulsars-api/migrate.env`, elle migre encore avec `DATABASE_URL` :
-`pulsars_api` est encore propriétaire de `game`.
+### 1. Récupérer la release 0.3.0
+
+Sans encore l'installer : on a besoin de ses scripts SQL. Sur ton Mac
+(connecté à `gh`) :
+
+```
+gh release download v0.3.0 -R Pulsars-science/pulsars-api -p "pulsars-api-v0.3.0-x86_64-unknown-linux-gnu.tar.gz*"
+scp pulsars-api-v0.3.0-x86_64-unknown-linux-gnu.tar.gz* tmh:/tmp/
+```
+
+Puis sur le serveur :
+
+```
+ssh tmh
+cd /tmp
+sha256sum -c pulsars-api-v0.3.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar xzf pulsars-api-v0.3.0-x86_64-unknown-linux-gnu.tar.gz
+ls /tmp/pulsars-api-v0.3.0-x86_64-unknown-linux-gnu/sql
+```
 
 ### 2. Le site regarde aussi dans `contenu`
 
@@ -26,7 +46,6 @@ n'existe pas encore, et PostgreSQL l'ignore d'ici là : ce réglage peut donc
 passer avant le script.
 
 ```
-ssh tmh
 cd /var/www/pulsars
 sudo -u www-data sed -i 's/^DB_SEARCH_PATH=.*/DB_SEARCH_PATH="site,contenu"/' .env
 grep ^DB_SEARCH_PATH .env
@@ -34,6 +53,7 @@ sudo -u www-data php artisan config:cache
 sudo systemctl reload pulsars-octane
 sudo systemctl restart pulsars-queue
 curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
+cd /tmp
 ```
 
 Le `grep` doit afficher `DB_SEARCH_PATH="site,contenu"`, et le `curl` 200.
@@ -45,11 +65,13 @@ sudo -u postgres pg_dump -Fc pulsars > ~/pulsars-avant-phase-1.dump
 ls -lh ~/pulsars-avant-phase-1.dump
 openssl rand -hex 24 > ~/pulsars-secrets/MDP_MIGRATE
 chmod 600 ~/pulsars-secrets/MDP_MIGRATE
-sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 -v mdp_migrate="$(cat ~/pulsars-secrets/MDP_MIGRATE)" -f /opt/pulsars-api/current/sql/phase-1.sql
+sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 -v mdp_migrate="$(cat ~/pulsars-secrets/MDP_MIGRATE)" -f /tmp/pulsars-api-v0.3.0-x86_64-unknown-linux-gnu/sql/phase-1.sql
+curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
+curl -s -o /dev/null -w '%{http_code}\n' https://api.pulsars.science/v1/courses
 ```
 
 Le script ne doit afficher aucune `ERROR`. Les `NOTICE` (« already exists,
-skipping ») ne sont normaux qu'à la deuxième fois.
+skipping ») ne sont normaux qu'à la deuxième fois. Les deux `curl` : 200.
 
 ### 4. Connexion du compte de migration
 
@@ -72,63 +94,57 @@ echo "DATABASE_MIGRATION_URL=postgres://pulsars_migrate:$(cat ~/pulsars-secrets/
 sudo chmod 600 /etc/pulsars-api/migrate.env
 ```
 
-### 5. Vérifications
+### 5. Installer la 0.3.0
 
 ```
-sudo /opt/pulsars-api/current/deploy-api --no-system
-sudo -u postgres psql pulsars -Atc "select schemaname, tableowner, count(*) from pg_tables where schemaname in ('site','contenu','game') group by 1, 2 order by 1"
-curl -s https://api.pulsars.science/v1/courses | head -c 200; echo
-curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
+/tmp/pulsars-api-v0.3.0-x86_64-unknown-linux-gnu/deploy-api
 ```
 
-- `deploy-api` doit écrire « migrations: nothing to apply » : c'est la
-  preuve que `pulsars_migrate` se connecte.
-- Toutes les tables doivent appartenir à `pulsars_owner`.
-- L'API et le site doivent répondre normalement.
-
-### 6. L'API qui lit `contenu` elle-même (phase 1, 2/2)
-
-Seulement **après** les étapes 1 à 5. La release suivante lit `contenu`
-directement, sans les vues `api_read` du contenu. Elle se déploie comme
-d'habitude :
-
-```
-./pulsars-api-vX.Y.Z-x86_64-unknown-linux-gnu/deploy-api
-```
-
-- L'étape « Migrations » crée `contenu.licences`, `contenu.matieres` et
-  `contenu.sources_officielles`. Si `phase-1.sql` n'a pas tourné, elle
-  échoue (« schema contenu does not exist ») et le déploiement s'arrête
-  avant la bascule : rien ne change.
-- L'étape « Content check » lance `pulsars-api check-content` : pour chaque
-  ressource, la nouvelle release doit lire exactement les lignes que montre
-  la vue `api_read` correspondante. Une seule ligne de différence arrête le
+- « Migrations » applique `20261028000000_contenu_reference` en tant que
+  `pulsars_migrate` (« migrations: applied … »). Si le script de l'étape 3
+  n'a pas tourné, elle échoue (« schema contenu does not exist ») et le
+  déploiement s'arrête avant la bascule : rien ne change.
+- « Content check » lance `pulsars-api check-content` : pour chaque
+  ressource, la 0.3.0 doit lire exactement les lignes que montre la vue
+  `api_read` correspondante. Une seule ligne de différence arrête le
   déploiement avant la bascule.
 
-On peut relancer la comparaison à la main :
+### 6. Vérifications
 
 ```
+sudo -u postgres psql pulsars -Atc "select schemaname, tableowner, count(*) from pg_tables where schemaname in ('site','contenu','game') group by 1, 2 order by 1"
+curl -s https://api.pulsars.science/v1/courses | head -c 200; echo
+curl -s -o /dev/null -w '%{http_code}\n' https://api.pulsars.science/v1/news
+curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
 sudo systemd-run --quiet --wait --pipe --collect --property=EnvironmentFile=/etc/pulsars-api/pulsars-api.env --property=User=pulsars-api /opt/pulsars-api/current/pulsars-api check-content
 ```
 
-Retour arrière : `deploy-api --rollback`. La release précédente lit encore
-les vues, toujours en place ; les trois tables de référence restent, sans
-gêner personne.
+- Toutes les tables doivent appartenir à `pulsars_owner`.
+- L'API et le site doivent répondre normalement.
+- La dernière commande refait la comparaison de l'étape 5 à la main.
 
 ## Retour arrière de la phase 1
 
-Ordre inverse : le script, puis l'API, puis le site.
+Ordre inverse : l'API d'abord (la 0.3.0 ne sait pas lire sans `contenu`),
+puis le script, puis le site.
 
 ```
+sudo /opt/pulsars-api/current/deploy-api --rollback
 sudo rm /etc/pulsars-api/migrate.env
-sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 -f /opt/pulsars-api/current/sql/phase-1-retour.sql
+sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 -f /opt/pulsars-api/releases/v0.3.0/sql/phase-1-retour.sql
 sudo systemctl restart pulsars-api
-cd /var/www/pulsars && sudo -u www-data sed -i 's/^DB_SEARCH_PATH=.*/DB_SEARCH_PATH=site/' .env && sudo -u www-data php artisan config:cache && sudo systemctl reload pulsars-octane
+cd /var/www/pulsars
+sudo -u www-data sed -i 's/^DB_SEARCH_PATH=.*/DB_SEARCH_PATH=site/' .env
+sudo -u www-data php artisan config:cache
+sudo systemctl reload pulsars-octane
 ```
 
-- Après le retour, `pulsars_api` est de nouveau propriétaire de `game` :
-  la release actuelle continue de fonctionner, rien d'autre n'est à
-  redéployer.
+- `deploy-api --rollback` remet la 0.2.0, qui lit les vues, toujours en
+  place.
+- Après le script, `pulsars_api` est de nouveau propriétaire de `game` : la
+  0.2.0 migre au démarrage comme avant. Les tables de référence de la 0.3.0
+  et leur ligne de migration sont retirées, pour qu'un nouvel aller les
+  recrée.
 - La ligne `pulsars_migrate` de `pg_hba.conf` peut rester : le rôle
   n'existe plus.
 - En dernier recours : `pg_restore` de `~/pulsars-avant-phase-1.dump`.
