@@ -26,6 +26,11 @@ pub fn member(pseudo: &str) -> String {
     format!("{SITE_URL}/membres/{}", encode(pseudo, false))
 }
 
+/// `https://pulsars.science/actualite/{news}`.
+pub fn news(slug: &str) -> String {
+    format!("{SITE_URL}/actualite/{}", encode(slug, false))
+}
+
 /// `https://pulsars.science/cours/{course}`.
 pub fn course(slug: &str) -> String {
     format!("{SITE_URL}/cours/{}", encode(slug, false))

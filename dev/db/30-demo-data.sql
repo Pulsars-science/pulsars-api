@@ -157,6 +157,20 @@ INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created
 UPDATE users SET cerveaux_publics = false WHERE id = 3;
 
 -- Keep sequences ahead of the explicit ids above.
+-- News: one published (translated), one draft, one scheduled in the future.
+INSERT INTO actualites (id, titre, slug, chapeau, contenu_md, published_at, auteur_id, created_at, updated_at) VALUES
+    (1, 'Le russe arrive sur Pulsars', 'le-russe-arrive-sur-pulsars',
+     'L''interface parle désormais trois langues.', E'Après le français et l''anglais, **le russe**.\n\nBonne lecture !',
+     '2026-10-20 08:00:00', 1, '2026-10-19 18:00:00', '2026-10-20 08:00:00'),
+    (2, 'Annonce en préparation', 'demo-draft-news', 'NEWS-DRAFT-MARKER', 'NEWS-DRAFT-MARKER',
+     NULL, 1, '2026-10-21 09:00:00', '2026-10-21 09:00:00'),
+    (3, 'Annonce programmée', 'demo-future-news', 'NEWS-FUTURE-MARKER', 'NEWS-FUTURE-MARKER',
+     '2099-01-01 00:00:00', 1, '2026-10-21 09:00:00', '2026-10-21 09:00:00');
+
+INSERT INTO contenu_translations (traduisible_type, traduisible_id, langue, champs, source_hash, created_at, updated_at) VALUES
+    ('actualite', 1, 'en', '{"titre":"Russian comes to Pulsars","chapeau":"","contenu_md":"After French and English, **Russian**.\n\nEnjoy!"}', 'demo', now(), now()),
+    ('actualite', 2, 'en', '{"titre":"NEWS-DRAFT-MARKER","contenu_md":"NEWS-DRAFT-MARKER"}', 'demo', now(), now());
+
 SELECT setval('site.users_id_seq', (SELECT max(id) FROM users));
 SELECT setval('site.roles_id_seq', (SELECT max(id) FROM roles));
 SELECT setval('site.courses_id_seq', (SELECT max(id) FROM courses));
@@ -166,6 +180,7 @@ SELECT setval('site.exercises_id_seq', (SELECT max(id) FROM exercises));
 SELECT setval('site.exams_id_seq', (SELECT max(id) FROM exams));
 SELECT setval('site.exam_parties_id_seq', (SELECT max(id) FROM exam_parties));
 SELECT setval('site.ressources_id_seq', (SELECT max(id) FROM ressources));
+SELECT setval('site.actualites_id_seq', (SELECT max(id) FROM actualites));
 SELECT setval('site.forum_themes_id_seq', (SELECT max(id) FROM forum_themes));
 SELECT setval('site.questions_id_seq', (SELECT max(id) FROM questions));
 SELECT setval('site.answers_id_seq', (SELECT max(id) FROM answers));

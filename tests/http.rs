@@ -1671,6 +1671,66 @@ async fn resources_filters() {
 }
 
 #[tokio::test]
+async fn news_lists_published_announcements_only() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_json(&app, "/v1/news").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(headers.contains_key(header::ETAG));
+    assert_eq!(field(&body, "slug"), [json!("le-russe-arrive-sur-pulsars")]);
+    assert_eq!(body["next_cursor"], Value::Null);
+    assert_eq!(
+        body["data"][0],
+        json!({
+            "id": 1,
+            "slug": "le-russe-arrive-sur-pulsars",
+            "lang": "fr",
+            "title": "Le russe arrive sur Pulsars",
+            "summary": "L'interface parle désormais trois langues.",
+            "author": "jikuji",
+            "published_at": "2026-10-20T08:00:00Z",
+            "updated_at": "2026-10-20T08:00:00Z",
+            "web_url": "https://pulsars.science/actualite/le-russe-arrive-sur-pulsars"
+        })
+    );
+    // The list carries no content.
+    assert!(body["data"][0].get("content_md").is_none());
+
+    let (_, _, body) = get_json(&app, "/v1/news?q=russe").await;
+    assert_eq!(field(&body, "slug").len(), 1);
+    let (_, _, body) = get_json(&app, "/v1/news?q=pr%C3%A9paration").await;
+    assert_eq!(field(&body, "slug").len(), 0, "drafts are not searchable");
+}
+
+#[tokio::test]
+async fn news_detail_falls_back_to_french_per_field() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, _, body) = get_json(&app, "/v1/news/le-russe-arrive-sur-pulsars").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["content_md"],
+        "Après le français et l'anglais, **le russe**.\n\nBonne lecture !"
+    );
+
+    let (_, _, body) = get_json(&app, "/v1/news/le-russe-arrive-sur-pulsars?lang=en").await;
+    let data = &body["data"];
+    assert_eq!(data["lang"], "en");
+    assert_eq!(data["title"], "Russian comes to Pulsars");
+    // An empty translated field keeps the French text.
+    assert_eq!(
+        data["summary"],
+        "L'interface parle désormais trois langues."
+    );
+    assert_eq!(
+        data["content_md"],
+        "After French and English, **Russian**.\n\nEnjoy!"
+    );
+}
+
+#[tokio::test]
 async fn unpublished_content_answers_404() {
     let Some(app) = content_app().await else {
         return;
@@ -1689,6 +1749,8 @@ async fn unpublished_content_answers_404() {
         "/v1/exercises/0",
         "/v1/exams/diplome-national-du-brevet-2026-mathematiques-serie-generale",
         "/v1/resources/demo-pending-resource",
+        "/v1/news/demo-draft-news",
+        "/v1/news/demo-future-news",
     ] {
         let (status, headers, body) = get_json(&app, path).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
@@ -1854,11 +1916,13 @@ async fn crawl(app: &Router) -> String {
         "/v1/exercises?limit=100".into(),
         "/v1/exams?limit=100".into(),
         "/v1/resources?limit=100".into(),
+        "/v1/news?limit=100".into(),
     ];
     for (list, detail) in [
         ("/v1/courses?limit=100", "/v1/courses/"),
         ("/v1/exams?limit=100", "/v1/exams/"),
         ("/v1/resources?limit=100", "/v1/resources/"),
+        ("/v1/news?limit=100", "/v1/news/"),
     ] {
         let (_, _, body) = get_json(app, list).await;
         for slug in field(&body, "slug") {
@@ -1902,6 +1966,10 @@ async fn no_draft_answer_or_personal_data_is_ever_served() {
         "the crawl saw content"
     );
     assert!(dump.contains("Mendeleïev"), "the crawl saw every lesson");
+    assert!(
+        dump.contains("Russian comes to Pulsars"),
+        "the crawl saw the news"
+    );
 
     // Markers planted in dev/db/30-demo-data.sql, keys of answer fields,
     // unpublished slugs and storage paths.
@@ -1922,6 +1990,10 @@ async fn no_draft_answer_or_personal_data_is_ever_served() {
         "demo-draft-course",
         "demo-future-course",
         "demo-pending-resource",
+        "demo-draft-news",
+        "demo-future-news",
+        "NEWS-DRAFT-MARKER",
+        "NEWS-FUTURE-MARKER",
         "diplome-national-du-brevet",
         "Brouillon",
         "Invisible",

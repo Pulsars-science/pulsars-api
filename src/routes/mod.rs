@@ -7,6 +7,7 @@ pub mod exercises;
 pub mod game;
 pub mod health;
 pub mod me;
+pub mod news;
 pub mod params;
 pub mod public;
 pub mod resources;
@@ -56,6 +57,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/exams", get(exams::list).options(preflight))
         .route("/v1/exams/{slug}", get(exams::show).options(preflight))
+        .route("/v1/news", get(news::list).options(preflight))
+        .route("/v1/news/{slug}", get(news::show).options(preflight))
         .route("/v1/resources", get(resources::list).options(preflight))
         .route(
             "/v1/resources/{slug}",
