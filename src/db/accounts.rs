@@ -109,3 +109,17 @@ pub async fn set_password(pool: &PgPool, id: i64, hash: &str) -> Result<(), sqlx
     .await?;
     Ok(())
 }
+
+/// The permission roles of account `user_id` (`moderateur`, `admin`,
+/// `super-admin`), highest first: the `roles` claim of a game token.
+pub async fn permission_roles(pool: &PgPool, user_id: i64) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT r.slug::text FROM site.role_user ru
+           JOIN site.roles r ON r.id = ru.role_id
+          WHERE ru.user_id = $1 AND r.categorie = 'permission'
+          ORDER BY r.niveau DESC, r.id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}

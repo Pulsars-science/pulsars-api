@@ -96,6 +96,7 @@ Every error response has the media type `application/problem+json`:
 | `invalid-credentials` | 422 | `POST /v1/auth/login`: unknown login, wrong password, or an account without a password. Always the same body. |
 | `invalid-cursor` | 400 | The `cursor` cannot be decoded, or belongs to another endpoint or filter set. |
 | `unauthorized` | 401 | Missing, invalid or expired token. Also sets `WWW-Authenticate: Bearer error="invalid_token"` (RFC 6750). See `auth-jwt.md`. |
+| `token-unavailable` | 503 | `POST /v1/auth/token` without a signing key configured (`JWT_SIGNING_KEY_FILE`). |
 | `session-invalid` | 401 | `Pulsars-Session` missing, unknown, expired or revoked. Sets `WWW-Authenticate: Session realm="api.pulsars.science"`. |
 | `forbidden` | 403 | Valid token, but not allowed; or an endpoint reserved to the service key. |
 | `not-found` | 404 | Unknown, unpublished or hidden resource. **Unpublished content answers 404, never 403**, so its existence does not leak. |

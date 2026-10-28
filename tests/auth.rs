@@ -33,6 +33,11 @@ struct Env {
 }
 
 async fn env() -> Option<Env> {
+    env_with(&[]).await
+}
+
+/// The test environment, with more variables (a signing key).
+async fn env_with(extra: &[(&str, &str)]) -> Option<Env> {
     let db = std::env::var("TEST_DATABASE_URL")
         .ok()
         .filter(|v| !v.is_empty());
@@ -58,6 +63,8 @@ async fn env() -> Option<Env> {
             ("SERVICE_KEY", SERVICE_KEY),
             ("BCRYPT_COST", "4"),
         ]
+        .into_iter()
+        .chain(extra.iter().copied())
         .map(|(k, v)| (k.to_owned(), v.to_owned())),
     )
     .unwrap();
@@ -678,4 +685,304 @@ async fn id_of(env: &Env, pseudo: &str) -> i64 {
 fn sha(token: &str) -> Vec<u8> {
     use sha2::Digest as _;
     sha2::Sha256::digest(token.as_bytes()).to_vec()
+}
+
+// --- Game tokens (`POST /v1/auth/token`) ------------------------------------
+
+const GAME_ORIGIN: &str = "http://localhost:5173";
+const TOKEN_KID: &str = "2026-10-ed25519-7";
+const TOKEN_SEED: [u8; 32] = [9; 32];
+
+/// A key file in the format of `jwt-keygen`, with a fixed seed.
+fn key_file() -> &'static str {
+    use base64::Engine as _;
+    let dir = std::env::temp_dir().join(format!("pulsars-token-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join(format!("{TOKEN_KID}.key"));
+    std::fs::write(
+        &path,
+        base64::engine::general_purpose::STANDARD.encode(TOKEN_SEED),
+    )
+    .unwrap();
+    Box::leak(path.to_str().unwrap().to_owned().into_boxed_str())
+}
+
+async fn token_env() -> Option<Env> {
+    env_with(&[
+        ("JWT_SIGNING_KEY_FILE", key_file()),
+        ("JWT_SIGNING_KID", TOKEN_KID),
+    ])
+    .await
+}
+
+/// A request to `/v1/auth/token` with these headers.
+async fn ask_token(
+    app: &Router,
+    method: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, HeaderMap, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri("/v1/auth/token")
+        .header("x-forwarded-for", fresh_ip());
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from("{}")).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (
+        status,
+        headers,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+fn browser(cookie: &str) -> Vec<(&str, &str)> {
+    vec![
+        ("origin", GAME_ORIGIN),
+        ("content-type", "application/json"),
+        ("accept", "application/json"),
+        ("sec-fetch-site", "same-site"),
+        ("cookie", cookie),
+    ]
+}
+
+/// A new account, verified and onboarded, with the `moderateur` role; its
+/// id and session.
+async fn player(env: &Env) -> (i64, String, String) {
+    let (pseudo, _, _, session) = sign_up(&env.app).await;
+    let id = id_of(env, &pseudo).await;
+    let owner = sqlx::PgPool::connect(&owner_url(&env.database_url))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE site.users SET email_verified_at = now(), onboarding_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&owner)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO site.role_user (role_id, user_id) SELECT id, $1 FROM site.roles WHERE slug = 'moderateur'")
+        .bind(id)
+        .execute(&owner)
+        .await
+        .unwrap();
+    (id, pseudo, session)
+}
+
+fn claims_of(token: &str) -> Value {
+    use base64::Engine as _;
+    let part = token.split('.').nth(1).unwrap();
+    serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(part)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn the_api_issues_game_tokens_from_the_session_cookie() {
+    let Some(env) = token_env().await else { return };
+    let (id, pseudo, session) = player(&env).await;
+    let cookie = format!("theme=dark; pulsars_auth={session}");
+
+    let (status, headers, body) = ask_token(&env.app, "POST", &browser(&cookie)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], GAME_ORIGIN);
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_CREDENTIALS], "true");
+    assert!(headers.get_all(header::VARY).iter().any(|v| v == "Origin"));
+    assert_eq!(body["token_type"], "Bearer");
+    assert_eq!(body["expires_in"], 300);
+    let token = body["token"].as_str().unwrap();
+
+    let claims = claims_of(token);
+    assert_eq!(claims["iss"], "https://api.pulsars.science");
+    assert_eq!(claims["aud"], "api.pulsars.science");
+    assert_eq!(claims["sub"], id.to_string());
+    assert_eq!(claims["name"], pseudo);
+    assert_eq!(claims["locale"], "ru");
+    assert_eq!(claims["roles"], json!(["moderateur"]));
+    assert_eq!(
+        claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap(),
+        300
+    );
+    assert_eq!(claims["iat"], claims["nbf"]);
+    assert!(uuid::Uuid::parse_str(claims["jti"].as_str().unwrap()).is_ok());
+    let expected = chrono::DateTime::from_timestamp(claims["exp"].as_i64().unwrap(), 0)
+        .unwrap()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    assert_eq!(body["expires_at"], expected);
+
+    // The API's own verifier takes it, as every member endpoint does.
+    let header = format!("Bearer {token}");
+    let verified = pulsars_api::auth::authenticate(
+        Some(header.as_bytes()),
+        &env.state.jwks,
+        pulsars_api::auth::Expected {
+            issuer: &env.state.config.jwt_issuer,
+            audience: &env.state.config.jwt_audience,
+        },
+        env.state.config.token_signer.as_ref(),
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .expect("verified");
+    assert_eq!(verified.roles, ["moderateur"]);
+    let request = Request::get("/v1/me")
+        .header(header::AUTHORIZATION, &header)
+        .body(Body::empty())
+        .unwrap();
+    let response = env.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // From a server: the session header, no `Origin`.
+    let (status, headers, body) = ask_token(
+        &env.app,
+        "POST",
+        &[
+            ("content-type", "application/json"),
+            ("pulsars-session", &session),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+}
+
+#[tokio::test]
+async fn game_tokens_are_refused_to_other_sites_and_unfinished_accounts() {
+    let Some(env) = token_env().await else { return };
+    let (_, _, session) = player(&env).await;
+    let cookie = format!("pulsars_auth={session}");
+
+    // Preflight: allowed origin only.
+    let (status, headers, _) = ask_token(
+        &env.app,
+        "OPTIONS",
+        &[
+            ("origin", GAME_ORIGIN),
+            ("access-control-request-method", "POST"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], GAME_ORIGIN);
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_METHODS], "POST");
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_ALLOW_HEADERS],
+        "Content-Type, Accept"
+    );
+    assert_eq!(headers[header::ACCESS_CONTROL_MAX_AGE], "600");
+    let (status, headers, _) = ask_token(
+        &env.app,
+        "OPTIONS",
+        &[
+            ("origin", "https://evil.example"),
+            ("access-control-request-method", "POST"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    let mut evil = browser(&cookie);
+    evil[0] = ("origin", "https://evil.example");
+    let (status, headers, _) = ask_token(&env.app, "POST", &evil).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(!headers.contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+    let no_origin: Vec<_> = browser(&cookie).into_iter().skip(1).collect();
+    let (status, _, _) = ask_token(&env.app, "POST", &no_origin).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a cookie needs an Origin");
+
+    let mut form = browser(&cookie);
+    form[1] = ("content-type", "text/plain");
+    let (status, headers, _) = ask_token(&env.app, "POST", &form).await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], GAME_ORIGIN);
+
+    let mut cross = browser(&cookie);
+    cross[3] = ("sec-fetch-site", "cross-site");
+    let (status, _, _) = ask_token(&env.app, "POST", &cross).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, headers, body) = ask_token(&env.app, "POST", &browser("pulsars_auth=nope")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body["type"],
+        "https://api.pulsars.science/problems/session-invalid"
+    );
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], GAME_ORIGIN);
+
+    // A fresh sign-up: e-mail not verified, onboarding not done.
+    let (_, _, _, fresh) = sign_up(&env.app).await;
+    let fresh_cookie = format!("pulsars_auth={fresh}");
+    let (status, _, body) = ask_token(&env.app, "POST", &browser(&fresh_cookie)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["detail"], "Onboarding required.");
+}
+
+#[tokio::test]
+async fn game_tokens_are_limited_per_member() {
+    let Some(env) = token_env().await else { return };
+    let (_, _, session) = player(&env).await;
+    let cookie = format!("pulsars_auth={session}");
+    for _ in 0..30 {
+        let (status, _, body) = ask_token(&env.app, "POST", &browser(&cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, headers, _) = ask_token(&env.app, "POST", &browser(&cookie)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(headers.contains_key(header::RETRY_AFTER));
+}
+
+#[tokio::test]
+async fn without_a_key_the_api_issues_no_token_and_publishes_none() {
+    let Some(env) = env().await else { return };
+    let (_, _, session) = player(&env).await;
+    let cookie = format!("pulsars_auth={session}");
+    let (status, _, body) = ask_token(&env.app, "POST", &browser(&cookie)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body["type"],
+        "https://api.pulsars.science/problems/token-unavailable"
+    );
+
+    let (status, headers, body) = Call::new("GET", "/.well-known/jwks.json")
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/jwk-set+json");
+    assert_eq!(body, json!({"keys": []}));
+}
+
+#[tokio::test]
+async fn the_api_publishes_its_signing_key() {
+    use base64::Engine as _;
+    let Some(env) = token_env().await else { return };
+    let (status, headers, body) = Call::new("GET", "/.well-known/jwks.json")
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/jwk-set+json");
+    assert_eq!(headers[header::CACHE_CONTROL], "public, max-age=300");
+    assert_eq!(headers[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+    let public = ed25519_dalek::SigningKey::from_bytes(&TOKEN_SEED).verifying_key();
+    assert_eq!(
+        body,
+        json!({"keys": [{
+            "kty": "OKP", "crv": "Ed25519",
+            "x": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public.as_bytes()),
+            "kid": TOKEN_KID, "use": "sig", "alg": "EdDSA",
+        }]})
+    );
 }

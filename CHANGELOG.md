@@ -8,9 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Upgrading
 
-- A migration (`20261029000000_auth_sessions`): `deploy-api` applies it as
-  `pulsars_migrate`. It gives `pulsars_api` the login columns of
-  `site.users`.
+- Two migrations (`20261029000000_auth_sessions`,
+  `20261030000000_auth_roles`): `deploy-api` applies them as
+  `pulsars_migrate`. They give `pulsars_api` the login columns of
+  `site.users` and read access to the permission roles.
+- Optional: the API's game-token key (`pulsars-api jwt-keygen`, then
+  `JWT_SIGNING_KEY_FILE` and `JWT_SIGNING_KID`).
 
 ### Added
 
@@ -23,6 +26,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `422 invalid-body` with a `code` per field, `invalid-credentials`,
   `session-invalid`.
 - `BCRYPT_COST` (default 12).
+- `POST /v1/auth/token`: the API issues the game token itself, from the
+  member's session (`pulsars_auth` cookie or `Pulsars-Session`), with the
+  same origin checks, gates and body as Laravel's `/jeu/jeton`. Signed with
+  the API's own key, `iss` `https://api.pulsars.science`; 503
+  `token-unavailable` without a key.
+- `GET /.well-known/jwks.json` on the API: its public signing key.
+- `pulsars-api jwt-keygen <kid> <dir>`: makes that key.
+
+### Changed
+
+- Game tokens are accepted from two issuers: the API's own (verified with
+  its key, no network) and the site's (its JWKS), as before.
 
 ## [0.4.0] - 2026-10-28
 

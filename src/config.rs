@@ -23,6 +23,9 @@ pub const SITE_URL: &str = "https://pulsars.science";
 /// `aud` of the game tokens meant for this API.
 pub const API_AUDIENCE: &str = "api.pulsars.science";
 
+/// `iss` of the game tokens the API signs itself (`JWT_OWN_ISSUER`).
+pub const API_ISSUER: &str = "https://api.pulsars.science";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Environment {
     Development,
@@ -98,6 +101,32 @@ pub struct Config {
     pub service_key: Option<Secret>,
     /// `BCRYPT_COST` of the hashes the API writes (12, as Laravel).
     pub bcrypt_cost: u32,
+    /// The key the API signs game tokens with (`JWT_SIGNING_KEY_FILE`,
+    /// `JWT_SIGNING_KID`). `None`: `POST /v1/auth/token` answers 503.
+    pub token_signer: Option<TokenSigner>,
+}
+
+/// What the API needs to issue game tokens (`docs/contract/auth-jwt.md`).
+#[derive(Clone)]
+pub struct TokenSigner {
+    /// `YYYY-MM-ed25519-N`.
+    pub kid: String,
+    pub key: ed25519_dalek::SigningKey,
+    /// `JWT_OWN_ISSUER`, `https://api.pulsars.science` by default.
+    pub issuer: String,
+    /// `JWT_TOKEN_TTL_SECS`, 300 by default.
+    pub ttl_secs: i64,
+}
+
+impl fmt::Debug for TokenSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenSigner")
+            .field("kid", &self.kid)
+            .field("key", &"***")
+            .field("issuer", &self.issuer)
+            .field("ttl_secs", &self.ttl_secs)
+            .finish()
+    }
 }
 
 /// `LARAVEL_WEBHOOK_URL`, `LARAVEL_WEBHOOK_SECRET` and the optional
@@ -217,6 +246,10 @@ impl Config {
             &mut reader.problems,
         );
         let bcrypt_cost = reader.optional("BCRYPT_COST", "12", |v| parse_range(v, 4, 31));
+        let signer_file = reader.optional_raw("JWT_SIGNING_KEY_FILE");
+        let signer_kid = reader.optional_raw("JWT_SIGNING_KID");
+        let own_issuer = reader.optional("JWT_OWN_ISSUER", API_ISSUER, |v| Ok(v.to_owned()));
+        let token_ttl = reader.optional("JWT_TOKEN_TTL_SECS", "300", |v| parse_range(v, 60, 3600));
         let service_key = match reader.optional_raw("SERVICE_KEY") {
             Some(key) if key.chars().count() < SERVICE_KEY_MIN_CHARS => {
                 reader.problems.push(format!(
@@ -225,6 +258,34 @@ impl Config {
                 None
             }
             key => key.map(Secret::new),
+        };
+
+        let token_signer = match (signer_file, signer_kid) {
+            (None, None) => None,
+            (Some(file), Some(kid)) => match load_signer(&file, &kid, environment) {
+                Ok((kid, key)) => Some(TokenSigner {
+                    kid,
+                    key,
+                    issuer: own_issuer.clone().unwrap_or_else(|| API_ISSUER.to_owned()),
+                    ttl_secs: i64::from(token_ttl.unwrap_or(300)),
+                }),
+                Err(message) => {
+                    reader.problems.push(message);
+                    None
+                }
+            },
+            (Some(_), None) => {
+                reader
+                    .problems
+                    .push("JWT_SIGNING_KID: required with JWT_SIGNING_KEY_FILE".to_owned());
+                None
+            }
+            (None, Some(_)) => {
+                reader
+                    .problems
+                    .push("JWT_SIGNING_KEY_FILE: required with JWT_SIGNING_KID".to_owned());
+                None
+            }
         };
 
         // Cross-field checks need the individual values first.
@@ -352,6 +413,7 @@ impl Config {
                 webhook,
                 service_key,
                 bcrypt_cost: bcrypt_cost.unwrap_or(12),
+                token_signer,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
@@ -415,6 +477,65 @@ fn parse_socket_addr(value: &str) -> Result<SocketAddr, String> {
     value
         .parse()
         .map_err(|_| "must be an IP address and port, e.g. 127.0.0.1:8080".to_owned())
+}
+
+/// Whether `kid` reads `YYYY-MM-ed25519-N` (Laravel's `ClesJeu` format).
+pub fn is_valid_kid(kid: &str) -> bool {
+    let Some((date, counter)) = kid.split_once("-ed25519-") else {
+        return false;
+    };
+    let date_ok = date.len() == 7
+        && date.as_bytes()[4] == b'-'
+        && date
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| i == 4 || b.is_ascii_digit());
+    let counter_ok = !counter.is_empty()
+        && counter.len() <= 6
+        && !counter.starts_with('0')
+        && counter.bytes().all(|b| b.is_ascii_digit());
+    date_ok && counter_ok
+}
+
+/// The 32-byte Ed25519 seed in `path`, base64 (as Laravel's
+/// `storage/app/private/jeu/<kid>.key`). In production the file must not be
+/// readable by its group or others.
+fn load_signer(
+    path: &str,
+    kid: &str,
+    environment: Option<Environment>,
+) -> Result<(String, ed25519_dalek::SigningKey), String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+
+    if !is_valid_kid(kid) {
+        return Err("JWT_SIGNING_KID: must read YYYY-MM-ed25519-N".to_owned());
+    }
+    let problem = |message: String| format!("JWT_SIGNING_KEY_FILE: {message}");
+    let metadata = std::fs::metadata(path).map_err(|e| problem(format!("{path}: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if environment == Some(Environment::Production)
+            && metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(problem(format!(
+                "{path} is readable by its group or others; chmod 600 it"
+            )));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (&metadata, environment);
+    let raw = std::fs::read_to_string(path).map_err(|e| problem(format!("{path}: {e}")))?;
+    let raw = raw.trim();
+    let seed = STANDARD
+        .decode(raw)
+        .or_else(|_| URL_SAFE_NO_PAD.decode(raw))
+        .map_err(|_| problem(format!("{path} is not base64")))?;
+    let seed: [u8; 32] = seed
+        .try_into()
+        .map_err(|_| problem(format!("{path} does not hold a 32-byte seed")))?;
+    Ok((kid.to_owned(), ed25519_dalek::SigningKey::from_bytes(&seed)))
 }
 
 fn parse_range(value: &str, min: u32, max: u32) -> Result<u32, String> {
@@ -750,6 +871,92 @@ mod tests {
         ])
         .expect_err("must fail");
         assert_eq!(err.problems.len(), 3);
+    }
+
+    #[test]
+    fn kids_follow_the_laravel_format() {
+        for kid in ["2026-10-ed25519-1", "2027-01-ed25519-123456"] {
+            assert!(is_valid_kid(kid), "{kid}");
+        }
+        for kid in [
+            "",
+            "2026-10-ed25519-0",
+            "2026-10-ed25519-01",
+            "26-10-ed25519-1",
+            "2026-10-rsa-1",
+            "2026-10-ed25519-1234567",
+            "2026_10-ed25519-1",
+        ] {
+            assert!(!is_valid_kid(kid), "{kid}");
+        }
+    }
+
+    #[test]
+    fn the_signing_key_is_read_from_its_file() {
+        use base64::Engine as _;
+        let dir = std::env::temp_dir().join(format!("pulsars-key-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("k.key");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                base64::engine::general_purpose::STANDARD.encode([7u8; 32])
+            ),
+        )
+        .unwrap();
+        // `with` takes static strings: a test may leak one.
+        let file: &'static str = Box::leak(path.to_str().unwrap().to_owned().into_boxed_str());
+
+        let config = with(&[
+            ("JWT_SIGNING_KEY_FILE", file),
+            ("JWT_SIGNING_KID", "2026-10-ed25519-1"),
+        ]);
+        #[cfg(unix)]
+        {
+            // Readable by others: refused in production (base() is production).
+            let problems = config.unwrap_err().problems;
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].contains("chmod 600"), "{problems:?}");
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let config = with(&[
+            ("JWT_SIGNING_KEY_FILE", file),
+            ("JWT_SIGNING_KID", "2026-10-ed25519-1"),
+        ])
+        .unwrap();
+        let signer = config.token_signer.expect("signer");
+        assert_eq!(signer.kid, "2026-10-ed25519-1");
+        assert_eq!(signer.issuer, API_ISSUER);
+        assert_eq!(signer.ttl_secs, 300);
+        assert_eq!(signer.key.to_bytes(), [7u8; 32]);
+        assert!(
+            !format!("{signer:?}").contains("[7"),
+            "the key never shows in Debug"
+        );
+
+        let problems = with(&[("JWT_SIGNING_KEY_FILE", file)])
+            .unwrap_err()
+            .problems;
+        assert_eq!(
+            problems,
+            ["JWT_SIGNING_KID: required with JWT_SIGNING_KEY_FILE"]
+        );
+        let problems = with(&[("JWT_SIGNING_KEY_FILE", file), ("JWT_SIGNING_KID", "bad")])
+            .unwrap_err()
+            .problems;
+        assert_eq!(problems, ["JWT_SIGNING_KID: must read YYYY-MM-ed25519-N"]);
+        std::fs::write(&path, "not base64!").unwrap();
+        let problems = with(&[
+            ("JWT_SIGNING_KEY_FILE", file),
+            ("JWT_SIGNING_KID", "2026-10-ed25519-1"),
+        ])
+        .unwrap_err()
+        .problems;
+        assert!(problems[0].ends_with("is not base64"), "{problems:?}");
+        assert!(with(&[]).unwrap().token_signer.is_none());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

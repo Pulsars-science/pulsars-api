@@ -124,6 +124,9 @@ pub enum ApiError {
     Timeout,
     #[error("service unavailable: {0}")]
     Unavailable(String),
+    /// `POST /v1/auth/token` without a signing key configured.
+    #[error("token unavailable")]
+    TokenUnavailable,
     /// The message is logged, never sent.
     #[error("internal error: {0}")]
     Internal(String),
@@ -169,7 +172,7 @@ impl ApiError {
                 StatusCode::TOO_MANY_REQUESTS
             }
             Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Unavailable(_) | Self::TokenUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -196,6 +199,7 @@ impl ApiError {
             }
             Self::Timeout => ("unavailable", "Request timed out"),
             Self::Unavailable(_) => ("unavailable", "Service unavailable"),
+            Self::TokenUnavailable => ("token-unavailable", "Game tokens unavailable"),
             Self::Internal(_) => ("internal", "Internal error"),
         };
         let detail = match self {
@@ -215,6 +219,7 @@ impl ApiError {
             Self::SessionInvalid => {
                 Some("The session is missing, unknown, expired or revoked.".to_owned())
             }
+            Self::TokenUnavailable => Some("Game tokens are temporarily unavailable.".to_owned()),
             Self::TooManyAttempts { retry_after } => Some(format!(
                 "Too many attempts. Try again in {retry_after} seconds."
             )),

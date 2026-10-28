@@ -421,6 +421,10 @@ async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
         "UPDATE site.users SET email = email WHERE false",
         "UPDATE site.users SET email_verified_at = now() WHERE false",
         "DELETE FROM site.users WHERE false",
+        "SELECT description FROM site.roles LIMIT 1",
+        "INSERT INTO site.role_user (role_id, user_id) SELECT 1, 1 WHERE false",
+        "DELETE FROM site.role_user WHERE false",
+        "UPDATE site.roles SET slug = slug WHERE false",
     ] {
         denied(sqlx::query(query).execute(&pool).await.expect_err(query));
     }
@@ -433,6 +437,14 @@ async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
         .execute(&mut *tx)
         .await
         .expect("pulsars_api reads sessions");
+    // Permission roles, for the `roles` claim of the game tokens it signs.
+    sqlx::query(
+        "SELECT r.slug FROM site.role_user ru JOIN site.roles r ON r.id = ru.role_id
+          WHERE r.categorie = 'permission' ORDER BY r.niveau",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("pulsars_api reads permission roles");
     tx.rollback().await.unwrap();
 
     // Content: read, never written.

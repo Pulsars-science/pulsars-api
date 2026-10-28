@@ -1053,6 +1053,83 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/InvalidFields' }
 
+  /v1/auth/token:
+    post:
+      tags: [auth]
+      operationId: issueGameToken
+      summary: A game token for the member of the session
+      description: |
+        Replaces Laravel's `POST /jeu/jeton` (`auth-jwt.md` §7). The session
+        comes from the `pulsars_auth` cookie (browsers, `credentials:
+        "include"`) or `Pulsars-Session` (servers). Browsers must send an
+        `Origin` listed in `CORS_ALLOWED_ORIGINS`, `Content-Type:
+        application/json`, and a same-site `Sec-Fetch-Site`; answers to a
+        listed origin carry credentialed CORS headers. The token is signed
+        by the API (`iss` `https://api.pulsars.science`).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: A token, valid 5 minutes.
+          headers:
+            Cache-Control: { schema: { type: string, example: no-store } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, token_type, expires_in, expires_at]
+                properties:
+                  token: { type: string }
+                  token_type: { type: string, enum: [Bearer] }
+                  expires_in: { type: integer, example: 300 }
+                  expires_at: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    options:
+      tags: [auth]
+      operationId: issueGameTokenPreflight
+      summary: CORS preflight, for listed origins only
+      responses:
+        '204':
+          description: 'Allowed (`Access-Control-Allow-Methods: POST`).'
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /.well-known/jwks.json:
+    get:
+      tags: [auth]
+      operationId: getApiJwks
+      summary: The API's public signing key
+      description: The key of the game tokens the API signs. `keys` is empty when it signs none.
+      responses:
+        '200':
+          description: A JWK set (`application/jwk-set+json`, cached 5 minutes, any origin).
+          content:
+            application/jwk-set+json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      required: [kty, crv, x, kid, use, alg]
+                      properties:
+                        kty: { type: string, enum: [OKP] }
+                        crv: { type: string, enum: [Ed25519] }
+                        x: { type: string }
+                        kid: { type: string, example: 2026-10-ed25519-1 }
+                        use: { type: string, enum: [sig] }
+                        alg: { type: string, enum: [EdDSA] }
+
   /v1/me:
     get:
       tags: [account]

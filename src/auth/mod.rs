@@ -16,6 +16,7 @@ use axum::extract::{FromRequestParts, OriginalUri};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 
+use crate::config::TokenSigner;
 use crate::error::ApiError;
 use crate::middleware as mw;
 use crate::state::AppState;
@@ -44,12 +45,18 @@ pub enum Failure {
     NoKeys,
 }
 
-/// Verifies an `Authorization` header value against the cached JWKS. Shared
-/// by the HTTP extractor and, later, the WebSocket `auth` frame.
+/// Verifies an `Authorization` header value. Shared by the HTTP extractor,
+/// the rate limiter and the WebSocket `auth` frame.
+///
+/// Two issuers are accepted during the migration (`auth-jwt.md` §1): a token
+/// that claims the API's own issuer is verified with the API's own key, by
+/// `kid`, without any network; any other token with the site's JWKS and the
+/// site's issuer (`expected`), as before.
 pub async fn authenticate(
     header: Option<&[u8]>,
     jwks: &Jwks,
     expected: Expected<'_>,
+    own: Option<&TokenSigner>,
     now: i64,
 ) -> Result<Claims, Failure> {
     let rejected = |reason, kid: Option<&str>| Failure::Rejected {
@@ -59,6 +66,18 @@ pub async fn authenticate(
     let token = token::bearer(header).map_err(|r| rejected(r, None))?;
     let unverified = token::decode(token).map_err(|r| rejected(r, None))?;
     let kid = unverified.kid().to_owned();
+    if let Some(own) = own.filter(|own| unverified.claimed_issuer() == Some(own.issuer.as_str())) {
+        if kid != own.kid {
+            return Err(rejected(Reason::UnknownKid, Some(&kid)));
+        }
+        let own_expected = Expected {
+            issuer: &own.issuer,
+            audience: expected.audience,
+        };
+        return unverified
+            .verify(&own.key.verifying_key(), own_expected, now)
+            .map_err(|r| rejected(r, Some(&kid)));
+    }
     let key = match jwks.key(&kid).await {
         Lookup::Found(key) => key,
         Lookup::UnknownKid => return Err(rejected(Reason::UnknownKid, Some(&kid))),
@@ -83,7 +102,8 @@ impl FromRequestParts<AppState> for AuthUser {
                     audience: &state.config.jwt_audience,
                 };
                 let now = chrono::Utc::now().timestamp();
-                authenticate(header, &state.jwks, expected, now).await
+                let own = state.config.token_signer.as_ref();
+                authenticate(header, &state.jwks, expected, own, now).await
             }
         };
         match result {
@@ -234,5 +254,114 @@ mod tests {
         assert_eq!(loggable("2026-10-ed25519-1"), "2026-10-ed25519-1");
         assert_eq!(loggable("a\nb\u{1b}[31mc é"), "a?b?[31mc??");
         assert_eq!(loggable(&"k".repeat(500)).len(), 64);
+    }
+
+    mod two_issuers {
+        use super::super::*;
+        use crate::auth::token::testing::{claims, sign, signing_key};
+        use serde_json::json;
+
+        const OWN: &str = "https://api.pulsars.science";
+        const SITE: &str = "https://pulsars.science";
+        const KID: &str = "2026-10-ed25519-9";
+
+        fn signer() -> TokenSigner {
+            TokenSigner {
+                kid: KID.to_owned(),
+                key: signing_key(),
+                issuer: OWN.to_owned(),
+                ttl_secs: 300,
+            }
+        }
+
+        fn dead_jwks() -> Jwks {
+            Jwks::with_settings(
+                "http://127.0.0.1:1/jwks.json",
+                false,
+                JwksSettings {
+                    fetch_timeout: std::time::Duration::from_millis(200),
+                    ..JwksSettings::default()
+                },
+            )
+            .unwrap()
+        }
+
+        fn token(key: &ed25519_dalek::SigningKey, kid: &str, iss: &str, now: i64) -> String {
+            let mut claims = claims("2", now);
+            claims["iss"] = json!(iss);
+            sign(
+                key,
+                &json!({"alg": "EdDSA", "typ": "JWT", "kid": kid}),
+                &claims,
+            )
+        }
+
+        async fn check(own: &TokenSigner, token: &str, now: i64) -> Result<Claims, Failure> {
+            let header = format!("Bearer {token}");
+            let expected = Expected {
+                issuer: SITE,
+                audience: "api.pulsars.science",
+            };
+            authenticate(
+                Some(header.as_bytes()),
+                &dead_jwks(),
+                expected,
+                Some(own),
+                now,
+            )
+            .await
+        }
+
+        #[tokio::test]
+        async fn the_api_verifies_its_own_tokens_without_the_site() {
+            let own = signer();
+            let now = chrono::Utc::now().timestamp();
+            let claims = check(&own, &token(&own.key, KID, OWN, now), now)
+                .await
+                .expect("own token");
+            assert_eq!(claims.sub, "2");
+        }
+
+        #[tokio::test]
+        async fn an_own_issuer_token_needs_the_own_kid_and_key() {
+            let own = signer();
+            let now = chrono::Utc::now().timestamp();
+            let other_kid = check(&own, &token(&own.key, "2026-10-ed25519-1", OWN, now), now).await;
+            assert!(matches!(
+                other_kid,
+                Err(Failure::Rejected {
+                    reason: Reason::UnknownKid,
+                    ..
+                })
+            ));
+            let other_key = check(&own, &token(&signing_key(), KID, OWN, now), now).await;
+            assert!(matches!(
+                other_key,
+                Err(Failure::Rejected {
+                    reason: Reason::BadSignature,
+                    ..
+                })
+            ));
+            let expired = check(&own, &token(&own.key, KID, OWN, now - 1000), now).await;
+            assert!(matches!(
+                expired,
+                Err(Failure::Rejected {
+                    reason: Reason::Expired,
+                    ..
+                })
+            ));
+        }
+
+        #[tokio::test]
+        async fn the_api_key_does_not_sign_for_the_site_or_anyone_else() {
+            let own = signer();
+            let now = chrono::Utc::now().timestamp();
+            // Claiming the site: checked against the site's keys only, which
+            // never hold the API's key.
+            for iss in [SITE, "https://evil.example"] {
+                let result = check(&own, &token(&own.key, KID, iss, now), now).await;
+                assert!(result.is_err(), "{iss}");
+            }
+        }
     }
 }

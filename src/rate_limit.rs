@@ -156,7 +156,14 @@ async fn identify(state: &AppState, parts: &mut axum::http::request::Parts) -> C
             audience: &state.config.jwt_audience,
         };
         let now = chrono::Utc::now().timestamp();
-        let result = auth::authenticate(Some(header.as_bytes()), &state.jwks, expected, now).await;
+        let result = auth::authenticate(
+            Some(header.as_bytes()),
+            &state.jwks,
+            expected,
+            state.config.token_signer.as_ref(),
+            now,
+        )
+        .await;
         let member = result.as_ref().ok().map(|claims| claims.sub.clone());
         parts.extensions.insert(TokenCheck(result));
         if let Some(sub) = member {
