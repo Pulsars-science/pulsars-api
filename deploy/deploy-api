@@ -18,6 +18,10 @@
 #     --no-system    do not install the systemd unit and nginx vhost
 #     --no-check     skip the final check through nginx (the local health
 #                    check always runs: it decides the rollback)
+#     --no-content-check
+#                    skip `pulsars-api check-content` (the new release reads
+#                    `contenu` exactly as the `api_read` views show it); for
+#                    the day those views are gone (phase 5)
 #
 # The first installation is described in docs/deployment.md. This script only
 # handles the deployments after it.
@@ -51,12 +55,14 @@ EXIT_CONFIG=78
 ROLLBACK=false
 NO_SYSTEM=false
 NO_CHECK=false
+NO_CONTENT_CHECK=false
 
 for arg in "$@"; do
     case "$arg" in
         --rollback) ROLLBACK=true ;;
         --no-system) NO_SYSTEM=true ;;
         --no-check) NO_CHECK=true ;;
+        --no-content-check) NO_CONTENT_CHECK=true ;;
         *) echo "Unknown option: $arg" >&2; exit 1 ;;
     esac
 done
@@ -248,6 +254,18 @@ step "Migrations"
     --property=User=pulsars-api \
     "$TARGET/pulsars-api" migrate
 ok "database schema up to date"
+
+if [ "$NO_CONTENT_CHECK" = false ]; then
+    step "Content check"
+    # The new release must read, of `contenu`, exactly the rows the
+    # `api_read` views show (docs/contract/database.md §2.2). A difference
+    # stops the deployment here, before the switch.
+    "${SUDO[@]}" systemd-run --quiet --wait --pipe --collect \
+        --property=EnvironmentFile="$ENV_FILE" \
+        --property=User=pulsars-api \
+        "$TARGET/pulsars-api" check-content
+    ok "the new release reads the same content"
+fi
 
 if [ "$CURRENT" = "$RELEASE" ]; then
     step "Restart ($RELEASE is already current)"

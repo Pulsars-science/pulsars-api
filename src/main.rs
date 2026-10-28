@@ -35,8 +35,8 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    // `pulsars-api migrate`, `pulsars-api webhooks replay <event_id>`
-    // (docs/contract/webhooks.md §7).
+    // `pulsars-api migrate`, `pulsars-api check-content`,
+    // `pulsars-api webhooks replay <event_id>` (docs/contract/webhooks.md §7).
     let args: Vec<String> = std::env::args().skip(1).collect();
     if !args.is_empty() {
         return command(&config, &args).await;
@@ -51,14 +51,17 @@ async fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: pulsars-api [migrate | webhooks replay <event_id>]";
+const USAGE: &str = "usage: pulsars-api [migrate | check-content | webhooks replay <event_id>]";
 
-/// One-off commands: `migrate` and `webhooks replay <event_id>`.
+/// One-off commands: `migrate`, `check-content` and
+/// `webhooks replay <event_id>`.
 async fn command(config: &Config, args: &[String]) -> ExitCode {
-    if let [command] = args
-        && command == "migrate"
-    {
-        return migrate_command(config).await;
+    if let [command] = args {
+        match command.as_str() {
+            "migrate" => return migrate_command(config).await,
+            "check-content" => return check_content_command(config).await,
+            _ => {}
+        }
     }
     let [group, action, event_id] = args else {
         eprintln!("{USAGE}");
@@ -92,6 +95,42 @@ async fn command(config: &Config, args: &[String]) -> ExitCode {
             eprintln!("database error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `pulsars-api check-content`: compares what the API reads of `contenu`
+/// with the `api_read` views it replaces, on the real data. Fails when a
+/// single row differs (deploy/sql/README.md, phase 1).
+async fn check_content_command(config: &Config) -> ExitCode {
+    let pool = match db::connect_lazy(config) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("invalid DATABASE_URL: {error}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    let comparisons = match db::sources::compare_with_views(&pool).await {
+        Ok(comparisons) => comparisons,
+        Err(error) => {
+            eprintln!("database error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut same = true;
+    for c in &comparisons {
+        let verdict = if c.is_same() { "same" } else { "DIFFERENT" };
+        println!(
+            "{:<24} {:>6} rows  {:>4} missing  {:>4} extra  {verdict}",
+            c.view, c.rows, c.missing, c.extra
+        );
+        same &= c.is_same();
+    }
+    if same {
+        println!("content: the API reads exactly what the api_read views show");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("content: some rows differ from the api_read views");
+        ExitCode::FAILURE
     }
 }
 
