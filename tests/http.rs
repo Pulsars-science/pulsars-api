@@ -1730,6 +1730,171 @@ async fn news_detail_falls_back_to_french_per_field() {
     );
 }
 
+/// A file route: status, headers and the raw body.
+async fn get_file(
+    app: &Router,
+    path: &str,
+    headers: &[(header::HeaderName, &str)],
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut request = Request::get(path);
+    for (name, value) in headers {
+        request = request.header(name, *value);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, headers, bytes.to_vec())
+}
+
+const BAC_PDF: &str = "/v1/exams/baccalaureat-general-2026-mathematiques-specialite-jour-1/pdf";
+const BAC_BYTES: &[u8] = b"%PDF-1.4 STATEMENT-BAC-2026 0123456789";
+
+#[tokio::test]
+async fn exam_statements_are_served_with_ranges_and_validators() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    // `Accept: application/pdf` is fine here: no JSON required.
+    let (status, headers, body) =
+        get_file(&app, BAC_PDF, &[(header::ACCEPT, "application/pdf")]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, BAC_BYTES);
+    assert_eq!(headers[header::CONTENT_TYPE], "application/pdf");
+    assert_eq!(headers[header::CONTENT_LENGTH], "38");
+    assert_eq!(headers[header::ACCEPT_RANGES], "bytes");
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "inline; filename=\"baccalaureat-general-2026-mathematiques-specialite-jour-1.pdf\""
+    );
+    assert_eq!(
+        headers[header::CONTENT_SECURITY_POLICY],
+        "default-src 'none'; sandbox"
+    );
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    let etag = headers[header::ETAG].to_str().unwrap().to_owned();
+
+    // Compression would drop `Accept-Ranges`: PDF are left alone.
+    let (_, headers, body) = get_file(&app, BAC_PDF, &[(header::ACCEPT_ENCODING, "gzip")]).await;
+    assert!(headers.get(header::CONTENT_ENCODING).is_none());
+    assert_eq!(body, BAC_BYTES);
+
+    let (status, headers, body) = get_file(&app, BAC_PDF, &[(header::RANGE, "bytes=9-17")]).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, b"STATEMENT");
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes 9-17/38");
+    assert_eq!(headers[header::CONTENT_LENGTH], "9");
+
+    let (_, _, body) = get_file(&app, BAC_PDF, &[(header::RANGE, "bytes=-10")]).await;
+    assert_eq!(body, b"0123456789");
+
+    let (status, headers, body) = get_file(&app, BAC_PDF, &[(header::RANGE, "bytes=38-")]).await;
+    assert_eq!(status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(headers[header::CONTENT_RANGE], "bytes */38");
+    let problem: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        problem["type"],
+        "https://api.pulsars.science/problems/range-not-satisfiable"
+    );
+
+    // A stale partial copy gets the whole file.
+    let (status, _, body) = get_file(
+        &app,
+        BAC_PDF,
+        &[
+            (header::RANGE, "bytes=0-3"),
+            (header::IF_RANGE, "\"other\""),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, BAC_BYTES);
+    let (status, _, body) = get_file(
+        &app,
+        BAC_PDF,
+        &[(header::RANGE, "bytes=0-3"), (header::IF_RANGE, &etag)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body, b"%PDF");
+
+    let (status, headers, body) = get_file(&app, BAC_PDF, &[(header::IF_NONE_MATCH, &etag)]).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert!(body.is_empty());
+    assert_eq!(headers[header::ETAG], etag.as_str());
+
+    let (_, headers, _) = get_file(&app, &format!("{BAC_PDF}?disposition=attachment"), &[]).await;
+    assert!(
+        headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("attachment; ")
+    );
+    let (status, _, _) = get_file(&app, &format!("{BAC_PDF}?disposition=download"), &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn resource_files_are_served() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    let (status, headers, body) = get_file(
+        &app,
+        "/v1/resources/article-chimie-inorganique-ic901972h/file",
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"%PDF-1.4 RESOURCE-IC901972H");
+    assert_eq!(headers[header::CONTENT_TYPE], "application/pdf");
+}
+
+/// The only way to a file is a published exam's statement or a published
+/// resource's own file: never a correction, a draft's PDF, a pending
+/// resource, another disk, or a path.
+#[tokio::test]
+async fn no_correction_draft_or_path_is_ever_served_as_a_file() {
+    let Some(app) = content_app().await else {
+        return;
+    };
+    for path in [
+        // Draft exam with a PDF; published exam without one.
+        "/v1/exams/diplome-national-du-brevet-2026-mathematiques-serie-generale/pdf",
+        "/v1/exams/centrale-supelec-2026-mathematiques-1-mp-mpi/pdf",
+        "/v1/exams/baccalaureat-general-2026-mathematiques-specialite-jour-1/corrige",
+        "/v1/exams/unknown/pdf",
+        // Pending resource; link-only resource; a hosted one without its file.
+        "/v1/resources/demo-pending-resource/file",
+        "/v1/resources/unknown/file",
+        // No route takes a path.
+        "/v1/files/examens/bac-2026-maths-jour-1-corrige.pdf",
+        "/v1/exams/..%2F..%2Fexamens%2Fbac-2026-maths-jour-1-corrige.pdf/pdf",
+    ] {
+        let (status, _, body) = get_file(&app, path, &[]).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        let body = String::from_utf8_lossy(&body);
+        for marker in [
+            "FILE-CORRIGE-MARKER",
+            "FILE-DRAFT-MARKER",
+            "FILE-PENDING-MARKER",
+            "FILE-OTHER-DISK-MARKER",
+        ] {
+            assert!(!body.contains(marker), "{path} leaked {marker}");
+        }
+    }
+    let (_, _, resources) = get_json(&app, "/v1/resources?limit=100").await;
+    for slug in field(&resources, "slug") {
+        let path = format!("/v1/resources/{}/file", slug.as_str().unwrap());
+        let (_, _, body) = get_file(&app, &path, &[]).await;
+        assert!(!String::from_utf8_lossy(&body).contains("MARKER"), "{path}");
+    }
+}
+
 #[tokio::test]
 async fn unpublished_content_answers_404() {
     let Some(app) = content_app().await else {
