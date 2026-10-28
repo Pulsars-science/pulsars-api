@@ -155,8 +155,6 @@ pub mod names {
     pub const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
     pub const HEALTH_CHECK_UP: &str = "health_check_up";
     pub const AUTH_REJECTIONS_TOTAL: &str = "auth_rejections_total";
-    pub const JWKS_FETCHES_TOTAL: &str = "jwks_fetches_total";
-    pub const JWKS_KEYS: &str = "jwks_keys";
     pub const RATE_LIMITED_TOTAL: &str = "rate_limited_total";
     pub const RATE_LIMIT_ERRORS_TOTAL: &str = "rate_limit_errors_total";
     pub const GAME_CONNECTIONS_TOTAL: &str = "game_connections_total";
@@ -205,13 +203,8 @@ fn describe_metrics() {
     );
     metrics::describe_counter!(
         names::AUTH_REJECTIONS_TOTAL,
-        "Requests refused by token verification, by reason (no_keys: JWKS unusable)."
+        "Requests refused by token verification, by reason (no_key: no signing key configured)."
     );
-    metrics::describe_counter!(
-        names::JWKS_FETCHES_TOTAL,
-        "JWKS fetches, by result (ok, error)."
-    );
-    metrics::describe_gauge!(names::JWKS_KEYS, "Usable keys in the last JWKS loaded.");
     metrics::describe_counter!(
         names::RATE_LIMITED_TOTAL,
         "Requests refused with 429, by scope (ip, sub)."

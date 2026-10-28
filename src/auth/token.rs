@@ -4,8 +4,8 @@
 //! Written by hand rather than with a generic JWT library: the contract
 //! allows a single algorithm and key type, and the verifying key is never
 //! chosen from what the token says about itself (`alg` is only compared to
-//! `EdDSA`). Verification is split in two so the key lookup, which may
-//! refetch the JWKS, stays out of this module:
+//! `EdDSA`). Verification is split in two so the key lookup by `kid` stays
+//! out of this module:
 //!
 //! 1. [`bearer`] and [`decode`]: header, structure, `alg`, `kid` (steps 1-4
 //!    up to the lookup);
@@ -95,7 +95,7 @@ pub struct Expected<'a> {
 /// The claims of a verified token (contract §1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claims {
-    /// Laravel `users.id`, as a string.
+    /// `site.users.id`, as a string.
     pub sub: String,
     /// Unique token id (UUIDv7).
     pub jti: String,
@@ -193,19 +193,12 @@ fn json_object(part: &str) -> Result<Map<String, Value>, Reason> {
 }
 
 impl Unverified<'_> {
-    /// The `kid` to look up in the JWKS.
+    /// The `kid` of the key that signed the token.
     pub fn kid(&self) -> &str {
         &self.kid
     }
 
-    /// The `iss` the token claims, before any check: only to choose which
-    /// key set verifies it. [`Self::verify`] still compares it.
-    pub fn claimed_issuer(&self) -> Option<&str> {
-        self.claims.get("iss").and_then(Value::as_str)
-    }
-
-    /// Steps 5-10, with the key the JWKS holds for [`Self::kid`]. `now` is in
-    /// Unix seconds.
+    /// Steps 5-10, with the key of [`Self::kid`]. `now` is in Unix seconds.
     pub fn verify(
         self,
         key: &VerifyingKey,
@@ -241,7 +234,7 @@ impl Unverified<'_> {
             return Err(Reason::Expired);
         }
 
-        // 9. Not before, issued at. Laravel always sets both.
+        // 9. Not before, issued at. The API always sets both.
         let nbf = numeric_date(claims, "nbf")?;
         let iat = numeric_date(claims, "iat")?;
         if nbf > now + LEEWAY_SECS || iat > now + LEEWAY_SECS {
@@ -312,6 +305,11 @@ pub mod testing {
     use ed25519_dalek::{Signer as _, SigningKey};
     use serde_json::{Value, json};
 
+    use crate::config::{API_AUDIENCE, API_ISSUER, TokenSigner};
+
+    /// The `kid` of [`signer`].
+    pub const KID: &str = "2026-10-ed25519-1";
+
     /// A fresh random signing key. The seed comes from the OS RNG through
     /// UUIDv4, which avoids a direct dependency on `rand`.
     pub fn signing_key() -> SigningKey {
@@ -321,23 +319,22 @@ pub mod testing {
         SigningKey::from_bytes(&seed)
     }
 
-    /// The JWK of `key`'s public half, as Laravel publishes it.
-    pub fn jwk(key: &SigningKey, kid: &str) -> Value {
-        json!({
-            "kty": "OKP",
-            "crv": "Ed25519",
-            "x": URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes()),
-            "kid": kid,
-            "use": "sig",
-            "alg": "EdDSA",
-        })
+    /// A signing key for a test application, under [`KID`]: set it as
+    /// `config.token_signer`, then mint tokens with [`token`] or [`sign`]
+    /// and its `key`.
+    pub fn signer() -> TokenSigner {
+        TokenSigner {
+            kid: KID.to_owned(),
+            key: signing_key(),
+            ttl_secs: 300,
+        }
     }
 
     /// Valid claims for user `sub`, issued at `now`.
     pub fn claims(sub: &str, now: i64) -> Value {
         json!({
-            "iss": "https://pulsars.science",
-            "aud": "api.pulsars.science",
+            "iss": API_ISSUER,
+            "aud": API_AUDIENCE,
             "sub": sub,
             "iat": now,
             "nbf": now,
@@ -379,10 +376,7 @@ mod tests {
 
     const KID: &str = "2026-10-ed25519-1";
     const NOW: i64 = 1_792_059_151;
-    const EXPECTED: Expected<'static> = Expected {
-        issuer: "https://pulsars.science",
-        audience: "api.pulsars.science",
-    };
+    const EXPECTED: Expected<'static> = crate::auth::EXPECTED;
 
     fn header() -> Value {
         json!({"alg": "EdDSA", "typ": "JWT", "kid": KID})
@@ -556,10 +550,12 @@ mod tests {
     fn bad_issuer() {
         let key = signing_key();
         for iss in [
-            json!("http://pulsars.science"),
-            json!("https://pulsars.science/"),
+            json!("http://api.pulsars.science"),
+            json!("https://api.pulsars.science/"),
+            // The old site's issuer.
+            json!("https://pulsars.science"),
             json!("http://localhost"),
-            json!(["https://pulsars.science"]),
+            json!(["https://api.pulsars.science"]),
         ] {
             let t = with_claims(&key, |c| {
                 c.insert("iss".into(), iss.clone());

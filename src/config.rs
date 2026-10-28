@@ -17,13 +17,13 @@ pub const GAME_ORIGIN: &str = "https://pulsars.science";
 /// Origin of the Vite dev server, allowed only in development.
 pub const DEV_GAME_ORIGIN: &str = "http://localhost:5173";
 
-/// The Laravel site: issuer of game tokens and home of member profiles.
+/// The site (`pulsars-web`): home of the pages the API links to.
 pub const SITE_URL: &str = "https://pulsars.science";
 
-/// `aud` of the game tokens meant for this API.
+/// `aud` of the game tokens the API signs.
 pub const API_AUDIENCE: &str = "api.pulsars.science";
 
-/// `iss` of the game tokens the API signs itself (`JWT_OWN_ISSUER`).
+/// `iss` of the game tokens the API signs. It verifies no other.
 pub const API_ISSUER: &str = "https://api.pulsars.science";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,15 +68,9 @@ pub struct Config {
     pub database_url: Secret,
     pub database_max_connections: u32,
     pub redis_url: Secret,
-    /// Laravel's public keys (`docs/contract/auth-jwt.md` §3). HTTPS only in
-    /// production.
-    pub jwks_url: String,
-    /// Expected `iss` of game tokens.
-    pub jwt_issuer: String,
-    /// Expected `aud` of game tokens.
-    pub jwt_audience: String,
-    /// Base URL of Laravel's `public` disk, without trailing slash. Avatar
-    /// URLs are `<base>/<avatar_path>`.
+    /// Public base URL of the `public` files (avatars, suggestion images),
+    /// without trailing slash: the site's `/storage`, which relays to
+    /// `GET /v1/storage/{path}`. Avatar URLs are `<base>/<avatar_path>`.
     pub public_storage_url: String,
     /// Origins allowed to call authenticated and game endpoints with
     /// credentials. Public content endpoints allow any origin.
@@ -92,8 +86,8 @@ pub struct Config {
     pub log_filter: String,
     /// How long in-flight requests get to finish after SIGTERM.
     pub shutdown_grace: Duration,
-    /// `SERVICE_KEY`: requests that carry it in `Pulsars-Service-Key` (the
-    /// site, from the same machine) are not rate limited. `None`: every
+    /// `SERVICE_KEY`: requests that carry it in `Pulsars-Service-Key`
+    /// (`pulsars-web`, from the same machine) are not rate limited. `None`: every
     /// request is.
     pub service_key: Option<Secret>,
     /// The key private messages are sealed with (`MESSAGES_KEY`,
@@ -103,8 +97,10 @@ pub struct Config {
     /// `ARGON2_MEMORY_KIB`: memory cost of the password hashes the API
     /// writes (19 456 KiB). Lowered only by the tests.
     pub argon2_memory_kib: u32,
-    /// The key the API signs game tokens with (`JWT_SIGNING_KEY_FILE`,
-    /// `JWT_SIGNING_KID`). `None`: `POST /v1/auth/token` answers 503.
+    /// The key the API signs and verifies game tokens with
+    /// (`JWT_SIGNING_KEY_FILE`, `JWT_SIGNING_KID`). Required in production;
+    /// `None` in development: `POST /v1/auth/token` and every route that
+    /// needs a game token answer 503.
     pub token_signer: Option<TokenSigner>,
     /// Where account mails go (`MAIL_SMTP_URL`, `MAIL_FROM`). `None`: they
     /// are only logged, without their link.
@@ -195,8 +191,6 @@ pub struct TokenSigner {
     /// `YYYY-MM-ed25519-N`.
     pub kid: String,
     pub key: ed25519_dalek::SigningKey,
-    /// `JWT_OWN_ISSUER`, `https://api.pulsars.science` by default.
-    pub issuer: String,
     /// `JWT_TOKEN_TTL_SECS`, 300 by default.
     pub ttl_secs: i64,
 }
@@ -206,7 +200,6 @@ impl fmt::Debug for TokenSigner {
         f.debug_struct("TokenSigner")
             .field("kid", &self.kid)
             .field("key", &"***")
-            .field("issuer", &self.issuer)
             .field("ttl_secs", &self.ttl_secs)
             .finish()
     }
@@ -302,9 +295,6 @@ impl Config {
             .optional("SHUTDOWN_GRACE_SECS", "20", |v| parse_range(v, 1, 300))
             .map(|s| Duration::from_secs(u64::from(s)));
         let origins_raw = reader.optional_raw("CORS_ALLOWED_ORIGINS");
-        let jwks_raw = reader.required("JWKS_URL", |v| Ok(v.to_owned()));
-        let jwt_issuer = reader.optional("JWT_ISSUER", SITE_URL, |v| Ok(v.to_owned()));
-        let jwt_audience = reader.optional("JWT_AUDIENCE", API_AUDIENCE, |v| Ok(v.to_owned()));
         let storage_raw = reader.optional_raw("PUBLIC_STORAGE_URL");
         let argon2_memory_kib = reader.optional("ARGON2_MEMORY_KIB", "19456", |v| {
             parse_range(v, 8, 4_194_304)
@@ -340,7 +330,6 @@ impl Config {
         );
         let signer_file = reader.optional_raw("JWT_SIGNING_KEY_FILE");
         let signer_kid = reader.optional_raw("JWT_SIGNING_KID");
-        let own_issuer = reader.optional("JWT_OWN_ISSUER", API_ISSUER, |v| Ok(v.to_owned()));
         let token_ttl = reader.optional("JWT_TOKEN_TTL_SECS", "300", |v| parse_range(v, 60, 3600));
         let deepl_key = reader.optional_raw("DEEPL_API_KEY");
         let deepl_url_raw = reader.optional_raw("DEEPL_API_URL");
@@ -380,12 +369,19 @@ impl Config {
         };
 
         let token_signer = match (signer_file, signer_kid) {
+            (None, None) if environment == Some(Environment::Production) => {
+                reader.problems.push(
+                    "JWT_SIGNING_KEY_FILE and JWT_SIGNING_KID: required in production \
+                     (docs/deployment.md, the game token key)"
+                        .to_owned(),
+                );
+                None
+            }
             (None, None) => None,
             (Some(file), Some(kid)) => match load_signer(&file, &kid, environment) {
                 Ok((kid, key)) => Some(TokenSigner {
                     kid,
                     key,
-                    issuer: own_issuer.clone().unwrap_or_else(|| API_ISSUER.to_owned()),
                     ttl_secs: i64::from(token_ttl.unwrap_or(300)),
                 }),
                 Err(message) => {
@@ -424,17 +420,6 @@ impl Config {
             }
         });
 
-        // Over plain http, anyone on the path could swap the keys.
-        let jwks_url = match (environment, jwks_raw) {
-            (Some(env), Some(raw)) => match parse_http_url(&raw, env) {
-                Ok(url) => Some(url),
-                Err(message) => {
-                    reader.problems.push(format!("JWKS_URL: {message}"));
-                    None
-                }
-            },
-            _ => None,
-        };
         let public_storage_url = environment.and_then(|env| {
             let raw = storage_raw.unwrap_or_else(|| format!("{SITE_URL}/storage"));
             match parse_http_url(&raw, env) {
@@ -497,9 +482,6 @@ impl Config {
             database_url,
             database_max_connections,
             redis_url,
-            jwks_url,
-            jwt_issuer,
-            jwt_audience,
             public_storage_url,
             cors_allowed_origins,
             rate_limit_anonymous,
@@ -517,9 +499,6 @@ impl Config {
                 Some(database_url),
                 Some(database_max_connections),
                 Some(redis_url),
-                Some(jwks_url),
-                Some(jwt_issuer),
-                Some(jwt_audience),
                 Some(public_storage_url),
                 Some(cors_allowed_origins),
                 Some(rate_limit_anonymous),
@@ -536,9 +515,6 @@ impl Config {
                 database_url,
                 database_max_connections,
                 redis_url,
-                jwks_url,
-                jwt_issuer,
-                jwt_audience,
                 public_storage_url,
                 cors_allowed_origins,
                 rate_limit_anonymous,
@@ -621,7 +597,8 @@ fn parse_socket_addr(value: &str) -> Result<SocketAddr, String> {
         .map_err(|_| "must be an IP address and port, e.g. 127.0.0.1:8080".to_owned())
 }
 
-/// Whether `kid` reads `YYYY-MM-ed25519-N` (Laravel's `ClesJeu` format).
+/// Whether `kid` reads `YYYY-MM-ed25519-N`: the month the key was made, and
+/// a counter.
 pub fn is_valid_kid(kid: &str) -> bool {
     let Some((date, counter)) = kid.split_once("-ed25519-") else {
         return false;
@@ -639,9 +616,8 @@ pub fn is_valid_kid(kid: &str) -> bool {
     date_ok && counter_ok
 }
 
-/// The 32-byte Ed25519 seed in `path`, base64 (as Laravel's
-/// `storage/app/private/jeu/<kid>.key`). In production the file must not be
-/// readable by its group or others.
+/// The 32-byte Ed25519 seed in `path`, base64 (`openssl rand -base64 32`).
+/// In production the file must not be readable by its group or others.
 fn load_signer(
     path: &str,
     kid: &str,
@@ -836,6 +812,29 @@ fn is_internal(ip: IpAddr) -> bool {
 mod tests {
     use super::*;
 
+    /// A signing key file only its owner may read, shared by the tests:
+    /// production requires one.
+    fn key_file() -> &'static str {
+        static FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        FILE.get_or_init(|| {
+            use base64::Engine as _;
+            let dir = std::env::temp_dir().join(format!("pulsars-key-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&dir).unwrap();
+            let path = dir.join("signing.key");
+            std::fs::write(
+                &path,
+                base64::engine::general_purpose::STANDARD.encode([9u8; 32]),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            path.to_str().unwrap().to_owned()
+        })
+    }
+
     fn base() -> Vec<(&'static str, &'static str)> {
         vec![
             ("PULSARS_ENV", "production"),
@@ -844,12 +843,21 @@ mod tests {
                 "postgres://pulsars_api:secret@localhost/pulsars",
             ),
             ("REDIS_URL", "redis://localhost:6379"),
-            ("JWKS_URL", "https://pulsars.science/.well-known/jwks.json"),
             (
                 "MESSAGES_KEY",
                 "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
             ),
+            ("JWT_SIGNING_KEY_FILE", key_file()),
+            ("JWT_SIGNING_KID", "2026-10-ed25519-1"),
         ]
+    }
+
+    /// `base()` without the variables `names`.
+    fn without(names: &[&str]) -> Vec<(&'static str, &'static str)> {
+        base()
+            .into_iter()
+            .filter(|(k, _)| !names.contains(k))
+            .collect()
     }
 
     fn with(extra: &[(&'static str, &'static str)]) -> Result<Config, ConfigError> {
@@ -873,40 +881,13 @@ mod tests {
         );
         assert_eq!(config.body_limit_bytes, 65536);
         assert_eq!(config.log_format, LogFormat::Json);
-        assert_eq!(config.jwt_issuer, "https://pulsars.science");
-        assert_eq!(config.jwt_audience, "api.pulsars.science");
+        assert_eq!(
+            config.token_signer.map(|s| (s.kid, s.ttl_secs)),
+            Some(("2026-10-ed25519-1".to_owned(), 300))
+        );
         assert_eq!(config.public_storage_url, "https://pulsars.science/storage");
         assert_eq!(config.rate_limit_anonymous, 60);
         assert_eq!(config.rate_limit_authenticated, 120);
-    }
-
-    #[test]
-    fn jwks_url_must_be_https_in_production() {
-        let err = with(&[("JWKS_URL", "http://pulsars.test/.well-known/jwks.json")])
-            .expect_err("must fail");
-        assert_eq!(err.problems, vec!["JWKS_URL: must use https in production"]);
-        let dev = with(&[
-            ("PULSARS_ENV", "development"),
-            ("JWKS_URL", "http://localhost:8000/.well-known/jwks.json"),
-        ])
-        .expect("http is fine in development");
-        assert_eq!(dev.jwks_url, "http://localhost:8000/.well-known/jwks.json");
-    }
-
-    #[test]
-    fn rejects_unusable_jwks_urls() {
-        for bad in [
-            "pulsars.science/.well-known/jwks.json",
-            "ftp://pulsars.science/jwks.json",
-            "https://user:pass@pulsars.science/jwks.json",
-        ] {
-            let err = with(&[("JWKS_URL", bad)]).expect_err(bad);
-            assert!(err.problems[0].starts_with("JWKS_URL: "), "{bad}");
-            assert!(
-                !err.problems[0].contains("pass@"),
-                "never echoes credentials"
-            );
-        }
     }
 
     #[test]
@@ -935,8 +916,7 @@ mod tests {
             vec![
                 "PULSARS_ENV: missing",
                 "DATABASE_URL: missing",
-                "REDIS_URL: missing",
-                "JWKS_URL: missing"
+                "REDIS_URL: missing"
             ]
         );
     }
@@ -1092,7 +1072,6 @@ mod tests {
         .unwrap();
         let signer = config.token_signer.expect("signer");
         assert_eq!(signer.kid, "2026-10-ed25519-1");
-        assert_eq!(signer.issuer, API_ISSUER);
         assert_eq!(signer.ttl_secs, 300);
         assert_eq!(signer.key.to_bytes(), [7u8; 32]);
         assert!(
@@ -1100,12 +1079,19 @@ mod tests {
             "the key never shows in Debug"
         );
 
-        let problems = with(&[("JWT_SIGNING_KEY_FILE", file)])
+        let problems = Config::from_vars(without(&["JWT_SIGNING_KID"]))
             .unwrap_err()
             .problems;
         assert_eq!(
             problems,
             ["JWT_SIGNING_KID: required with JWT_SIGNING_KEY_FILE"]
+        );
+        let problems = Config::from_vars(without(&["JWT_SIGNING_KEY_FILE"]))
+            .unwrap_err()
+            .problems;
+        assert_eq!(
+            problems,
+            ["JWT_SIGNING_KEY_FILE: required with JWT_SIGNING_KID"]
         );
         let problems = with(&[("JWT_SIGNING_KEY_FILE", file), ("JWT_SIGNING_KID", "bad")])
             .unwrap_err()
@@ -1119,8 +1105,40 @@ mod tests {
         .unwrap_err()
         .problems;
         assert!(problems[0].ends_with("is not base64"), "{problems:?}");
-        assert!(with(&[]).unwrap().token_signer.is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_signing_key_is_required_in_production_only() {
+        let problems = Config::from_vars(without(&["JWT_SIGNING_KEY_FILE", "JWT_SIGNING_KID"]))
+            .unwrap_err()
+            .problems;
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0]
+                .starts_with("JWT_SIGNING_KEY_FILE and JWT_SIGNING_KID: required in production"),
+            "{problems:?}"
+        );
+        let development = without(&["JWT_SIGNING_KEY_FILE", "JWT_SIGNING_KID"])
+            .into_iter()
+            .map(|(k, v)| (k, if k == "PULSARS_ENV" { "development" } else { v }));
+        assert!(
+            Config::from_vars(development)
+                .unwrap()
+                .token_signer
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_old_site_token_settings_are_gone() {
+        // Ignored if still set: nothing reads them any more.
+        let config = with(&[
+            ("JWKS_URL", "http://pulsars.test/.well-known/jwks.json"),
+            ("JWT_ISSUER", "https://pulsars.science"),
+        ])
+        .expect("valid");
+        assert!(config.token_signer.is_some());
     }
 
     #[test]

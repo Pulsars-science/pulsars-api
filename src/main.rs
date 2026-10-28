@@ -5,7 +5,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use fred::prelude::ClientLike as _;
-use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
 use pulsars_api::game::season;
 use pulsars_api::game::{Game, GameSettings, store};
@@ -409,10 +408,6 @@ async fn run(config: Config) -> Result<(), String> {
         .map_err(|e| format!("cannot install the metrics recorder: {e}"))?;
     let db = db::connect_lazy(&config).map_err(|e| format!("invalid DATABASE_URL: {e}"))?;
     let redis = redis::connect(&config).map_err(|e| format!("invalid REDIS_URL: {e}"))?;
-    // Loaded in the background: Laravel being down at boot must not stop the
-    // API. `/healthz` answers 503 until the first key is loaded.
-    let jwks = Jwks::new(&config)?;
-    let jwks_refresh = jwks.spawn_refresh();
     // The monthly season close needs the `game.seasons` migration: it starts
     // once the migrations are applied (docs/contract/brains.md §3).
     let migrations = tokio::spawn({
@@ -447,7 +442,6 @@ async fn run(config: Config) -> Result<(), String> {
         config: Arc::new(config),
         db: db.clone(),
         redis: redis.clone(),
-        jwks,
         game,
     };
 
@@ -493,7 +487,6 @@ async fn run(config: Config) -> Result<(), String> {
     };
 
     upkeep.abort();
-    jwks_refresh.abort();
     migrations.abort();
     if redis.is_connected()
         && let Err(error) = redis.quit().await

@@ -16,11 +16,9 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt as _, StreamExt as _};
 use pulsars_api::auth::token::testing;
-use pulsars_api::auth::{Jwks, JwksSettings};
-use pulsars_api::config::Config;
+use pulsars_api::config::{Config, TokenSigner};
 use pulsars_api::flash;
 use pulsars_api::game::rules::SubjectKey;
 use pulsars_api::game::{Game, GameSettings, store};
@@ -69,44 +67,19 @@ fn fast_settings() -> GameSettings {
     }
 }
 
-/// Laravel's JWKS endpoint, in-process.
+/// The API's signing key, as the test application holds it.
 struct Keys {
-    url: String,
-    key: SigningKey,
+    signer: TokenSigner,
 }
 
 impl Keys {
-    async fn start() -> Self {
-        let key = testing::signing_key();
-        let document = json!({"keys": [testing::jwk(&key, KID)]}).to_string();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/.well-known/jwks.json",
-            listener.local_addr().unwrap()
-        );
-        let router = Router::new().route(
-            "/.well-known/jwks.json",
-            axum::routing::get(move || {
-                let document = document.clone();
-                async move {
-                    (
-                        [(header::CONTENT_TYPE, "application/jwk-set+json")],
-                        document,
-                    )
-                }
-            }),
-        );
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        Self { url, key }
-    }
-
     /// A token for `sub`, named `name`, in `locale`.
     fn token(&self, sub: &str, name: &str, locale: &str) -> String {
         let mut claims = testing::claims(sub, chrono::Utc::now().timestamp());
         claims["name"] = json!(name);
         claims["locale"] = json!(locale);
         testing::sign(
-            &self.key,
+            &self.signer.key,
             &json!({"alg": "EdDSA", "typ": "JWT", "kid": KID}),
             &claims,
         )
@@ -130,13 +103,11 @@ async fn server_with(
     settings: GameSettings,
     extra: &[(&str, &str)],
 ) -> Server {
-    let keys = Keys::start().await;
-    let config = Config::from_vars(
+    let mut config = Config::from_vars(
         [
             ("PULSARS_ENV", "development"),
             ("DATABASE_URL", database_url),
             ("REDIS_URL", redis_url),
-            ("JWKS_URL", keys.url.as_str()),
             ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
             ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
         ]
@@ -144,16 +115,13 @@ async fn server_with(
         .chain(extra.iter().copied()),
     )
     .expect("valid test config");
-    let jwks = Jwks::with_settings(
-        &config.jwks_url,
-        false,
-        JwksSettings {
-            fetch_timeout: Duration::from_secs(2),
-            ..JwksSettings::default()
-        },
-    )
-    .unwrap();
-    jwks.refresh().await.expect("JWKS loads");
+    // A key from `extra` (`JWT_SIGNING_KEY_FILE`), else a fresh one.
+    let keys = Keys {
+        signer: config
+            .token_signer
+            .get_or_insert_with(testing::signer)
+            .clone(),
+    };
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
         mailer: pulsars_api::mail::Mailer::recording(),
@@ -161,7 +129,6 @@ async fn server_with(
         db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
-        jwks,
     };
     let app = routes::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -386,7 +353,7 @@ async fn sessions_must_authenticate_first_and_in_time() {
 }
 
 #[tokio::test]
-async fn tokens_the_api_signs_open_a_game_session() {
+async fn tokens_signed_with_the_key_file_open_a_game_session() {
     use base64::Engine as _;
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
@@ -417,7 +384,6 @@ async fn tokens_the_api_signs_open_a_game_session() {
     let signer = server.state.config.token_signer.clone().expect("signer");
     let sub = fresh_user().to_string();
     let mut claims = testing::claims(&sub, chrono::Utc::now().timestamp());
-    claims["iss"] = json!("https://api.pulsars.science");
     claims["name"] = json!("api-signed");
     let token = pulsars_api::routes::token::sign(&signer, &claims);
 
@@ -427,17 +393,29 @@ async fn tokens_the_api_signs_open_a_game_session() {
     assert_eq!(ok["player"]["user_id"], json!(sub));
     assert_eq!(ok["player"]["guest"], false);
 
-    // Single use, as for the site's tokens.
+    // Single use.
     let mut again = Client::connect(&server, Some(ORIGIN)).await.unwrap();
     again.send(json!({"type": "auth", "token": token})).await;
     assert_eq!(again.closed().await.0, 4003);
 
-    // The site's issuer with the API's key: refused.
+    // The old site's issuer with the API's key: refused.
     claims["iss"] = json!("https://pulsars.science");
     claims["jti"] = json!(uuid::Uuid::now_v7().to_string());
     let forged = pulsars_api::routes::token::sign(&signer, &claims);
     let mut client = Client::connect(&server, Some(ORIGIN)).await.unwrap();
     client.send(json!({"type": "auth", "token": forged})).await;
+    assert_eq!(client.closed().await, (4001, "bad_issuer".to_owned()));
+
+    // Another kid: refused.
+    claims["iss"] = json!("https://api.pulsars.science");
+    claims["jti"] = json!(uuid::Uuid::now_v7().to_string());
+    let other = testing::sign(
+        &signer.key,
+        &json!({"alg": "EdDSA", "typ": "JWT", "kid": KID}),
+        &claims,
+    );
+    let mut client = Client::connect(&server, Some(ORIGIN)).await.unwrap();
+    client.send(json!({"type": "auth", "token": other})).await;
     assert_eq!(client.closed().await, (4001, "unknown_kid".to_owned()));
     std::fs::remove_dir_all(dir).unwrap();
 }
