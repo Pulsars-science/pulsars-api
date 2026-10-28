@@ -39,6 +39,7 @@ pub struct ExamSummary {
     pub official_url: Option<String>,
     pub source_url: Option<String>,
     pub published_at: String,
+    pub description: Option<String>,
     pub web_url: String,
 }
 
@@ -46,7 +47,6 @@ pub struct ExamSummary {
 pub struct ExamDetail {
     #[serde(flatten)]
     pub summary: ExamSummary,
-    pub description: Option<String>,
     pub parts: Vec<Part>,
 }
 
@@ -108,12 +108,12 @@ pub async fn list(
                     .first()
                     .map_or(0, |row| row.total),
             };
-            pagination.numbered(rows, total, |row| to_summary(row).0)
+            pagination.numbered(rows, total, to_summary)
         }
         None => pagination.page(
             rows,
             |row| cursor::time_id(row.published_at, row.id),
-            |row| to_summary(row).0,
+            to_summary,
         ),
     };
     public::json(&headers, lang, &body)
@@ -160,19 +160,16 @@ pub async fn show(
         )
     })?;
     let parts = exams::parts(&state.db, lang.translation(), exam.id).await?;
-    let (summary, description) = to_summary(exam);
     let body = Data {
         data: ExamDetail {
-            summary,
-            description,
+            summary: to_summary(exam),
             parts: parts.into_iter().map(|p| to_part(p, lang)).collect(),
         },
     };
     public::json(&headers, lang, &body)
 }
 
-/// The summary, and the description that only the detail shows.
-fn to_summary(row: ExamRow) -> (ExamSummary, Option<String>) {
+fn to_summary(row: ExamRow) -> ExamSummary {
     let tracks = match row.tracks.0 {
         Value::Array(items) => items
             .into_iter()
@@ -180,7 +177,7 @@ fn to_summary(row: ExamRow) -> (ExamSummary, Option<String>) {
             .collect(),
         _ => Vec::new(),
     };
-    let summary = ExamSummary {
+    ExamSummary {
         id: row.id,
         pdf_url: row.has_pdf.then(|| links::exam_pdf(&row.slug)),
         web_url: links::exam(&row.slug),
@@ -200,8 +197,8 @@ fn to_summary(row: ExamRow) -> (ExamSummary, Option<String>) {
         official_url: row.official_url,
         source_url: row.source_url,
         published_at: timestamp(row.published_at),
-    };
-    (summary, row.description)
+        description: row.description,
+    }
 }
 
 fn to_part(row: PartRow, lang: Lang) -> Part {
