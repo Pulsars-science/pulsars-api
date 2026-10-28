@@ -3,30 +3,26 @@
 -- Content comes from the open-source Laravel seeders (same values as the
 -- examples in docs/contract/openapi.yaml), plus deliberately invisible rows
 -- (drafts, future publication, answers, corrections) so tests can check that
--- the api_read views hide them. Accounts are fictional.
+-- the API hides them. Accounts are fictional. Roles and forum themes come
+-- from the reference migration.
 
-SET ROLE pulsars_site;
-SET search_path = site;
+SET ROLE pulsars_owner;
+SET search_path = site, contenu;
 
 INSERT INTO users (id, pseudo, name, email, bio, niveau_scolaire, classe, locale, friend_token, password, created_at, updated_at) VALUES
     (1, 'jikuji', 'jikuji', 'demo-admin@example.invalid', NULL, NULL, NULL, 'fr', 'demofriendtokenadmin00000', 'not-a-real-hash', '2026-08-07 14:44:15', '2026-08-07 14:44:15'),
-    (2, 'ada', 'ada', 'demo-ada@example.invalid', 'Mathématiques et café.', 'lycee', 'Terminale B (private)', 'en', 'demofriendtokenada0000000', '$2y$04$XPWujD27Gwicj4vAhoXicOM2f.CDc44PWAG/oq2UeToLwvQxFUbQC', '2026-08-10 09:00:00', '2026-08-10 09:00:00'),
+    (2, 'ada', 'ada', 'demo-ada@example.invalid', 'Mathématiques et café.', 'lycee', 'Terminale B (private)', 'en', 'demofriendtokenada0000000', '$argon2id$v=19$m=64,t=2,p=1$ngQn6RydP2sldZPyj0znuA$HCd/5TXe2St0OiAG96xwq3rLDD14XgZA4AXFUq6/SwE', '2026-08-10 09:00:00', '2026-08-10 09:00:00'),
     (3, 'emmy', 'emmy', 'demo-emmy@example.invalid', NULL, 'superieur', NULL, NULL, 'demofriendtokenemmy000000', NULL, '2026-08-11 10:00:00', '2026-08-11 10:00:00');
 
--- ada logs in with « secret-pass »: a hash made by PHP's password_hash()
--- (cost 4), as Laravel stores them. emmy signed up through Google: no
--- password at all.
+-- ada logs in with « secret-pass-demo » (argon2id, with the light memory
+-- cost of the tests). emmy signed up through Google: no password at all.
 UPDATE users SET email_verified_at = '2026-08-10 09:05:00', onboarding_at = '2026-08-10 09:10:00'
  WHERE id = 2;
 
-INSERT INTO roles (id, slug, nom, categorie, couleur, niveau, ordre) VALUES
-    (1, 'super-admin', 'Super admin', 'permission', '#d1544f', 3, 0),
-    (2, 'admin', 'Admin', 'permission', '#c98a34', 2, 1),
-    (3, 'moderateur', 'Moderateur', 'permission', '#4f7df0', 1, 2),
-    (4, 'mathematiques', 'Mathematiques', 'matiere', '#4f7df0', 0, 3),
-    (5, 'membre-fondateur', 'Membre fondateur', 'distinction', '#c98a34', 0, 15);
-
-INSERT INTO role_user (role_id, user_id) VALUES (1, 1), (4, 2), (5, 2), (3, 3);
+INSERT INTO role_user (role_id, user_id)
+SELECT r.id, u.user_id
+  FROM (VALUES ('super-admin', 1), ('mathematiques', 2), ('membre-fondateur', 2), ('moderateur', 3)) AS u (slug, user_id)
+  JOIN roles r ON r.slug = u.slug;
 
 -- Courses: two published, one draft, one scheduled in the future.
 INSERT INTO courses (id, titre, slug, description, theme, difficulte, duree_estimee, tags, auteur_id, statut, published_at, created_at, updated_at) VALUES
@@ -149,9 +145,8 @@ INSERT INTO exercise_attempts (user_id, exercise_id, reponse, correct) VALUES
     (2, 2, '{"texte":"3/4"}', true),
     (2, 3, '{"options":["a"]}', false);
 INSERT INTO enrollments (user_id, course_id, completed_at) VALUES (2, 1, now());
-INSERT INTO forum_themes (id, nom, slug) VALUES (1, 'Mathématiques', 'mathematiques');
 INSERT INTO questions (id, forum_theme_id, user_id, titre, slug, corps, created_at) VALUES
-    (1, 1, 3, 'Pourquoi 5^0 = 1 ?', 'pourquoi-5-puissance-0', 'Je ne comprends pas.', now());
+    (1, (SELECT id FROM forum_themes WHERE slug = 'mathematiques'), 3, 'Pourquoi 5^0 = 1 ?', 'pourquoi-5-puissance-0', 'Je ne comprends pas.', now());
 INSERT INTO answers (id, question_id, user_id, corps, created_at) VALUES
     (1, 1, 2, 'Parce que 5^1 / 5^1 = 5^(1-1).', now());
 UPDATE questions SET accepted_answer_id = 1 WHERE id = 1;
@@ -164,7 +159,7 @@ INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created
 UPDATE users SET cerveaux_publics = false WHERE id = 3;
 
 -- Keep sequences ahead of the explicit ids above.
--- Stored files (bytea, as on the Laravel `local` disk): the published
+-- Stored files (bytea, on the `local` disk): the published
 -- statement and resource, and what must never be served: a correction, a
 -- draft exam's PDF, a pending resource's file, a file on another disk.
 INSERT INTO fichiers (id, disque, chemin, contenu, type_mime, taille, created_at, updated_at) VALUES
@@ -190,17 +185,15 @@ INSERT INTO contenu_translations (traduisible_type, traduisible_id, langue, cham
     ('actualite', 2, 'en', '{"titre":"NEWS-DRAFT-MARKER","contenu_md":"NEWS-DRAFT-MARKER"}', 'demo', now(), now());
 
 SELECT setval('site.users_id_seq', (SELECT max(id) FROM users));
-SELECT setval('site.roles_id_seq', (SELECT max(id) FROM roles));
-SELECT setval('site.courses_id_seq', (SELECT max(id) FROM courses));
-SELECT setval('site.chapters_id_seq', (SELECT max(id) FROM chapters));
-SELECT setval('site.lessons_id_seq', (SELECT max(id) FROM lessons));
-SELECT setval('site.exercises_id_seq', (SELECT max(id) FROM exercises));
-SELECT setval('site.exams_id_seq', (SELECT max(id) FROM exams));
-SELECT setval('site.exam_parties_id_seq', (SELECT max(id) FROM exam_parties));
-SELECT setval('site.ressources_id_seq', (SELECT max(id) FROM ressources));
-SELECT setval('site.actualites_id_seq', (SELECT max(id) FROM actualites));
-SELECT setval('site.fichiers_id_seq', (SELECT max(id) FROM fichiers));
-SELECT setval('site.forum_themes_id_seq', (SELECT max(id) FROM forum_themes));
+SELECT setval('contenu.courses_id_seq', (SELECT max(id) FROM courses));
+SELECT setval('contenu.chapters_id_seq', (SELECT max(id) FROM chapters));
+SELECT setval('contenu.lessons_id_seq', (SELECT max(id) FROM lessons));
+SELECT setval('contenu.exercises_id_seq', (SELECT max(id) FROM exercises));
+SELECT setval('contenu.exams_id_seq', (SELECT max(id) FROM exams));
+SELECT setval('contenu.exam_parties_id_seq', (SELECT max(id) FROM exam_parties));
+SELECT setval('contenu.ressources_id_seq', (SELECT max(id) FROM ressources));
+SELECT setval('contenu.actualites_id_seq', (SELECT max(id) FROM actualites));
+SELECT setval('contenu.fichiers_id_seq', (SELECT max(id) FROM fichiers));
 SELECT setval('site.questions_id_seq', (SELECT max(id) FROM questions));
 SELECT setval('site.answers_id_seq', (SELECT max(id) FROM answers));
 

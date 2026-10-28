@@ -1,35 +1,48 @@
 //! Route tree and middleware stack.
 
 pub mod account;
+pub mod admin;
 pub mod auth;
+pub mod corrections;
 pub mod courses;
 pub mod cursor;
+pub mod dashboard;
 pub mod exams;
 pub mod exercises;
+pub mod feedback;
 pub mod files;
+pub mod forum;
+pub mod forum_moderation;
 pub mod game;
 pub mod health;
+pub mod languages;
+pub mod learning;
 pub mod me;
 pub mod news;
 pub mod oauth;
 pub mod params;
+pub mod practice;
+pub mod profile;
 pub mod public;
 pub mod resources;
+pub mod site;
+pub mod social;
 pub mod token;
+pub mod upload;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::{OriginalUri, Request};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use tower::ServiceBuilder;
 use tower_http::LatencyUnit;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
-use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
@@ -71,6 +84,15 @@ pub fn router(state: AppState) -> Router {
             "/v1/resources/{slug}",
             get(resources::show).options(preflight),
         )
+        .route("/v1/languages", get(languages::list).options(preflight))
+        .route(
+            "/v1/languages/{code}",
+            get(languages::show).options(preflight),
+        )
+        .route(
+            "/v1/languages/{code}/levels/{level}",
+            get(languages::level).options(preflight),
+        )
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
@@ -82,8 +104,16 @@ pub fn router(state: AppState) -> Router {
             get(files::exam_pdf).options(preflight),
         )
         .route(
+            "/v1/exams/{slug}/correction-pdf",
+            get(files::exam_correction_pdf).options(preflight),
+        )
+        .route(
             "/v1/resources/{slug}/file",
             get(files::resource_file).options(preflight),
+        )
+        .route(
+            "/v1/storage/{*path}",
+            get(profile::storage).options(preflight),
         )
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
@@ -98,20 +128,34 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
 
+    // What learners do in the languages section, sent by its front end
+    // (pulsars.science/langues): only that origin may post from a browser.
+    let languages_events = Router::new()
+        .route(
+            "/v1/languages/events",
+            axum::routing::post(languages::record_event).options(preflight),
+        )
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
+        .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
+
     // The match WebSocket checks its `Origin` itself, before the upgrade.
     let game_ws = Router::new()
         .route("/v1/game/ws", get(game::ws))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
     // Authenticated endpoints: only the game front end may call them from a
-    // browser. Without `Origin` (server to server: the Laravel admin
-    // dashboard proxies the statistics) the CORS layer stays out of the way.
+    // browser. Without `Origin` (server to server) the CORS layer stays out
+    // of the way.
     let authenticated = Router::new()
         .route("/v1/me", get(me::me).options(preflight))
         .route("/v1/game/me", get(game::me).options(preflight))
         .route(
             "/v1/game/admin/stats",
             get(game::admin_stats).options(preflight),
+        )
+        .route(
+            "/v1/languages/admin/stats",
+            get(languages::admin_stats).options(preflight),
         )
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
@@ -138,6 +182,119 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // The forum and its moderation: called by the site (pulsars-web), from
+    // its server or through its `/api` relay, never by a browser directly.
+    let forum = Router::new()
+        .route("/v1/forum/themes", get(forum::themes))
+        .route("/v1/forum/themes/{slug}", get(forum::theme))
+        .route(
+            "/v1/forum/questions",
+            get(forum::questions).post(forum::ask),
+        )
+        .route("/v1/forum/questions/{slug}", get(forum::question))
+        .route("/v1/forum/questions/{slug}/answers", post(forum::answer))
+        .route(
+            "/v1/forum/questions/{slug}/answers/{answer}/accept",
+            post(forum::accept),
+        )
+        .route(
+            "/v1/forum/questions/{slug}/vote",
+            post(forum::vote_question),
+        )
+        .route(
+            "/v1/forum/questions/{slug}/translations",
+            post(forum::translate_question),
+        )
+        .route("/v1/forum/answers/{id}/vote", post(forum::vote_answer))
+        .route(
+            "/v1/forum/answers/{id}/translations",
+            post(forum::translate_answer),
+        )
+        .route("/v1/forum/reports", post(forum::report))
+        .route(
+            "/v1/moderation/forum/questions/{id}",
+            delete(forum_moderation::delete_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/hide",
+            post(forum_moderation::hide_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/lock",
+            post(forum_moderation::lock_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/pin",
+            post(forum_moderation::pin_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/restore",
+            post(forum_moderation::restore_question),
+        )
+        .route(
+            "/v1/moderation/forum/answers/{id}",
+            delete(forum_moderation::delete_answer),
+        )
+        .route(
+            "/v1/moderation/forum/answers/{id}/hide",
+            post(forum_moderation::hide_answer),
+        )
+        .route(
+            "/v1/moderation/forum/answers/{id}/restore",
+            post(forum_moderation::restore_answer),
+        )
+        .route(
+            "/v1/moderation/members/{id}/mute",
+            put(forum_moderation::mute).delete(forum_moderation::unmute),
+        )
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
+    // What the site's pages need about its members and from them, called by
+    // pulsars-web from its server or through its `/api` relay (no CORS
+    // layer: never straight from a browser).
+    let site = Router::new()
+        .route("/v1/me/progress", get(learning::started))
+        .route("/v1/me/courses/{slug}/progress", get(learning::progress))
+        .route("/v1/me/lessons/{id}/completion", put(learning::complete))
+        .route("/v1/me/exercises/{id}", get(practice::mine))
+        .route("/v1/exercises/{id}/attempts", post(practice::attempt))
+        .route("/v1/exercises/catalog", get(practice::catalog))
+        .route("/v1/exercises/random", get(practice::random))
+        .route("/v1/exercises/facets", get(practice::facets))
+        .route("/v1/me/dashboard", get(dashboard::dashboard))
+        .route("/v1/me/brains", get(dashboard::brains_history))
+        .route("/v1/leaderboard/xp", get(dashboard::leaderboard))
+        .route("/v1/leaderboard/top", get(dashboard::top))
+        .route("/v1/rewards", get(dashboard::rewards))
+        .route("/v1/me/profile", get(profile::show).patch(profile::update))
+        .route("/v1/me/onboarding", post(profile::onboarding))
+        .route("/v1/me/locale", put(profile::locale))
+        .route("/v1/roles", get(profile::roles))
+        .route("/v1/captcha", get(feedback::captcha))
+        .route("/v1/reports", post(feedback::report))
+        .route("/v1/licenses", get(feedback::licenses))
+        .route("/v1/settings/donation-goal", get(feedback::donation_goal))
+        .route(
+            "/v1/exams/{slug}/corrections",
+            get(corrections::corrections),
+        )
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
+    // The members' uploads (`multipart/form-data`): their body limit is
+    // `upload::UPLOAD_BODY_LIMIT` (`mw::body_limit`).
+    let uploads = Router::new()
+        .route(
+            "/v1/me/avatar",
+            put(profile::put_avatar).delete(profile::delete_avatar),
+        )
+        .route("/v1/suggestions", post(feedback::suggestion))
+        .route("/v1/resource-requests", post(feedback::resource_request))
+        .layer(DefaultBodyLimit::max(upload::UPLOAD_BODY_LIMIT))
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     // The game token, asked by the game front end with the session cookie:
     // its own origin check and credentialed CORS (`token::browser_guard`).
     let game_token = Router::new()
@@ -150,16 +307,122 @@ pub fn router(state: AppState) -> Router {
         .route("/.well-known/jwks.json", get(token::jwks))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // The administration (`admin`): called by the site from its server, like
+    // `/v1/auth/*`. Its two uploads have their own body limits, Laravel's
+    // (`mw::body_limit`).
+    let admin_json = Router::new()
+        .route("/v1/admin/stats", get(admin::dashboard::dashboard))
+        .route("/v1/admin/pending", get(admin::dashboard::pending))
+        .route(
+            "/v1/admin/settings/donation-goal",
+            get(admin::dashboard::donation_goal).put(admin::dashboard::set_donation_goal),
+        )
+        .route("/v1/admin/game/stats", get(admin::dashboard::game_stats))
+        .route(
+            "/v1/admin/languages/stats",
+            get(admin::dashboard::language_stats),
+        )
+        .route(
+            "/v1/admin/news",
+            get(admin::news::list).post(admin::news::create),
+        )
+        .route(
+            "/v1/admin/news/{slug}",
+            put(admin::news::update).delete(admin::news::delete),
+        )
+        .route("/v1/admin/news/{slug}/publish", post(admin::news::publish))
+        .route(
+            "/v1/admin/news/{slug}/unpublish",
+            post(admin::news::unpublish),
+        )
+        .route(
+            "/v1/admin/courses",
+            get(admin::courses::list).post(admin::courses::create),
+        )
+        .route("/v1/admin/courses/{slug}", delete(admin::courses::delete))
+        .route(
+            "/v1/admin/courses/{slug}/publish",
+            post(admin::courses::publish),
+        )
+        .route(
+            "/v1/admin/courses/{slug}/unpublish",
+            post(admin::courses::unpublish),
+        )
+        .route(
+            "/v1/admin/courses/{slug}/archive",
+            post(admin::courses::archive),
+        )
+        .route("/v1/admin/exams", get(admin::exams::list))
+        .route("/v1/admin/exams/{slug}", delete(admin::exams::delete))
+        .route(
+            "/v1/admin/exams/{slug}/publish",
+            post(admin::exams::publish),
+        )
+        .route(
+            "/v1/admin/exams/{slug}/unpublish",
+            post(admin::exams::unpublish),
+        )
+        .route("/v1/admin/resource-requests", get(admin::requests::list))
+        .route(
+            "/v1/admin/resource-requests/{id}/accept",
+            post(admin::requests::accept),
+        )
+        .route(
+            "/v1/admin/resource-requests/{id}/reject",
+            post(admin::requests::reject),
+        )
+        .route("/v1/admin/members", get(admin::roles::list))
+        .route(
+            "/v1/admin/members/{id}/roles/{slug}",
+            put(admin::roles::grant).delete(admin::roles::revoke),
+        )
+        .route("/v1/admin/reports", get(admin::queues::reports))
+        .route("/v1/admin/reports/{id}", patch(admin::queues::file_report))
+        .route("/v1/admin/suggestions", get(admin::queues::suggestions))
+        .route(
+            "/v1/admin/suggestions/{id}",
+            patch(admin::queues::file_suggestion),
+        )
+        .layer(from_fn(public::require_json));
+    // PDF, not JSON: no `Accept` check.
+    let admin_files = Router::new()
+        .route("/v1/admin/exams/{slug}/pdf", get(admin::exams::pdf))
+        .route(
+            "/v1/admin/resource-requests/{id}/file",
+            get(admin::requests::preview),
+        );
+    let admin_upload = Router::new()
+        .route("/v1/admin/exams", post(admin::exams::create))
+        .layer(from_fn(public::require_json))
+        .layer(DefaultBodyLimit::disable());
+    let admin_import = Router::new()
+        .route("/v1/admin/exams/{slug}/import", post(admin::exams::import))
+        .layer(from_fn(public::require_json))
+        .layer(DefaultBodyLimit::max(admin::exams::IMPORT_BODY_LIMIT));
+    let admin_uploads = admin_upload
+        .merge(admin_import)
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+    let admin = admin_json
+        .merge(admin_files)
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(admin)
         .merge(auth)
+        .merge(forum)
         .merge(game_token)
         .merge(jwks)
         .merge(content)
         .merge(files)
         .merge(game_public)
         .merge(game_ws)
+        .merge(languages_events)
         .merge(authenticated)
+        .merge(social::router(&state))
+        .merge(admin_uploads)
+        .merge(site)
+        .merge(uploads)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.
@@ -206,7 +469,7 @@ pub fn router(state: AppState) -> Router {
                 .layer(HandleErrorLayer::new(mw::handle_timeout))
                 .timeout(config.request_timeout)
                 .layer(from_fn(mw::problem_for_bare_errors))
-                .layer(RequestBodyLimitLayer::new(config.body_limit_bytes)),
+                .layer(from_fn_with_state(state.clone(), mw::body_limit)),
         )
         .with_state(state)
 }

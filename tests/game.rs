@@ -1,5 +1,5 @@
 //! End-to-end tests of the game server: the WebSocket protocol over a real
-//! listener, the `/v1/game` HTTP endpoints and the webhook delivery.
+//! listener and the `/v1/game` HTTP endpoints.
 //!
 //! Like `tests/http.rs`, tests that need PostgreSQL and Redis read
 //! `TEST_DATABASE_URL` and `TEST_REDIS_URL` and are skipped without them
@@ -10,20 +10,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt as _, StreamExt as _};
 use pulsars_api::auth::token::testing;
-use pulsars_api::auth::{Jwks, JwksSettings};
-use pulsars_api::config::{Config, Secret};
+use pulsars_api::config::{Config, TokenSigner};
 use pulsars_api::flash;
 use pulsars_api::game::rules::SubjectKey;
-use pulsars_api::game::webhook::{self, Verdict, WebhookSettings};
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
@@ -70,44 +67,19 @@ fn fast_settings() -> GameSettings {
     }
 }
 
-/// Laravel's JWKS endpoint, in-process.
+/// The API's signing key, as the test application holds it.
 struct Keys {
-    url: String,
-    key: SigningKey,
+    signer: TokenSigner,
 }
 
 impl Keys {
-    async fn start() -> Self {
-        let key = testing::signing_key();
-        let document = json!({"keys": [testing::jwk(&key, KID)]}).to_string();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/.well-known/jwks.json",
-            listener.local_addr().unwrap()
-        );
-        let router = Router::new().route(
-            "/.well-known/jwks.json",
-            axum::routing::get(move || {
-                let document = document.clone();
-                async move {
-                    (
-                        [(header::CONTENT_TYPE, "application/jwk-set+json")],
-                        document,
-                    )
-                }
-            }),
-        );
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        Self { url, key }
-    }
-
     /// A token for `sub`, named `name`, in `locale`.
     fn token(&self, sub: &str, name: &str, locale: &str) -> String {
         let mut claims = testing::claims(sub, chrono::Utc::now().timestamp());
         claims["name"] = json!(name);
         claims["locale"] = json!(locale);
         testing::sign(
-            &self.key,
+            &self.signer.key,
             &json!({"alg": "EdDSA", "typ": "JWT", "kid": KID}),
             &claims,
         )
@@ -131,13 +103,11 @@ async fn server_with(
     settings: GameSettings,
     extra: &[(&str, &str)],
 ) -> Server {
-    let keys = Keys::start().await;
-    let config = Config::from_vars(
+    let mut config = Config::from_vars(
         [
             ("PULSARS_ENV", "development"),
             ("DATABASE_URL", database_url),
             ("REDIS_URL", redis_url),
-            ("JWKS_URL", keys.url.as_str()),
             ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
             ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
         ]
@@ -145,16 +115,13 @@ async fn server_with(
         .chain(extra.iter().copied()),
     )
     .expect("valid test config");
-    let jwks = Jwks::with_settings(
-        &config.jwks_url,
-        false,
-        JwksSettings {
-            fetch_timeout: Duration::from_secs(2),
-            ..JwksSettings::default()
-        },
-    )
-    .unwrap();
-    jwks.refresh().await.expect("JWKS loads");
+    // A key from `extra` (`JWT_SIGNING_KEY_FILE`), else a fresh one.
+    let keys = Keys {
+        signer: config
+            .token_signer
+            .get_or_insert_with(testing::signer)
+            .clone(),
+    };
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
         mailer: pulsars_api::mail::Mailer::recording(),
@@ -162,7 +129,6 @@ async fn server_with(
         db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
-        jwks,
     };
     let app = routes::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -387,7 +353,7 @@ async fn sessions_must_authenticate_first_and_in_time() {
 }
 
 #[tokio::test]
-async fn tokens_the_api_signs_open_a_game_session() {
+async fn tokens_signed_with_the_key_file_open_a_game_session() {
     use base64::Engine as _;
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
@@ -418,7 +384,6 @@ async fn tokens_the_api_signs_open_a_game_session() {
     let signer = server.state.config.token_signer.clone().expect("signer");
     let sub = fresh_user().to_string();
     let mut claims = testing::claims(&sub, chrono::Utc::now().timestamp());
-    claims["iss"] = json!("https://api.pulsars.science");
     claims["name"] = json!("api-signed");
     let token = pulsars_api::routes::token::sign(&signer, &claims);
 
@@ -428,17 +393,29 @@ async fn tokens_the_api_signs_open_a_game_session() {
     assert_eq!(ok["player"]["user_id"], json!(sub));
     assert_eq!(ok["player"]["guest"], false);
 
-    // Single use, as for the site's tokens.
+    // Single use.
     let mut again = Client::connect(&server, Some(ORIGIN)).await.unwrap();
     again.send(json!({"type": "auth", "token": token})).await;
     assert_eq!(again.closed().await.0, 4003);
 
-    // The site's issuer with the API's key: refused.
+    // The old site's issuer with the API's key: refused.
     claims["iss"] = json!("https://pulsars.science");
     claims["jti"] = json!(uuid::Uuid::now_v7().to_string());
     let forged = pulsars_api::routes::token::sign(&signer, &claims);
     let mut client = Client::connect(&server, Some(ORIGIN)).await.unwrap();
     client.send(json!({"type": "auth", "token": forged})).await;
+    assert_eq!(client.closed().await, (4001, "bad_issuer".to_owned()));
+
+    // Another kid: refused.
+    claims["iss"] = json!("https://api.pulsars.science");
+    claims["jti"] = json!(uuid::Uuid::now_v7().to_string());
+    let other = testing::sign(
+        &signer.key,
+        &json!({"alg": "EdDSA", "typ": "JWT", "kid": KID}),
+        &claims,
+    );
+    let mut client = Client::connect(&server, Some(ORIGIN)).await.unwrap();
+    client.send(json!({"type": "auth", "token": other})).await;
     assert_eq!(client.closed().await, (4001, "unknown_kid".to_owned()));
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -678,7 +655,7 @@ async fn guests_play_casual_duels_to_the_end() {
 // --- With PostgreSQL and Redis ---------------------------------------------
 
 #[tokio::test]
-async fn a_ranked_duel_updates_ratings_and_queues_the_webhook() {
+async fn a_ranked_duel_updates_ratings_and_credits_the_players() {
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
     };
@@ -689,6 +666,19 @@ async fn a_ranked_duel_updates_ratings_and_queues_the_webhook() {
     let server = server(&database_url, &redis_url, settings).await;
     wait_for_redis(&server.state).await;
     let (ida, idb) = (fresh_user(), fresh_user());
+    // Accounts of the site: they get a result and brains.
+    for (id, pseudo) in [(ida, "alice"), (idb, "bob")] {
+        sqlx::query(
+            "INSERT INTO site.users (id, pseudo, name, email, created_at, updated_at)
+             VALUES ($1, $2 || $1, $2 || $1, $2 || $1 || '@example.invalid',
+                     now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')",
+        )
+        .bind(id)
+        .bind(pseudo)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
 
     let (mut a, ok) = Client::account(&server, &ida.to_string(), "alice").await;
     assert_eq!(
@@ -756,31 +746,38 @@ async fn a_ranked_duel_updates_ratings_and_queues_the_webhook() {
     assert_eq!(log[0]["i"], 0);
     assert_eq!(log[0]["ok"], true);
 
-    // The webhook body, as Laravel's receiver validates it.
-    let (event_id, body, status): (uuid::Uuid, Value, String) = sqlx::query_as(
-        "SELECT event_id, body, status FROM game.webhook_outbox WHERE body->'data'->>'match_id' = $1",
+    // The site's results, from which XP is computed, and the brains: 2 a
+    // match, 3 more for the win (Laravel's `EvenementController`).
+    let results: Vec<(i64, String, bool, String)> = sqlx::query_as(
+        "SELECT user_id, mode::text, ranked, outcome::text FROM site.game_results
+          WHERE match_id = $1 ORDER BY user_id",
     )
-    .bind(match_id.to_string())
-    .fetch_one(&pool)
+    .bind(match_id)
+    .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(status, "pending");
-    assert_eq!(body["event_id"], event_id.to_string());
-    assert_eq!(body["type"], "match.completed");
-    assert_eq!(body["version"], 1);
-    assert_eq!(body["data"]["mode"], "flash-duel");
-    assert_eq!(body["data"]["ranked"], true);
-    assert_eq!(body["data"]["end_reason"], "completed");
-    let players = body["data"]["players"].as_array().unwrap();
-    assert_eq!(players.len(), 2);
-    let pa = players
+    let outcome = |id: i64| if id == ida { "win" } else { "loss" };
+    let mut expected: Vec<(i64, String, bool, String)> = [ida, idb]
         .iter()
-        .find(|p| p["user_id"].as_str() == Some(ida.to_string().as_str()))
-        .unwrap();
-    assert_eq!(pa["outcome"], "win");
-    assert_eq!(pa["team"], Value::Null);
-    assert_eq!(pa["rating_before"], 1500);
-    assert_eq!(pa["score"], 10);
+        .map(|&id| (id, "flash-duel".to_owned(), true, outcome(id).to_owned()))
+        .collect();
+    expected.sort();
+    assert_eq!(results, expected);
+    let brains: Vec<(i64, String, i32)> = sqlx::query_as(
+        "SELECT user_id, cle::text, montant FROM site.cerveaux_mouvements
+          WHERE user_id = ANY($1) ORDER BY user_id, montant",
+    )
+    .bind([ida, idb])
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected = vec![
+        (ida, format!("partie:{match_id}"), 2),
+        (ida, format!("victoire:{match_id}"), 3),
+        (idb, format!("partie:{match_id}"), 2),
+    ];
+    expected.sort_by_key(|(id, _, amount)| (*id, *amount));
+    assert_eq!(brains, expected);
 
     // `/v1/game/me` lists the ratings and the match.
     let request = Request::get("/v1/game/me")
@@ -844,11 +841,6 @@ async fn a_ranked_duel_updates_ratings_and_queues_the_webhook() {
 
 async fn cleanup(pool: &sqlx::PgPool, matches: &[uuid::Uuid], users: &[i64]) {
     for id in matches {
-        sqlx::query("DELETE FROM game.webhook_outbox WHERE body->'data'->>'match_id' = $1")
-            .bind(id.to_string())
-            .execute(pool)
-            .await
-            .unwrap();
         sqlx::query("DELETE FROM game.matches WHERE id = $1")
             .bind(id)
             .execute(pool)
@@ -856,6 +848,12 @@ async fn cleanup(pool: &sqlx::PgPool, matches: &[uuid::Uuid], users: &[i64]) {
             .unwrap();
     }
     sqlx::query("DELETE FROM game.ratings WHERE user_id = ANY($1)")
+        .bind(users)
+        .execute(pool)
+        .await
+        .unwrap();
+    // Their results and brains go with them.
+    sqlx::query("DELETE FROM site.users WHERE id = ANY($1)")
         .bind(users)
         .execute(pool)
         .await
@@ -871,7 +869,7 @@ async fn the_leaderboard_is_public_and_skips_deleted_accounts() {
     let server = server(&database_url, &redis_url, fast_settings()).await;
 
     let member: (i64, String) =
-        sqlx::query_as("SELECT id, pseudo FROM api_read.members ORDER BY id LIMIT 1")
+        sqlx::query_as("SELECT id, pseudo FROM site.members ORDER BY id LIMIT 1")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -1021,181 +1019,6 @@ async fn game_me_shows_the_brains_balance() {
     };
     // `ada` (dev/db/30-demo-data.sql): three lessons, 5 brains each.
     assert_eq!(me("2".to_owned()).await["brains"], 15);
-    // An account without movements, or unknown to Laravel: 0.
+    // An account without movements, or unknown: 0.
     assert_eq!(me(fresh_user().to_string()).await["brains"], 0);
-}
-
-// --- Webhook delivery -----------------------------------------------------
-
-/// Requests received: headers and raw body.
-type Seen = Arc<Mutex<Vec<(axum::http::HeaderMap, Vec<u8>)>>>;
-
-/// Laravel's receiver: records what it got and answers `status`.
-struct Receiver {
-    url: String,
-    seen: Seen,
-    status: Arc<Mutex<u16>>,
-}
-
-impl Receiver {
-    async fn start() -> Self {
-        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
-        let status = Arc::new(Mutex::new(200u16));
-        let (s, st) = (seen.clone(), status.clone());
-        let router = Router::new().route(
-            "/internal/jeu/evenements",
-            axum::routing::post(
-                move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
-                    let (s, st) = (s.clone(), st.clone());
-                    async move {
-                        s.lock().unwrap().push((headers, body.to_vec()));
-                        let code = *st.lock().unwrap();
-                        (
-                            StatusCode::from_u16(code).unwrap(),
-                            [(header::RETRY_AFTER, "7")],
-                            r#"{"status":"processed"}"#,
-                        )
-                    }
-                },
-            ),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/internal/jeu/evenements",
-            listener.local_addr().unwrap()
-        );
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        Self { url, seen, status }
-    }
-}
-
-#[tokio::test]
-async fn the_outbox_is_delivered_signed_and_retried() {
-    let Some((database_url, _)) = integration_urls() else {
-        return;
-    };
-    let pool = migrated(&database_url).await;
-    let receiver = Receiver::start().await;
-    let secret = "0123456789abcdef0123456789abcdef";
-    let settings = WebhookSettings::new(
-        receiver.url.clone(),
-        Secret::new(secret),
-        Some("pulsars.science".to_owned()),
-    );
-    let client = webhook::client(&settings).unwrap();
-
-    let event_id = uuid::Uuid::now_v7();
-    let body = json!({"event_id": event_id.to_string(), "type": "match.completed", "version": 1,
-                      "occurred_at": "2026-10-17T10:00:00Z", "data": {"players": []}});
-    sqlx::query(
-        "INSERT INTO game.webhook_outbox (event_id, type, body) VALUES ($1, 'match.completed', $2)",
-    )
-    .bind(event_id)
-    .bind(sqlx::types::Json(&body))
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    // A failure is retried later.
-    *receiver.status.lock().unwrap() = 503;
-    let delivery = webhook::deliver_next(&pool, &client, &settings, Some(event_id))
-        .await
-        .unwrap()
-        .expect("the row is due");
-    assert!(matches!(delivery.verdict, Verdict::Retry { .. }));
-    let (attempts, status, delay): (i32, String, f64) = sqlx::query_as(
-        "SELECT attempts, status, extract(epoch FROM next_attempt_at - now())::float8
-           FROM game.webhook_outbox WHERE event_id = $1",
-    )
-    .bind(event_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!((attempts, status.as_str()), (1, "pending"));
-    assert!(delay <= 10.5, "first backoff is at most 10 s: {delay}");
-    sqlx::query("UPDATE game.webhook_outbox SET next_attempt_at = now() + interval '1 hour' WHERE event_id = $1")
-        .bind(event_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert!(
-        webhook::deliver_next(&pool, &client, &settings, Some(event_id))
-            .await
-            .unwrap()
-            .is_none(),
-        "not due before its next attempt"
-    );
-
-    // Due again, and accepted.
-    sqlx::query("UPDATE game.webhook_outbox SET next_attempt_at = now() WHERE event_id = $1")
-        .bind(event_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    *receiver.status.lock().unwrap() = 200;
-    let delivery = webhook::deliver_next(&pool, &client, &settings, Some(event_id))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(delivery.verdict, Verdict::Sent);
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM game.webhook_outbox WHERE event_id = $1")
-            .bind(event_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(status, "sent");
-
-    // What Laravel received: a fresh signature over `timestamp.body`.
-    let seen = receiver.seen.lock().unwrap().clone();
-    let (headers, raw) = seen.last().unwrap();
-    assert_eq!(headers["x-pulsars-event-id"], event_id.to_string().as_str());
-    assert_eq!(headers[header::HOST], "pulsars.science");
-    assert_eq!(headers[header::CONTENT_TYPE], "application/json");
-    assert!(
-        headers[header::USER_AGENT]
-            .to_str()
-            .unwrap()
-            .starts_with("pulsars-api/")
-    );
-    assert!(headers.contains_key("traceparent"));
-    let timestamp: i64 = headers["x-pulsars-timestamp"]
-        .to_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!((chrono::Utc::now().timestamp() - timestamp).abs() < 30);
-    assert_eq!(
-        headers["x-pulsars-signature"].to_str().unwrap(),
-        webhook::signature(secret.as_bytes(), timestamp, raw)
-    );
-    let received: Value = serde_json::from_slice(raw).unwrap();
-    assert_eq!(received, body);
-
-    // A 422 is a dead letter at once; replay puts it back.
-    sqlx::query("UPDATE game.webhook_outbox SET status = 'pending', next_attempt_at = now() WHERE event_id = $1")
-        .bind(event_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    *receiver.status.lock().unwrap() = 422;
-    let delivery = webhook::deliver_next(&pool, &client, &settings, Some(event_id))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(delivery.verdict, Verdict::Dead(_)));
-    assert!(webhook::replay(&pool, event_id).await.unwrap());
-    let (status, attempts): (String, i32) =
-        sqlx::query_as("SELECT status, attempts FROM game.webhook_outbox WHERE event_id = $1")
-            .bind(event_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!((status.as_str(), attempts), ("pending", 0));
-
-    sqlx::query("DELETE FROM game.webhook_outbox WHERE event_id = $1")
-        .bind(event_id)
-        .execute(&pool)
-        .await
-        .unwrap();
 }

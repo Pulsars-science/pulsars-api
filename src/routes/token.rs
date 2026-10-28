@@ -1,13 +1,14 @@
 //! `POST /v1/auth/token` and `GET /.well-known/jwks.json` (`openapi.yaml`,
-//! tag `auth`; `docs/contract/auth-jwt.md`): the API issues the game token
-//! itself, from the member's session, instead of Laravel's `/jeu/jeton`.
+//! tag `auth`; `docs/contract/auth-jwt.md`): the API issues the game token,
+//! a short JWT, from the member's session, and publishes the key it signs
+//! with.
 //!
-//! The browser calls it from the game front end with `credentials:
-//! "include"`: the session comes from the `pulsars_auth` cookie the site sets
-//! on `.pulsars.science`, or, from a server, from `Pulsars-Session`. The
-//! route is protected like Laravel's `VerifierOrigineJeu` (contract §2): an
-//! allowed `Origin`, `Content-Type: application/json`, and a same-site
-//! `Sec-Fetch-Site` when the browser sends one. The token is never logged.
+//! The browser calls it from the games and the languages section with
+//! `credentials: "include"`: the session comes from the `pulsars_auth`
+//! cookie `pulsars-web` sets on `.pulsars.science`, or, from a server, from
+//! `Pulsars-Session`. The route only answers an allowed `Origin`, with
+//! `Content-Type: application/json`, and a same-site `Sec-Fetch-Site` when
+//! the browser sends one (contract §2). The token is never logged.
 
 use axum::extract::{OriginalUri, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -20,13 +21,13 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::auth::{self, is_token, live_session};
-use crate::config::TokenSigner;
+use crate::config::{API_AUDIENCE, API_ISSUER, TokenSigner};
 use crate::db::accounts;
 use crate::error::ApiError;
 use crate::rate_limit;
 use crate::state::AppState;
 
-/// The cookie the site sets on `.pulsars.science` (`auth-sessions.md`).
+/// The cookie `pulsars-web` sets on `.pulsars.science` (`auth-sessions.md`).
 pub const SESSION_COOKIE: &str = "pulsars_auth";
 
 /// Tokens per minute for one member, as Laravel's `throttle:30,1`.
@@ -81,8 +82,8 @@ pub async fn issue(
     let roles = accounts::permission_roles(&state.db, account.id).await?;
     let now = chrono::Utc::now().timestamp();
     let claims = json!({
-        "iss": signer.issuer,
-        "aud": state.config.jwt_audience,
+        "iss": API_ISSUER,
+        "aud": API_AUDIENCE,
         "sub": who,
         "iat": now,
         "nbf": now,

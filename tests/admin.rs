@@ -18,11 +18,9 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use chrono::{Days, NaiveTime, Utc};
-use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt as _, StreamExt as _};
 use pulsars_api::auth::token::testing;
-use pulsars_api::auth::{Jwks, JwksSettings};
-use pulsars_api::config::Config;
+use pulsars_api::config::{Config, TokenSigner};
 use pulsars_api::flash;
 use pulsars_api::game::rules::SubjectKey;
 use pulsars_api::game::{Game, GameSettings, store};
@@ -86,43 +84,18 @@ fn fast_settings() -> GameSettings {
     settings
 }
 
-/// Laravel's JWKS endpoint, in-process.
+/// The API's signing key, as the test application holds it.
 struct Keys {
-    url: String,
-    key: SigningKey,
+    signer: TokenSigner,
 }
 
 impl Keys {
-    async fn start() -> Self {
-        let key = testing::signing_key();
-        let document = json!({"keys": [testing::jwk(&key, KID)]}).to_string();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/.well-known/jwks.json",
-            listener.local_addr().unwrap()
-        );
-        let router = Router::new().route(
-            "/.well-known/jwks.json",
-            axum::routing::get(move || {
-                let document = document.clone();
-                async move {
-                    (
-                        [(header::CONTENT_TYPE, "application/jwk-set+json")],
-                        document,
-                    )
-                }
-            }),
-        );
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        Self { url, key }
-    }
-
     fn token(&self, sub: &str, name: &str, roles: &[&str]) -> String {
         let mut claims = testing::claims(sub, Utc::now().timestamp());
         claims["name"] = json!(name);
         claims["roles"] = json!(roles);
         testing::sign(
-            &self.key,
+            &self.signer.key,
             &json!({"alg": "EdDSA", "typ": "JWT", "kid": KID}),
             &claims,
         )
@@ -137,26 +110,18 @@ struct Server {
 }
 
 async fn server(database_url: &str, redis_url: &str) -> Server {
-    let keys = Keys::start().await;
-    let config = Config::from_vars([
+    let keys = Keys {
+        signer: testing::signer(),
+    };
+    let mut config = Config::from_vars([
         ("PULSARS_ENV", "development"),
         ("DATABASE_URL", database_url),
         ("REDIS_URL", redis_url),
-        ("JWKS_URL", keys.url.as_str()),
         ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
         ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
     ])
     .expect("valid test config");
-    let jwks = Jwks::with_settings(
-        &config.jwks_url,
-        false,
-        JwksSettings {
-            fetch_timeout: Duration::from_secs(2),
-            ..JwksSettings::default()
-        },
-    )
-    .unwrap();
-    jwks.refresh().await.expect("JWKS loads");
+    config.token_signer = Some(keys.signer.clone());
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
         mailer: pulsars_api::mail::Mailer::recording(),
@@ -164,7 +129,6 @@ async fn server(database_url: &str, redis_url: &str) -> Server {
         db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
-        jwks,
     };
     let app = routes::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -470,12 +434,11 @@ async fn admin_stats_count_live_and_finished_matches() {
         "rules",
         "quality",
         "ratings",
-        "webhook",
         "seasons",
     ] {
         assert!(keys.contains(&key), "{key} missing: {default}");
     }
-    assert_eq!(keys.len(), 10, "{keys:?}");
+    assert_eq!(keys.len(), 9, "{keys:?}");
     assert_eq!(
         default["live"],
         json!({"sessions": 0, "guests": 0, "queued": 0, "rooms_open": 0,
@@ -513,9 +476,6 @@ async fn admin_stats_count_live_and_finished_matches() {
         default["ratings"]["by_subject"].as_array().unwrap().len(),
         5
     );
-    for field in ["pending", "dead"] {
-        assert!(default["webhook"][field].is_i64());
-    }
     assert!(default["seasons"].as_array().unwrap().len() <= 12);
 
     let before = stats(&server, 3).await;
@@ -719,11 +679,6 @@ async fn admin_stats_count_live_and_finished_matches() {
     assert!(n(&cs["players"]) >= 2);
 
     // Cleanup.
-    sqlx::query("DELETE FROM game.webhook_outbox WHERE body->'data'->>'match_id' = $1")
-        .bind(match_id.to_string())
-        .execute(&pool)
-        .await
-        .unwrap();
     sqlx::query("DELETE FROM game.matches WHERE id = ANY($1)")
         .bind([match_id, ghost, room, duel].as_slice())
         .execute(&pool)

@@ -55,7 +55,7 @@ pub async fn list(
     let category = params.text("category", 120);
     let doc_lang = params.text("doc_lang", 8);
     let mode = params.one_of("mode", RESOURCE_MODES);
-    // `varchar(60)` in Laravel.
+    // `varchar(60)` in the schema.
     let license = params.text("license", 60);
     let search = params.search();
     let filters = params.finish()?;
@@ -128,19 +128,12 @@ fn to_resource(row: ResourceRow, lang: Lang) -> Resource {
         Some(original) => Some(translated(original, row.tr_category).0),
         None => row.tr_category.filter(|c| !c.is_empty()),
     };
-    let license = row.license_key.map(|key| {
-        let name = match (key.as_str(), row.license_custom, row.license_name) {
-            (CUSTOM_LICENSE, Some(custom), _) if !custom.trim().is_empty() => custom,
-            (_, _, Some(name)) => name,
-            // A key the copied licence list does not know: show the key.
-            _ => key.clone(),
-        };
-        License {
-            key,
-            name,
-            url: row.license_url,
-        }
-    });
+    let license = license(
+        row.license_key,
+        row.license_custom,
+        row.license_name,
+        row.license_url,
+    );
     let hosted = row.mode == "host";
     Resource {
         id: row.id,
@@ -160,6 +153,25 @@ fn to_resource(row: ResourceRow, lang: Lang) -> Resource {
         created_at: timestamp(row.created_at),
         updated_at: timestamp(row.updated_at.unwrap_or(row.created_at)),
     }
+}
+
+/// The licence of `key`: the free text of a custom one, else the name of
+/// `contenu.licences`, else the key itself.
+pub(crate) fn license(
+    key: Option<String>,
+    custom: Option<String>,
+    name: Option<String>,
+    url: Option<String>,
+) -> Option<License> {
+    key.map(|key| {
+        let name = match (key.as_str(), custom, name) {
+            (CUSTOM_LICENSE, Some(custom), _) if !custom.trim().is_empty() => custom,
+            (_, _, Some(name)) => name,
+            // A key the copied licence list does not know: show the key.
+            _ => key.clone(),
+        };
+        License { key, name, url }
+    })
 }
 
 #[cfg(test)]

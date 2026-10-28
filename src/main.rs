@@ -5,10 +5,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use fred::prelude::ClientLike as _;
-use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
 use pulsars_api::game::season;
-use pulsars_api::game::webhook::{self, WebhookSettings};
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::mail::Mailer;
 use pulsars_api::state::AppState;
@@ -44,8 +42,7 @@ async fn main() -> ExitCode {
         return ExitCode::from(EXIT_CONFIG);
     }
 
-    // `pulsars-api migrate`, `pulsars-api check-content`,
-    // `pulsars-api webhooks replay <event_id>` (docs/contract/webhooks.md §7).
+    // `pulsars-api migrate`, `create-admin`, `import-content`.
     if !args.is_empty() {
         return command(&config, &args).await;
     }
@@ -59,8 +56,11 @@ async fn main() -> ExitCode {
     }
 }
 
-const USAGE: &str = "usage: pulsars-api [migrate | check-content | webhooks replay <event_id> \
-                     | jwt-keygen <kid> <dir>]";
+const USAGE: &str = "usage: pulsars-api [migrate | create-admin <pseudo> <email> \
+                     | import-content <old database url> <author pseudo> \
+                     | jwt-keygen <kid> <dir> \
+                     | content check [--lang en] | content fix <file.json> [--dry-run] \
+                     | content translate [--lang en] [--force] [--limit N]]";
 
 /// `pulsars-api jwt-keygen <kid> <dir>`: writes a new Ed25519 seed to
 /// `<dir>/<kid>.key` (mode 0600, never over an existing file), in the format
@@ -102,28 +102,35 @@ fn jwt_keygen(kid: &str, dir: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// One-off commands: `migrate`, `check-content` and
-/// `webhooks replay <event_id>`.
+/// One-off commands: `migrate`, `create-admin` and `import-content`.
 async fn command(config: &Config, args: &[String]) -> ExitCode {
-    if let [command] = args {
-        match command.as_str() {
-            "migrate" => return migrate_command(config).await,
-            "check-content" => return check_content_command(config).await,
-            _ => {}
+    match args {
+        [command] if command == "migrate" => return migrate_command(config).await,
+        [command, pseudo, email] if command == "create-admin" => {
+            return create_admin_command(config, pseudo, email).await;
         }
+        [command, source, author] if command == "import-content" => {
+            return import_content_command(config, source, author).await;
+        }
+        [command, rest @ ..] if command == "content" => return content_command(config, rest).await,
+        _ => {}
     }
-    let [group, action, event_id] = args else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(EXIT_USAGE);
-    };
-    if group != "webhooks" || action != "replay" {
-        eprintln!("usage: pulsars-api [webhooks replay <event_id>]");
+    eprintln!("{USAGE}");
+    ExitCode::from(EXIT_USAGE)
+}
+
+/// `EX_USAGE` from sysexits.h.
+const EXIT_USAGE: u8 = 64;
+
+/// `pulsars-api create-admin <pseudo> <email>`: the first account
+/// (`pulsars_api::cli`), its password read from standard input.
+async fn create_admin_command(config: &Config, pseudo: &str, email: &str) -> ExitCode {
+    let mut password = String::new();
+    if std::io::stdin().read_line(&mut password).is_err() {
+        eprintln!("cannot read the password from standard input");
         return ExitCode::from(EXIT_USAGE);
     }
-    let Ok(event_id) = uuid::Uuid::parse_str(event_id) else {
-        eprintln!("not a UUID: {event_id}");
-        return ExitCode::from(EXIT_USAGE);
-    };
+    let password = password.trim_end_matches(['\r', '\n']).to_owned();
     let pool = match db::connect_lazy(config) {
         Ok(pool) => pool,
         Err(error) => {
@@ -131,60 +138,195 @@ async fn command(config: &Config, args: &[String]) -> ExitCode {
             return ExitCode::from(EXIT_CONFIG);
         }
     };
-    match webhook::replay(&pool, event_id).await {
-        Ok(true) => {
-            println!("event {event_id} queued for delivery");
+    match pulsars_api::cli::create_admin(&pool, config.argon2_memory_kib, pseudo, email, password)
+        .await
+    {
+        Ok(id) => {
+            println!("account {id} ({pseudo}) created, super-admin");
             ExitCode::SUCCESS
         }
-        Ok(false) => {
-            eprintln!("no webhook event {event_id}");
-            ExitCode::FAILURE
-        }
         Err(error) => {
-            eprintln!("database error: {error}");
+            eprintln!("create-admin: {error}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// `pulsars-api check-content`: compares what the API reads of `contenu`
-/// with the `api_read` views it replaces, on the real data. Fails when a
-/// single row differs (deploy/sql/README.md, phase 1).
-async fn check_content_command(config: &Config) -> ExitCode {
-    let pool = match db::connect_lazy(config) {
+/// `pulsars-api import-content <old database url> <author pseudo>`: copies
+/// the content of the old database (`pulsars_api::cli`).
+async fn import_content_command(config: &Config, source: &str, author: &str) -> ExitCode {
+    let dest = match db::connect_lazy(config) {
         Ok(pool) => pool,
         Err(error) => {
             eprintln!("invalid DATABASE_URL: {error}");
             return ExitCode::from(EXIT_CONFIG);
         }
     };
-    let comparisons = match db::sources::compare_with_views(&pool).await {
-        Ok(comparisons) => comparisons,
+    let source = match sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(source)
+        .await
+    {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("cannot connect to the old database: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let admin = match pulsars_api::cli::account_id(&dest, author).await {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            eprintln!("no account `{author}`: run `pulsars-api create-admin` first");
+            return ExitCode::FAILURE;
+        }
         Err(error) => {
             eprintln!("database error: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let mut same = true;
-    for c in &comparisons {
-        let verdict = if c.is_same() { "same" } else { "DIFFERENT" };
-        println!(
-            "{:<24} {:>6} rows  {:>4} missing  {:>4} extra  {verdict}",
-            c.view, c.rows, c.missing, c.extra
-        );
-        same &= c.is_same();
-    }
-    if same {
-        println!("content: the API reads exactly what the api_read views show");
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("content: some rows differ from the api_read views");
-        ExitCode::FAILURE
+    match pulsars_api::cli::import_content(&source, &dest, admin).await {
+        Ok(imported) => {
+            for (table, rows) in imported.tables {
+                println!("{table:<22} {rows:>7} rows");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("import-content: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
-/// `EX_USAGE` from sysexits.h.
-const EXIT_USAGE: u8 = 64;
+/// `pulsars-api content check|fix|translate` (`pulsars_api::content`).
+async fn content_command(config: &Config, args: &[String]) -> ExitCode {
+    let mut lang = "en".to_owned();
+    let mut dry_run = false;
+    let mut force = false;
+    let mut limit = None;
+    let mut positional = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--lang" => match rest.next() {
+                Some(value) => lang.clone_from(value),
+                None => return usage(),
+            },
+            "--dry-run" => dry_run = true,
+            "--force" => force = true,
+            "--limit" => match rest.next().and_then(|v| v.parse::<usize>().ok()) {
+                Some(n) => limit = Some(n),
+                None => return usage(),
+            },
+            other if other.starts_with("--") => return usage(),
+            other => positional.push(other),
+        }
+    }
+    let pool = match db::connect_lazy(config) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("invalid DATABASE_URL: {error}");
+            return ExitCode::from(EXIT_CONFIG);
+        }
+    };
+    match positional.as_slice() {
+        ["check"] => match pulsars_api::content::check(&pool, &lang).await {
+            Ok(check) => {
+                println!(
+                    "{} courses, {} exercises, {} exams, {} resources checked.",
+                    check.courses, check.exercises, check.exams, check.resources
+                );
+                if check.problems.is_empty() {
+                    println!("No problem.");
+                    return ExitCode::SUCCESS;
+                }
+                for problem in &check.problems {
+                    println!("  - {problem}");
+                }
+                eprintln!("{} problem(s).", check.problems.len());
+                ExitCode::FAILURE
+            }
+            Err(error) => {
+                eprintln!("database error: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        ["fix", file] => {
+            let parsed = std::fs::read(file)
+                .map_err(|e| format!("{file}: {e}"))
+                .and_then(|bytes| {
+                    serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|_| {
+                        "unreadable file: {\"corrections\": [...]} expected".to_owned()
+                    })
+                });
+            let fixed = match parsed {
+                Ok(value) => pulsars_api::content::fix(&pool, &value, dry_run).await,
+                Err(error) => Err(error),
+            };
+            match fixed {
+                Ok(fixed) => {
+                    let verb = if dry_run { "Valid" } else { "Applied" };
+                    println!("{verb}: {}", fixed.applied);
+                    for refused in &fixed.refused {
+                        println!("  - {refused}");
+                    }
+                    if fixed.refused.is_empty() {
+                        ExitCode::SUCCESS
+                    } else {
+                        eprintln!("{} element(s) refused.", fixed.refused.len());
+                        ExitCode::FAILURE
+                    }
+                }
+                Err(error) => {
+                    eprintln!("content fix: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        ["translate"] => {
+            let Some(deepl) = config.deepl.clone() else {
+                eprintln!("content translate: DEEPL_API_KEY is not set");
+                return ExitCode::from(EXIT_CONFIG);
+            };
+            let deepl = match pulsars_api::deepl::Deepl::new(deepl) {
+                Ok(deepl) => deepl,
+                Err(error) => {
+                    eprintln!("content translate: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut log = |line: String| println!("{line}");
+            match pulsars_api::content::translate(&pool, &deepl, &lang, force, limit, &mut log)
+                .await
+            {
+                Ok(done) => {
+                    if done.limited {
+                        println!("Limit reached.");
+                    }
+                    println!(
+                        "Translated: {}   Up to date: {}   Failed: {}",
+                        done.translated, done.up_to_date, done.failed
+                    );
+                    if done.failed > 0 {
+                        ExitCode::FAILURE
+                    } else {
+                        ExitCode::SUCCESS
+                    }
+                }
+                Err(error) => {
+                    eprintln!("content translate: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        _ => usage(),
+    }
+}
+
+fn usage() -> ExitCode {
+    eprintln!("{USAGE}");
+    ExitCode::from(EXIT_USAGE)
+}
 
 /// `pulsars-api migrate`: applies the embedded migrations, then exits.
 ///
@@ -266,10 +408,6 @@ async fn run(config: Config) -> Result<(), String> {
         .map_err(|e| format!("cannot install the metrics recorder: {e}"))?;
     let db = db::connect_lazy(&config).map_err(|e| format!("invalid DATABASE_URL: {e}"))?;
     let redis = redis::connect(&config).map_err(|e| format!("invalid REDIS_URL: {e}"))?;
-    // Loaded in the background: Laravel being down at boot must not stop the
-    // API. `/healthz` answers 503 until the first key is loaded.
-    let jwks = Jwks::new(&config)?;
-    let jwks_refresh = jwks.spawn_refresh();
     // The monthly season close needs the `game.seasons` migration: it starts
     // once the migrations are applied (docs/contract/brains.md §3).
     let migrations = tokio::spawn({
@@ -280,22 +418,6 @@ async fn run(config: Config) -> Result<(), String> {
             season::run_closer(db).await;
         }
     });
-    let webhooks = match &config.webhook {
-        Some(settings) => Some(webhook::spawn_worker(
-            db.clone(),
-            WebhookSettings::new(
-                settings.url.clone(),
-                settings.secret.clone(),
-                settings.host.clone(),
-            ),
-        )?),
-        None => {
-            tracing::warn!(
-                "LARAVEL_WEBHOOK_URL is not set: match results stay in the outbox, unsent"
-            );
-            None
-        }
-    };
     let game = Game::start(db.clone(), GameSettings::default());
 
     let public = TcpListener::bind(config.bind_addr)
@@ -320,7 +442,6 @@ async fn run(config: Config) -> Result<(), String> {
         config: Arc::new(config),
         db: db.clone(),
         redis: redis.clone(),
-        jwks,
         game,
     };
 
@@ -366,11 +487,7 @@ async fn run(config: Config) -> Result<(), String> {
     };
 
     upkeep.abort();
-    jwks_refresh.abort();
     migrations.abort();
-    if let Some(webhooks) = webhooks {
-        webhooks.abort();
-    }
     if redis.is_connected()
         && let Err(error) = redis.quit().await
     {

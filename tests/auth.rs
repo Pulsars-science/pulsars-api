@@ -13,7 +13,6 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use pulsars_api::auth::Jwks;
 use pulsars_api::config::Config;
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::mail::{Kind, Mail};
@@ -22,10 +21,9 @@ use pulsars_api::{db, redis, routes};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
-const DEAD_JWKS: &str = "http://127.0.0.1:1/.well-known/jwks.json";
 const SERVICE_KEY: &str = "test-service-key-0123456789abcdef-0123";
-/// ada's password in dev/db/30-demo-data.sql, hashed by PHP.
-const ADA_PASSWORD: &str = "secret-pass";
+/// ada's password in dev/db/30-demo-data.sql.
+const ADA_PASSWORD: &str = "secret-pass-demo";
 
 struct Env {
     app: Router,
@@ -58,18 +56,16 @@ async fn env_with(extra: &[(&str, &str)]) -> Option<Env> {
             ("PULSARS_ENV", "development"),
             ("DATABASE_URL", database_url.as_str()),
             ("REDIS_URL", redis_url.as_str()),
-            ("JWKS_URL", DEAD_JWKS),
             ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000000"),
             ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "1000000"),
             ("SERVICE_KEY", SERVICE_KEY),
-            ("BCRYPT_COST", "4"),
+            ("ARGON2_MEMORY_KIB", "64"),
         ]
         .into_iter()
         .chain(extra.iter().copied())
         .map(|(k, v)| (k.to_owned(), v.to_owned())),
     )
     .unwrap();
-    let jwks = Jwks::new(&config).unwrap();
     let db = db::connect_lazy(&config).unwrap();
     let redis = redis::connect(&config).unwrap();
     {
@@ -85,7 +81,6 @@ async fn env_with(extra: &[(&str, &str)]) -> Option<Env> {
         db,
         redis,
         config: Arc::new(config),
-        jwks,
     };
     Some(Env {
         app: routes::router(state.clone()),
@@ -398,7 +393,7 @@ async fn sign_up_reports_every_mistake_with_a_code() {
 }
 
 #[tokio::test]
-async fn sign_up_creates_an_account_laravel_can_read_and_opens_a_session() {
+async fn sign_up_creates_an_account_and_opens_a_session() {
     let Some(env) = env().await else { return };
     let (pseudo, email, password, token) = sign_up(&env.app).await;
 
@@ -412,7 +407,7 @@ async fn sign_up_creates_an_account_laravel_can_read_and_opens_a_session() {
     assert_eq!(user["locale"], "ru");
     assert!(body["data"]["session"].get("token").is_none());
 
-    // As Laravel's CreateNewUser writes it: name = pseudo, a `$2y$` hash.
+    // name = pseudo, an argon2id hash.
     let owner = sqlx::PgPool::connect(&owner_url(&env.database_url))
         .await
         .unwrap();
@@ -423,8 +418,8 @@ async fn sign_up_creates_an_account_laravel_can_read_and_opens_a_session() {
             .await
             .unwrap();
     assert_eq!(name, pseudo);
-    assert!(hash.starts_with("$2y$04$"), "{hash}");
-    assert!(bcrypt::verify(&password, &hash).unwrap());
+    assert!(hash.starts_with("$argon2id$v=19$m=64,"), "{hash}");
+    assert!(pulsars_api::auth::password::verify(password.clone(), hash).await);
 
     let (status, _) = login(&env.app, &pseudo.to_uppercase(), &password).await;
     assert_eq!(status, StatusCode::OK);
@@ -828,15 +823,9 @@ async fn the_api_issues_game_tokens_from_the_session_cookie() {
     let header = format!("Bearer {token}");
     let verified = pulsars_api::auth::authenticate(
         Some(header.as_bytes()),
-        &env.state.jwks,
-        pulsars_api::auth::Expected {
-            issuer: &env.state.config.jwt_issuer,
-            audience: &env.state.config.jwt_audience,
-        },
         env.state.config.token_signer.as_ref(),
         chrono::Utc::now().timestamp(),
     )
-    .await
     .expect("verified");
     assert_eq!(verified.roles, ["moderateur"]);
     let request = Request::get("/v1/me")
@@ -1260,7 +1249,7 @@ async fn a_reset_link_sets_the_password_once_and_ends_every_session() {
         login(&env.app, &pseudo, "brand-new-pass").await.0,
         StatusCode::OK
     );
-    // Laravel does not verify the address on a reset, neither does the API.
+    // As on the old site, a reset does not verify the address.
     let (_, body) = login(&env.app, &pseudo, "brand-new-pass").await;
     assert_eq!(body["data"]["user"]["email_verified"], false);
 

@@ -1,24 +1,37 @@
 openapi: 3.1.0
 info:
-  title: Pulsars public API
-  version: 1.0.0
-  summary: Read-only access to published Pulsars content.
+  title: Pulsars API
+  version: 0.6.0
+  summary: The back end of pulsars.science and its game server.
   description: |
-    Read-only API over the published content of https://pulsars.science:
-    courses, lessons, exercises, exams and free resources.
+    The API of https://pulsars.science. It owns the database and serves
+    every feature: the published content (courses, lessons, exercises,
+    exams, free resources, news, languages), the members' accounts and
+    progress, the forum and its moderation, the social part, the
+    administration and the game.
+
+    Three kinds of callers:
+    - `pulsars-web`, the site, server to server: the member's session in
+      `Pulsars-Session` and the site's key in `Pulsars-Service-Key`;
+    - the games (`pulsars.science/jeux`) and the languages section
+      (`pulsars.science/langues`): a short game token from
+      `POST /v1/auth/token`, signed by the API (`gameToken`);
+    - anyone, for the public content.
 
     Conventions (pagination, errors, languages, caching, rate limits) are
     described in `README.md` next to this file and apply to every endpoint.
 
-    What is never returned, by design:
+    What the public content routes never return, by design:
     - unpublished content (drafts, archived, awaiting review): it answers 404;
     - solutions and expected answers: exercise `solution_md`, QCM `correctes`,
       short-answer `acceptees`, exam `corrige_md` and the correction PDF.
-      The game may reuse this content, so an exposed answer is a cheat;
+      The game may reuse this content, so an exposed answer is a cheat.
+      Only the member routes show them, under the old site's rules (a
+      solution after an attempt, an exam's corrections on its page);
     - personal data beyond the public profile (no e-mail, IP, school level,
       locale, social logins).
 
-    All examples are real values from the Laravel seeders
+    All examples are real values from the old site's seeders
     (`database/seeders/CoursMathsSeeder.php`, `data/cours/*.json`,
     `data/examens/*.php`, `ConcoursCentraleSeeder.php`, `RessourceSeeder.php`).
     Numeric ids are those of a fresh local seed and differ in production.
@@ -47,11 +60,60 @@ tags:
       its server (`auth-sessions.md`). A session is an opaque token given back
       in `Pulsars-Session`.
   - name: account
+  - name: languages
+    description: |
+      The languages taught on `pulsars.science/langues` (`docs/languages.md`):
+      their levels and the words of each level. Written by the API itself
+      (schema `langues`).
+  - name: forum
+    description: |
+      The questions and answers forum (Laravel's `/forum`). Read by
+      everyone; written by verified members who are not muted. Bodies are
+      Markdown with LaTeX (`body_md`), rendered by the site.
+  - name: forum-moderation
+    description: |
+      Hiding, locking, pinning, deleting and restoring forum messages, and
+      muting members. Moderators only (`site.roles.niveau` ≥ 1, verified).
+  - name: admin
+    description: |
+      The administration of the site (Laravel's `admin/*`), for a session
+      whose member is an admin (verified, welcome steps done, permission
+      level 2 or more; `403` otherwise). Called by the site from its server:
+      no CORS, every answer `Cache-Control: no-store`. Lists are numbered
+      pages with `page`, `per_page`, `total` and per-status `counters`.
+      News, courses and exams are addressed by slug, as Laravel did.
+  - name: progress
+    description: |
+      A member's progress on the courses (Laravel's `Progression`). Routes
+      of the site's members take `Pulsars-Session`; their answers are never
+      cached.
+  - name: practice
+    description: Exercises as members do them, graded by the API (`CorrecteurExercice`).
+  - name: dashboard
+    description: The member's dashboard, brains (`brains.md`) and the XP leaderboards.
+  - name: profile
+    description: The member's settings, welcome steps, language and avatar.
+  - name: feedback
+    description: Reports (with their captcha), suggestions, proposed resources, the donations goal.
   - name: game
     description: |
       Flash duels (`docs/game-protocol.md`). Matches themselves run over the
       WebSocket `GET /v1/game/ws` (protocol §3), which is not described
       here.
+  - name: members
+    description: |
+      Public profiles and the pseudo search (`ProfilPublicController`), and
+      follows (`AbonnementController`). Called by the site from its server.
+  - name: friends
+    description: Friend requests and the friend QR code (`AmitieController`, `AmiQrController`).
+  - name: rooms
+    description: |
+      Rooms, their threads and invitation links (`Salon*Controller`,
+      `InvitationSalonController`). Threads are polled with `?after={id}`.
+  - name: conversations
+    description: |
+      Private messages between friends (`DiscussionController`,
+      `MessagePriveController`), sealed at rest with `MESSAGES_KEY`.
 
 paths:
   /healthz:
@@ -117,11 +179,12 @@ paths:
           subject's `course_count` but in no topic.
 
         `taxonomy` is `"theme"` while this derivation is in use; it becomes
-        `"domain-subject-topic"` once Laravel stores the real taxonomy, and
+        `"domain-subject-topic"` once the schema stores the real taxonomy, and
         `domains` is then added (additive change).
 
-        Subject names are translated when `lang=en` (from Laravel's
-        `lang/en.json`: Mathématiques → Mathematics). **Topic names are never
+        Subject names are translated when `lang=en` (`contenu.matieres`,
+        taken from the old site's `lang/en.json`: Mathématiques →
+        Mathematics). **Topic names are never
         translated**: no translation exists for them today.
 
         Sorted by subject name, then topic name. Not paginated (about 60 topics).
@@ -185,7 +248,7 @@ paths:
           description: |
             School level. **Derived from free tags**, not from a column: a
             course has the level if its tags contain one of the spellings
-            Laravel uses (`collège`/`college`, `lycée`/`lycee`, `supérieur`).
+            the content uses (`collège`/`college`, `lycée`/`lycee`, `supérieur`).
             Courses without such a tag match no level.
           schema: { $ref: '#/components/schemas/Level' }
         - name: tag
@@ -315,7 +378,7 @@ paths:
       operationId: getLesson
       summary: One lesson of a published course
       description: |
-        `lesson` is the lesson slug. Laravel only guarantees its uniqueness
+        `lesson` is the lesson slug. The schema only guarantees its uniqueness
         **within a chapter** (`unique(chapter_id, slug)`); no course currently
         has two lessons with the same slug. If that ever happens the API
         returns the one with the lowest (chapter position, lesson position).
@@ -591,8 +654,8 @@ paths:
         Parts carry their statement (`enonce_md`) only. The model answer
         (`corrige_md`) and the correction PDF are **never** returned, even
         though the website shows them: the game may reuse exam questions.
-        Exam `title` and `description` are not translatable in Laravel; only
-        parts are.
+        Exam `title` and `description` are not translatable; only parts
+        are.
       parameters:
         - name: slug
           in: path
@@ -657,9 +720,12 @@ paths:
       operationId: getExamPdf
       summary: The statement PDF of a published exam
       description: |
-        The file itself, read from the site's storage. Never the correction,
-        never a draft's file. `pdf_url` in the exam still points to the
-        site, which counts downloads. Supports `Range` (one range), `If-Range`,
+        The file itself, read from the database (`contenu.fichiers`). Never the correction,
+        never a draft's file (the correction is `…/correction-pdf`). With
+        `disposition=attachment` it is a download: counted (the counters are
+        in `GET /v1/exams/{slug}/corrections`; robots excepted, by
+        `User-Agent`; a resumed range not again) and `Cache-Control:
+        private, no-store`; `inline` is the preview. Supports `Range` (one range), `If-Range`,
         `If-None-Match` and `HEAD`; `Accept` is not checked.
       parameters:
         - name: slug
@@ -1216,13 +1282,17 @@ paths:
       operationId: issueGameToken
       summary: A game token for the member of the session
       description: |
-        Replaces Laravel's `POST /jeu/jeton` (`auth-jwt.md` §7). The session
+        The game token of the games and the languages section
+        (`auth-jwt.md`). The session
         comes from the `pulsars_auth` cookie (browsers, `credentials:
         "include"`) or `Pulsars-Session` (servers). Browsers must send an
         `Origin` listed in `CORS_ALLOWED_ORIGINS`, `Content-Type:
         application/json`, and a same-site `Sec-Fetch-Site`; answers to a
         listed origin carry credentialed CORS headers. The token is signed
-        by the API (`iss` `https://api.pulsars.science`).
+        by the API (`iss` `https://api.pulsars.science`, `aud`
+        `api.pulsars.science`) with the key published at
+        `/.well-known/jwks.json`. `503` when no signing key is configured
+        (development only).
       parameters:
         - $ref: '#/components/parameters/SessionToken'
       requestBody:
@@ -1264,7 +1334,10 @@ paths:
       tags: [auth]
       operationId: getApiJwks
       summary: The API's public signing key
-      description: The key of the game tokens the API signs. `keys` is empty when it signs none.
+      description: |
+        The key of the game tokens the API signs, for anyone who wants to
+        verify them. The API itself verifies with its key directly. `keys`
+        is empty when no key is configured (development only).
       responses:
         '200':
           description: A JWK set (`application/jwk-set+json`, cached 5 minutes, any origin).
@@ -1297,12 +1370,20 @@ paths:
         anyone, minus school level and class (see `game-design.md` /
         decisions): pseudo, avatar, bio, roles, membership date, XP and level,
         plus the member's brains balance (`brains.md` §4; always shown to its
-        owner, whatever `cerveaux_publics` says). Never e-mail, locale, social
-        logins or moderation state.
+        owner, whatever `cerveaux_publics` says). With a game token, never
+        e-mail, locale, social logins or moderation state.
+
+        With the site's session (`Pulsars-Session`, tried first) the owner's
+        account state is added, for the site's header: `email`,
+        `email_verified`, `onboarded`, `locale`, `forum_muted_until` (the
+        mute of `PUT /v1/moderation/members/{id}/mute`, while it holds).
 
         `Cache-Control: private, no-store`.
       security:
         - gameToken: []
+        - {}
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
       responses:
         '200':
           description: The profile
@@ -1345,7 +1426,7 @@ paths:
       description: |
         Players with at least one ranked match (1 vs 1 between accounts) in
         `subject`, best rating first. Equal shown ratings share a rank.
-        Pseudo and avatar come from `api_read.members`; deleted accounts are
+        Pseudo and avatar come from `site.members`; deleted accounts are
         skipped. A rating whose deviation (RD) is above 110 is
         `provisional`.
 
@@ -1413,7 +1494,7 @@ paths:
                   brains:
                     type: integer
                     minimum: 0
-                    description: Brains balance (`api_read.member_brains`), always shown to its owner.
+                    description: Brains balance (`site.member_brains`), always shown to its owner.
                   ratings:
                     type: array
                     items: { $ref: '#/components/schemas/GameRating' }
@@ -1454,9 +1535,10 @@ paths:
       summary: Game statistics for the admin dashboard
       description: |
         What is live now (from the game server's memory) and the activity
-        of the last `days` UTC days (from the `game` schema), for the
-        Laravel admin dashboard, which calls it server to server and shows
-        the result (`game-protocol.md` §9.1).
+        of the last `days` UTC days (from the `game` schema), for an admin
+        client with a game token, server to server (`game-protocol.md`
+        §9.1). The site's dashboard uses `GET /v1/admin/game/stats` with a
+        session.
 
         The token's `roles` must contain `admin` or `super-admin`, else
         `403` with `reason: insufficient_scope`. Restricted CORS like
@@ -1521,7 +1603,6 @@ paths:
                     - { subject: all, players: 3 }
                     - { subject: chemistry, players: 1 }
                     - { subject: computer-science, players: 0 }
-                webhook: { pending: 0, dead: 0 }
                 seasons:
                   - { month: '2026-09', subject: maths, ranked_players: 6, closed_at: '2026-10-01T00:00:12Z' }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -1533,6 +1614,3203 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /v1/languages:
+    get:
+      tags: [languages]
+      operationId: listLanguages
+      summary: Published languages, in order
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The languages
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Language' }
+              example:
+                data:
+                  - code: zh
+                    name: Mandarin
+                    lang: fr
+                    native_name: 中文
+                    script: Hans
+                    reading_system: pinyin
+                    countries: [CN, TW, SG]
+                    level_count: 2
+                    word_count: 38
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/{code}:
+    get:
+      tags: [languages]
+      operationId: getLanguage
+      summary: One published language, with its levels in order
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, example: zh }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The language
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Language'
+                      - type: object
+                        required: [levels]
+                        properties:
+                          levels:
+                            type: array
+                            items: { $ref: '#/components/schemas/LanguageLevel' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/{code}/levels/{level}:
+    get:
+      tags: [languages]
+      operationId: getLanguageLevel
+      summary: One level of a language, with all its words
+      description: |
+        Every word of the level, in teaching order, without pagination (a
+        level holds a few hundred words at most). `previous` and `next` name
+        the neighbouring levels.
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, example: zh }
+        - name: level
+          in: path
+          required: true
+          schema: { type: string, example: hsk-1 }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The level
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/LanguageLevel'
+                      - type: object
+                        required: [language, previous, next, words]
+                        properties:
+                          language:
+                            type: object
+                            required: [code, name, native_name, script, reading_system]
+                            properties:
+                              code: { type: string }
+                              name: { type: string }
+                              native_name: { type: string }
+                              script: { type: string }
+                              reading_system: { type: [string, 'null'] }
+                          previous: { $ref: '#/components/schemas/LanguageLevelRef' }
+                          next: { $ref: '#/components/schemas/LanguageLevelRef' }
+                          words:
+                            type: array
+                            items: { $ref: '#/components/schemas/Word' }
+              example:
+                data:
+                  language: { code: zh, name: Mandarin, native_name: 中文, script: Hans, reading_system: pinyin }
+                  slug: hsk-1
+                  framework: HSK
+                  position: 1
+                  title: HSK 1
+                  description: 'Les premiers mots : se présenter, saluer, compter, la famille et les repas.'
+                  lang: fr
+                  word_count: 38
+                  previous: null
+                  next: { slug: hsk-2, title: HSK 2 }
+                  words:
+                    - { id: 1, text: 我, reading: wǒ, meaning: 'je, moi', lang: fr }
+                    - { id: 2, text: 你, reading: nǐ, meaning: 'tu, toi', lang: fr }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/events:
+    post:
+      tags: [languages]
+      operationId: recordLanguageEvent
+      summary: Record what a learner did (anonymous)
+      description: |
+        Sent by the front end of `pulsars.science/langues` when a lesson ends
+        or a character is written (`docs/languages.md` §Statistics). No
+        account: `learner` is a random UUID the browser keeps. Restricted
+        CORS (the front end's origin only); rate limited like any request.
+        Missed word ids that are not in the level are dropped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [kind, learner, language, level, score, correct, questions, duration_ms, missed_words]
+                  properties:
+                    kind: { const: lesson.completed }
+                    learner: { type: string, format: uuid }
+                    language: { type: string, example: zh }
+                    level: { type: string, example: hsk-1 }
+                    score: { type: integer, minimum: 0, maximum: 10000 }
+                    correct: { type: integer, minimum: 0, description: At most `questions`. }
+                    questions: { type: integer, minimum: 1, maximum: 100 }
+                    duration_ms: { type: integer, minimum: 0, maximum: 86400000 }
+                    missed_words: { type: array, maxItems: 100, items: { type: integer } }
+                - type: object
+                  required: [kind, learner, language, level, character, mode, mistakes]
+                  properties:
+                    kind: { const: writing.completed }
+                    learner: { type: string, format: uuid }
+                    language: { type: string, example: zh }
+                    level: { type: string, example: hsk-1 }
+                    character: { type: string, minLength: 1, maxLength: 1, example: 我 }
+                    mode: { enum: [trace, memory] }
+                    mistakes: { type: integer, minimum: 0, maximum: 1000 }
+      responses:
+        '202': { description: Recorded. No body. }
+        '400':
+          description: '`invalid-body` problem, with one entry per field at fault in `errors`.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/admin/stats:
+    get:
+      tags: [languages]
+      operationId: getLanguageAdminStats
+      summary: Statistics of the languages section, for the admin dashboard
+      description: |
+        Over the last `days` UTC days (1–90, default 30): distinct learners,
+        lessons, questions and right answers, time in lessons, characters
+        written (and from memory without a mistake); the same per day
+        (zero-filled) and per level; the 10 most missed words and the 10
+        characters written with the most mistakes (at least 3 writings).
+        All-time totals too. Needs a game token whose `roles` contain `admin`
+        or `super-admin`. `Cache-Control: no-store`.
+      security: [{ gameToken: [] }]
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 90, default: 30 }
+      responses:
+        '200':
+          description: The statistics
+          content:
+            application/json:
+              example:
+                generated_at: '2026-10-20T15:30:00Z'
+                days: 30
+                totals: { learners: 12, lessons: 40, questions: 400, correct: 331, accuracy: 0.828, lesson_minutes: 61.5, writings: 95, from_memory: 30 }
+                all_time: { learners: 12, lessons: 40, writings: 95 }
+                daily: [{ date: '2026-10-20', learners: 3, lessons: 5, writings: 12 }]
+                levels: [{ language: zh, level: hsk-1, title: HSK 1, learners: 12, lessons: 40, accuracy: 0.828, average_score: 141.5, best_score: 260, writings: 95 }]
+                missed_words: [{ id: 8, text: 的, reading: de, meaning: particule du complément du nom, language: zh, level: hsk-1, misses: 9 }]
+                hardest_characters: [{ character: 飞, writings: 4, average_mistakes: 3.25, from_memory: 0 }]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { description: Missing or invalid token. }
+        '403': { description: '`insufficient-scope`: not an admin.' }
+
+  /v1/forum/themes:
+    get:
+      tags: [forum]
+      operationId: listForumThemes
+      summary: The forum's themes, in order, with their question counts
+      description: |
+        Also the choices of the « ask a question » form (Laravel's
+        `/forum/poser`). Deleted questions are not counted, hidden ones are.
+        `Cache-Control: no-store`.
+      responses:
+        '200':
+          description: Every theme
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ForumTheme' }
+
+  /v1/forum/themes/{slug}:
+    get:
+      tags: [forum]
+      operationId: getForumTheme
+      summary: One theme (the header of `/forum/theme/{slug}`)
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The theme
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ForumTheme' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/questions:
+    get:
+      tags: [forum]
+      operationId: listForumQuestions
+      summary: Questions, pinned first, by page
+      description: |
+        Laravel's `/forum` and `/forum/theme/{theme}`. Pinned questions come
+        first whatever `sort`. Numbered pages only: `total` is always there,
+        `next_cursor` always null. With a session, `voted` says whether the
+        member voted; a hidden question has a null `excerpt` except for
+        moderators. `Cache-Control: no-store`.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - name: theme
+          in: query
+          description: The slug of a theme; an unknown slug answers 404.
+          schema: { type: string, maxLength: 255 }
+        - name: sort
+          in: query
+          description: |
+            `recent` (newest first), `popular` (most votes, then newest) or
+            `unanswered` (only questions without an answer, newest first).
+          schema: { type: string, enum: [recent, popular, unanswered], default: recent }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor, total]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ForumQuestionSummary' }
+                  next_cursor: { type: 'null' }
+                  total: { type: integer, minimum: 0 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [forum]
+      operationId: askForumQuestion
+      summary: Ask a question
+      description: |
+        A verified member who finished the welcome steps; 403 while muted
+        (checked first). Fields are trimmed, then: `theme` the slug of a
+        theme (`required`, `invalid`), `title` 8 to 150 characters and
+        `body` 15 to 10 000 (`required`, `too_short`, `too_long`). The slug
+        is the title's first 60 characters in ASCII, plus `-` and 6 random
+        characters.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                theme: { type: string, example: mathematiques }
+                title: { type: string, minLength: 8, maxLength: 150 }
+                body: { type: string, minLength: 15, maxLength: 10000, description: Markdown with LaTeX. }
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id, slug]
+                    properties:
+                      id: { type: integer }
+                      slug: { type: string, example: comment-factoriser-un-trinome-x7k2qa }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/forum/questions/{slug}:
+    get:
+      tags: [forum]
+      operationId: getForumQuestion
+      summary: A question and its answers, as a tree
+      description: |
+        Counts a view once per reader (the member, or else the address)
+        every two hours, as Laravel did once per session. A hidden message
+        keeps its title and `hidden_reason` but its `body_md` is null,
+        except for moderators. Replies to a deleted answer are left out with
+        it. `Cache-Control: no-store`.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The thread
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/ForumQuestion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/questions/{question}/answers:
+    post:
+      tags: [forum]
+      operationId: answerForumQuestion
+      summary: Answer a question, or reply to one of its answers
+      description: |
+        A verified member. 404 for an unknown question, then 403 while muted,
+        then 409 `locked` on a locked thread. `body` is 2 to 10 000
+        characters; `parent_id` must be an answer of the same question
+        (`invalid` otherwise).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                body: { type: string, minLength: 2, maxLength: 10000 }
+                parent_id: { type: [integer, 'null'] }
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: integer }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`locked`: the thread takes no more answers.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/forum/questions/{question}/answers/{id}/accept:
+    post:
+      tags: [forum]
+      operationId: acceptForumAnswer
+      summary: Mark an answer as accepted, or take the mark back
+      description: |
+        Only the question's author (403). An answer of another question
+        answers 404. No body. A toggle, as in Laravel: accepting the
+        accepted answer again takes the mark back.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: The accepted answer afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [accepted_answer_id]
+                    properties:
+                      accepted_answer_id: { type: [integer, 'null'] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/questions/{question}/vote:
+    post:
+      tags: [forum]
+      operationId: toggleForumQuestionVote
+      summary: Vote for a question, or take the vote back
+      description: A verified member, muted or not. No body.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+      responses:
+        '200':
+          description: The vote afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [voted, votes]
+                    properties:
+                      voted: { type: boolean }
+                      votes: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/answers/{id}/vote:
+    post:
+      tags: [forum]
+      operationId: toggleForumAnswerVote
+      summary: Vote for an answer, or take the vote back
+      description: A verified member, muted or not. No body.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: The vote afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [voted, votes]
+                    properties:
+                      voted: { type: boolean }
+                      votes: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/forum/reports:
+    post:
+      tags: [forum]
+      operationId: reportForumMessage
+      summary: Report a question or an answer to the moderators
+      description: |
+        A verified member; 20 a minute, counted before the body is read. The
+        report joins the moderators' queue (`site.signalements`, `statut`
+        `nouveau`). `type` keeps Laravel's values.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                target_type: { type: string, enum: [question, answer] }
+                target_id: { type: integer }
+                type: { type: string, enum: [spam, abus, hors_sujet] }
+                message: { type: [string, 'null'], maxLength: 2000 }
+      responses:
+        '201':
+          description: Reported
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: integer }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/forum/questions/{question}/translations:
+    post:
+      tags: [forum]
+      operationId: translateForumQuestion
+      summary: The title and body of a question, translated by DeepL
+      description: |
+        Open to everyone; 10 a minute per reader (the member, or else the
+        address), counted first. The translation is stored and served again
+        while the question's text is unchanged (`cached`). A hidden question
+        is only translated for moderators (403). Without `DEEPL_API_KEY`:
+        503 `not_configured`; when DeepL fails: 503 `upstream_failed`.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - $ref: '#/components/parameters/ForumQuestionKey'
+      requestBody: { $ref: '#/components/requestBodies/ForumTranslate' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumTranslation' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/TranslationUnavailable' }
+
+  /v1/forum/answers/{id}/translations:
+    post:
+      tags: [forum]
+      operationId: translateForumAnswer
+      summary: The body of an answer, translated by DeepL
+      description: As for a question; `title` is null.
+      parameters:
+        - $ref: '#/components/parameters/OptionalSessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody: { $ref: '#/components/requestBodies/ForumTranslate' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumTranslation' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/TranslationUnavailable' }
+
+  /v1/moderation/forum/questions/{id}:
+    delete:
+      tags: [forum-moderation]
+      operationId: deleteForumQuestion
+      summary: Soft delete a question
+      description: Its page answers 404 until it is restored. 404 when already deleted.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/questions/{id}/hide:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumQuestionHidden
+      summary: Hide a question behind a notice, or show it again
+      description: |
+        Hiding records the moderator and an optional `reason` (at most 300
+        characters, shown to readers); showing again clears them, and the
+        body is then ignored. Send `{}` without a reason.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      requestBody: { $ref: '#/components/requestBodies/ForumHide' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumHidden' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/moderation/forum/questions/{id}/lock:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumQuestionLocked
+      summary: Lock a thread (no more answers), or unlock it
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '200':
+          description: The state afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [locked]
+                    properties:
+                      locked: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/questions/{id}/pin:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumQuestionPinned
+      summary: Pin a question first in every list, or unpin it
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '200':
+          description: The state afterwards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [pinned]
+                    properties:
+                      pinned: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/questions/{id}/restore:
+    post:
+      tags: [forum-moderation]
+      operationId: restoreForumQuestion
+      summary: Bring a deleted question back
+      description: 404 only when no question has this id, deleted or not.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Restored }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/answers/{id}:
+    delete:
+      tags: [forum-moderation]
+      operationId: deleteForumAnswer
+      summary: Soft delete an answer (and hide its replies with it)
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/forum/answers/{id}/hide:
+    post:
+      tags: [forum-moderation]
+      operationId: toggleForumAnswerHidden
+      summary: Hide an answer behind a notice, or show it again
+      description: As for a question.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      requestBody: { $ref: '#/components/requestBodies/ForumHide' }
+      responses:
+        '200': { $ref: '#/components/responses/ForumHidden' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/moderation/forum/answers/{id}/restore:
+    post:
+      tags: [forum-moderation]
+      operationId: restoreForumAnswer
+      summary: Bring a deleted answer back
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/ForumMessageId'
+      responses:
+        '204': { description: Restored }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/moderation/members/{id}/mute:
+    put:
+      tags: [forum-moderation]
+      operationId: muteMember
+      summary: Keep a member from posting for some days
+      description: |
+        The member still reads, but may not ask, answer, nor post messages
+        while `muted_until` is ahead. Nobody mutes themselves or a member of
+        an equal or higher permission level (403): a moderator mutes
+        members, an admin also moderators, a super admin also admins.
+        `days` 1 to 365 (`required`, `out_of_range`), `reason` at most 300
+        characters (`required`, `too_long`). Muting again replaces the mute.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: string, example: '42' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                days: { type: integer, minimum: 1, maximum: 365 }
+                reason: { type: string, maxLength: 300 }
+      responses:
+        '200':
+          description: Muted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [user_id, muted_until, reason]
+                    properties:
+                      user_id: { type: string, example: '42' }
+                      muted_until: { type: string, format: date-time }
+                      reason: { type: string }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+    delete:
+      tags: [forum-moderation]
+      operationId: unmuteMember
+      summary: Lift a member's mute
+      description: The same permission rule as muting.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: string, example: '42' } }
+      responses:
+        '204': { description: Lifted, or there was none }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/members:
+    get:
+      tags: [members]
+      operationId: searchMembers
+      summary: Search members by pseudo
+      description: |
+        Members whose pseudo contains `search` (alias `q`), ignoring case, by
+        pseudo, 24 per page (`ProfilPublicController::index`). Without a term
+        (after trimming), the list is empty: the site publishes no directory
+        of its members. Public. `Cache-Control: no-store`.
+      parameters:
+        - { name: search, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: q, in: query, description: Alias of `search`., schema: { type: string, maxLength: 100 } }
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          description: One page of members
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, next_cursor, total]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/MemberSummary' } }
+                  next_cursor: { type: 'null' }
+                  total: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/members/{pseudo}:
+    get:
+      tags: [members]
+      operationId: getMemberProfile
+      summary: A public profile
+      description: |
+        `ProfilPublicController::show`. Public; with `Pulsars-Session`, the
+        answer adds where the reader stands (`friendship`, `following`).
+        Never an e-mail, a locale, social logins or a moderation state.
+        `brains` is `null` when the member hides it, except for themselves.
+      parameters:
+        - $ref: '#/components/parameters/Pseudo'
+        - $ref: '#/components/parameters/OptionalSession'
+      responses:
+        '200':
+          description: The profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/MemberProfile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/members/{pseudo}/follow:
+    parameters:
+      - $ref: '#/components/parameters/Pseudo'
+      - $ref: '#/components/parameters/SessionToken'
+    post:
+      tags: [members]
+      operationId: followMember
+      summary: Follow a member (PUT does the same)
+      description: |
+        `Abonnements::suivre`: one way, without approval. When the other
+        member follows back, they become friends (`origine = abonnement`),
+        and a pending request between them is accepted. Following oneself
+        does nothing.
+      responses:
+        '200': { $ref: '#/components/responses/FollowResult' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [members]
+      operationId: putFollowMember
+      summary: Follow a member
+      responses:
+        '200': { $ref: '#/components/responses/FollowResult' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [members]
+      operationId: unfollowMember
+      summary: Stop following a member
+      description: A friendship born of the mutual follow goes too; one born of a request stays.
+      responses:
+        '200': { $ref: '#/components/responses/FollowResult' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/members/{pseudo}/friend-requests:
+    post:
+      tags: [friends]
+      operationId: requestFriendship
+      summary: Ask a member to be friends
+      description: |
+        `AmitieController::store`. 20 per minute per member. `201` when
+        sent; `200` when already friends (a success in Laravel); `409`
+        `request_pending` when a request of either side waits.
+      parameters:
+        - $ref: '#/components/parameters/Pseudo'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendshipStateResponse' }
+        '201': { $ref: '#/components/responses/FriendshipStateResponse' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/friends:
+    get:
+      tags: [friends]
+      operationId: listFriends
+      summary: Friends, requests received and requests sent
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The three lists, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [friends, received, sent]
+                    properties:
+                      friends: { type: array, items: { $ref: '#/components/schemas/FriendLine' } }
+                      received: { type: array, items: { $ref: '#/components/schemas/FriendLine' } }
+                      sent: { type: array, items: { $ref: '#/components/schemas/FriendLine' } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /v1/friends/{id}/accept:
+    post:
+      tags: [friends]
+      operationId: acceptFriendship
+      summary: Accept a request received
+      description: '`404` unless the member is in it; `403` for the member who asked. Idempotent.'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendshipStateResponse' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/friends/{id}:
+    delete:
+      tags: [friends]
+      operationId: removeFriendship
+      summary: Remove a friend, or withdraw or refuse a request
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Removed. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/friend-qr:
+    get:
+      tags: [friends]
+      operationId: getFriendQr
+      summary: The member's friend QR code
+      description: |
+        Laravel drew the QR code as an SVG on the server
+        (`AmiQrController::svg`). The API gives the token and the link the
+        code encodes, `https://pulsars.science/ami/{token}`: the site draws
+        it. The token is made the first time.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendQr' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /v1/me/friend-qr/regenerate:
+    post:
+      tags: [friends]
+      operationId: regenerateFriendQr
+      summary: A new friend QR code; the previous one stops working
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200': { $ref: '#/components/responses/FriendQr' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+
+  /v1/friends/scan:
+    post:
+      tags: [friends]
+      operationId: scanFriendQr
+      summary: Befriend the owner of a scanned QR code
+      description: |
+        `AmiQrController::scan`, posted by the site's `/ami/{token}` page.
+        Friends at once, without a request; a pending request of either side
+        is accepted. 30 per minute per member. `404` for a token no longer
+        valid, `422` (`token`, `self`) for one's own code.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              additionalProperties: false
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Friends
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [state, friendship_id, member]
+                    properties:
+                      state: { type: string, enum: [friends, already_friends] }
+                      friendship_id: { type: integer }
+                      member: { $ref: '#/components/schemas/MemberRef' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/rooms:
+    get:
+      tags: [rooms]
+      operationId: listRooms
+      summary: The public rooms and the member's private ones
+      description: Busiest first (`Room::visiblesPar`). Not paginated, as in Laravel.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The rooms
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/RoomListed' } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [rooms]
+      operationId: createRoom
+      summary: Create a room; its creator owns it
+      description: |
+        The slug is `contenu.slugify(name)` (`salon` when nothing is left),
+        with `-xxxx` appended when taken. Strings are trimmed, blank ones
+        are null, as Laravel's middlewares did.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name: { type: string, minLength: 2, maxLength: 50 }
+                description: { type: [string, 'null'], maxLength: 280 }
+                type: { type: string, enum: [public, prive] }
+      responses:
+        '201': { $ref: '#/components/responses/RoomOpened' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [rooms]
+      operationId: getRoom
+      summary: A room, its latest messages and the reader's rights
+      description: |
+        `404` for a private room the reader is not in (moderators excepted).
+        Opening it marks it read for a member, as Laravel did.
+      responses:
+        '200': { $ref: '#/components/responses/RoomOpened' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [rooms]
+      operationId: deleteRoom
+      summary: Delete a room, with its messages and links (owner or moderator)
+      responses:
+        '204': { description: Deleted. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/rooms/{slug}/members:
+    post:
+      tags: [rooms]
+      operationId: joinRoom
+      summary: Join a public room
+      description: Idempotent. `403` for a private room, entered by an invitation link only.
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: A member. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/rooms/{slug}/members/me:
+    delete:
+      tags: [rooms]
+      operationId: leaveRoom
+      summary: Leave a room
+      description: Its owner cannot (`422`, `room`, `owner`); they delete it instead.
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Left, or was not in it. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}/read:
+    post:
+      tags: [rooms]
+      operationId: markRoomRead
+      summary: Clear the member's unread count of a room
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Marked. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/rooms/{slug}/messages:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [rooms]
+      operationId: listRoomMessages
+      summary: The thread of a room, oldest first; poll it with `after`
+      description: |
+        Laravel's pages reloaded the thread every five seconds; there is no
+        WebSocket. `after` gives what came after the last message shown;
+        `before` pages back. Marks the room read for a member.
+      parameters:
+        - $ref: '#/components/parameters/ThreadAfter'
+        - $ref: '#/components/parameters/ThreadBefore'
+        - $ref: '#/components/parameters/ThreadLimit'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/RoomMessage' } }
+                  has_more: { type: boolean, description: 'More messages lie beyond these, in the direction asked.' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [rooms]
+      operationId: postRoomMessage
+      summary: Write in a room
+      description: |
+        Writing in a public room joins it; in a private one, only its
+        members write (`403`). Muted members cannot write (`403`). The body
+        is trimmed, 1 to 2000 characters, plain text.
+      requestBody: { $ref: '#/components/requestBodies/MessageBody' }
+      responses:
+        '201':
+          description: Posted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/RoomMessage' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}/invitations:
+    parameters:
+      - $ref: '#/components/parameters/RoomSlug'
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [rooms]
+      operationId: listRoomInvitations
+      summary: The invitation links of a room (owner or moderator)
+      responses:
+        '200':
+          description: Newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [room, invitations]
+                    properties:
+                      room: { $ref: '#/components/schemas/RoomInfo' }
+                      invitations: { type: array, items: { $ref: '#/components/schemas/RoomInvitation' } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [rooms]
+      operationId: createRoomInvitation
+      summary: A new invitation link (owner or moderator)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                duration_days: { type: [integer, 'null'], minimum: 1, maximum: 365, description: '`null`: never expires.' }
+                max_uses: { type: [integer, 'null'], minimum: 1, maximum: 10000, description: '`null`: no limit.' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/RoomInvitation' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/rooms/{slug}/invitations/{token}:
+    delete:
+      tags: [rooms]
+      operationId: revokeRoomInvitation
+      summary: Revoke a link of this room (owner or moderator)
+      parameters:
+        - $ref: '#/components/parameters/RoomSlug'
+        - $ref: '#/components/parameters/InviteToken'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Revoked. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/invitations/{token}:
+    get:
+      tags: [rooms]
+      operationId: getRoomInvitation
+      summary: The landing page of an invitation link
+      description: Shows the room without joining it; no use is counted.
+      parameters:
+        - $ref: '#/components/parameters/InviteToken'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The link and its room
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [valid, invalid_reason, invited_by, room, already_member]
+                    properties:
+                      valid: { type: boolean }
+                      invalid_reason: { $ref: '#/components/schemas/InvalidReason' }
+                      invited_by: { type: [string, 'null'] }
+                      room: { $ref: '#/components/schemas/RoomInfo' }
+                      already_member: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/invitations/{token}/accept:
+    post:
+      tags: [rooms]
+      operationId: acceptRoomInvitation
+      summary: Join the room of a valid link
+      description: |
+        A use is counted only for a member not in the room yet. `422`
+        (`invitation`: `revoked`, `expired` or `exhausted`) for a link that
+        no longer works.
+      parameters:
+        - $ref: '#/components/parameters/InviteToken'
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: A member of the room
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [room_slug]
+                    properties:
+                      room_slug: { type: string }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/conversations:
+    parameters:
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [conversations]
+      operationId: listConversations
+      summary: The member's private conversations, and the friends to write to
+      description: |
+        Latest first. Every `/v1/conversations` route answers `503`
+        `messages-unavailable` on a server without `MESSAGES_KEY`
+        (development only).
+      responses:
+        '200':
+          description: Conversations and friends
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [conversations, friends]
+                    properties:
+                      conversations: { type: array, items: { $ref: '#/components/schemas/ConversationLine' } }
+                      friends:
+                        type: array
+                        description: In natural order of pseudo, ignoring case.
+                        items: { $ref: '#/components/schemas/Correspondent' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [conversations]
+      operationId: openConversation
+      summary: The conversation with a friend, started if needed
+      description: '`201` when started, `200` when found. `403` unless friends; `422` (`pseudo`, `self`) with oneself.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pseudo]
+              additionalProperties: false
+              properties:
+                pseudo: { type: string }
+      responses:
+        '200': { $ref: '#/components/responses/ConversationId' }
+        '201': { $ref: '#/components/responses/ConversationId' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /v1/conversations/{id}:
+    get:
+      tags: [conversations]
+      operationId: getConversation
+      summary: A conversation and its latest messages
+      description: '`404` unless the member is in it. Marks read what the other member sent, as Laravel did.'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The conversation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [id, with, is_friend, messages, has_older]
+                    properties:
+                      id: { type: integer }
+                      with: { $ref: '#/components/schemas/Correspondent' }
+                      is_friend: { type: boolean, description: '`false`: readable, closed to new messages.' }
+                      messages: { type: array, items: { $ref: '#/components/schemas/DirectMessage' } }
+                      has_older: { type: boolean }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /v1/conversations/{id}/read:
+    post:
+      tags: [conversations]
+      operationId: markConversationRead
+      summary: Mark read what the other member sent
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Marked. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+  /v1/conversations/{id}/messages:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+      - $ref: '#/components/parameters/SessionToken'
+    get:
+      tags: [conversations]
+      operationId: listDirectMessages
+      summary: The thread, oldest first; poll it with `after`
+      description: Marks read as opening does.
+      parameters:
+        - $ref: '#/components/parameters/ThreadAfter'
+        - $ref: '#/components/parameters/ThreadBefore'
+        - $ref: '#/components/parameters/ThreadLimit'
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, has_more]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/DirectMessage' } }
+                  has_more: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Problem' }
+    post:
+      tags: [conversations]
+      operationId: postDirectMessage
+      summary: Write to a friend
+      description: |
+        60 per minute per member. `404` unless in the conversation, `403`
+        when no longer friends or muted. Sealed at rest with AES-256-GCM.
+      requestBody: { $ref: '#/components/requestBodies/MessageBody' }
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/DirectMessage' }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Problem' }
+
+
+  /v1/admin/stats:
+    get:
+      tags: [admin]
+      operationId: getAdminStats
+      summary: The admin dashboard
+      description: |
+        Laravel's `StatistiquesAdmin::tout()`. `days` is 7, 30 or 90; any
+        other value is 30 (no error, as Laravel). A period ends today
+        (UTC, included) and starts at midnight N-1 days ago; each series
+        also has `previous`, the total of the N days before.
+
+        `audience`, `series.visitors` and `popular_pages` come from Umami
+        (`UMAMI_*`), cached five minutes; without it `audience.available`
+        is false and `series.visitors` null. The old site's `visits` log
+        is not kept: `active_members` counts members with a dated activity
+        (lesson completed, exercise attempt, match, forum question or
+        answer), `accounts.active_7d` is its `wau` and
+        `audience.connected_24h` its `dau`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - name: days
+          in: query
+          schema: { type: integer, enum: [7, 30, 90], default: 30 }
+      responses:
+        '200':
+          description: The dashboard
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AdminStats' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/pending:
+    get:
+      tags: [admin]
+      operationId: getAdminPending
+      summary: The pending badge of the admin header
+      description: |
+        Laravel's `enAttente()`: the three queues where someone waits for an
+        answer (resource requests `en_attente`, reports `nouveau` or
+        `retenu`, suggestions `nouvelle` or `retenue`). Cheap: three counts.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AdminPending' }
+              example:
+                data: { resource_requests: 1, reports: 2, suggestions: 0, total: 3 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/settings/donation-goal:
+    get:
+      tags: [admin]
+      operationId: getAdminDonationGoal
+      summary: This month's donation goal, raw amounts
+      description: Setting `objectif_dons` of `site.reglages`; 0 and 0 until set.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The amounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/DonationGoal' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+    put:
+      tags: [admin]
+      operationId: putAdminDonationGoal
+      summary: Sets the donation goal
+      description: |
+        Both amounts typed in by hand (no payment goes through the site),
+        each a number from 0 to 1 000 000 (`too_small`, `too_large`,
+        `required`). A goal of 0 takes it off the site.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DonationGoal' }
+      responses:
+        '200':
+          description: The amounts stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/DonationGoal' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/game/stats:
+    get:
+      tags: [admin]
+      operationId: getAdminGameStats
+      summary: Game statistics, for a session
+      description: |
+        `GET /v1/game/admin/stats` for an admin's session (Laravel's
+        `admin/jeu/statistiques`). Always 200: when the game hub does not
+        answer, `available` is false, `reason` is `unavailable` and `stats`
+        null. `days` is 7, 30 or 90, else 30.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - name: days
+          in: query
+          schema: { type: integer, enum: [7, 30, 90], default: 30 }
+      responses:
+        '200':
+          description: The statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [days, available, reason, stats]
+                    properties:
+                      days: { type: integer }
+                      available: { type: boolean }
+                      reason: { type: [string, 'null'], enum: [unavailable, null] }
+                      stats:
+                        oneOf:
+                          - { $ref: '#/components/schemas/GameAdminStats' }
+                          - { type: 'null' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/languages/stats:
+    get:
+      tags: [admin]
+      operationId: getAdminLanguageStats
+      summary: Languages statistics, for a session
+      description: |
+        The body of `GET /v1/languages/admin/stats`, under `data`, for an
+        admin's session. `days` is 7, 30 or 90, else 30.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - name: days
+          in: query
+          schema: { type: integer, enum: [7, 30, 90], default: 30 }
+      responses:
+        '200':
+          description: The statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: object }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/news:
+    get:
+      tags: [admin]
+      operationId: listAdminNews
+      summary: Every announcement, drafts included
+      description: Last changed first, 25 a page. `q` searches the title.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - $ref: '#/components/parameters/AdminPage'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminListing'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/AdminNews' } }
+                      counters:
+                        type: object
+                        properties: { all: { type: integer }, published: { type: integer } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+    post:
+      tags: [admin]
+      operationId: createAdminNews
+      summary: Writes an announcement, as a draft
+      description: |
+        `title` 5 to 150 characters, `lead` at most 500, `content_md` 20 to
+        20 000; values are trimmed and an empty one is absent. The slug is
+        made from the first 60 characters of the title, `-2`, `-3`… when
+        taken. Publishing is a separate step.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminNewsBody' }
+      responses:
+        '201':
+          description: The draft
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminNews' } } }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/news/{slug}:
+    put:
+      tags: [admin]
+      operationId: updateAdminNews
+      summary: Rewrites an announcement
+      description: Same fields and rules as the creation. The slug never changes.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminNewsBody' }
+      responses:
+        '200':
+          description: The announcement
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminNews' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+    delete:
+      tags: [admin]
+      operationId: deleteAdminNews
+      summary: Deletes an announcement
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/news/{slug}/publish:
+    post:
+      tags: [admin]
+      operationId: publishAdminNews
+      summary: Publishes an announcement
+      description: '`published_at` becomes now, unless already set (a scheduled one stays scheduled).'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The announcement
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminNews' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/news/{slug}/unpublish:
+    post:
+      tags: [admin]
+      operationId: unpublishAdminNews
+      summary: Back to draft
+      description: '`published_at` becomes null; the text is kept.'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The announcement
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminNews' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/courses:
+    get:
+      tags: [admin]
+      operationId: listAdminCourses
+      summary: Every course, drafts and archives included
+      description: Last changed first, 25 a page, with the themes in use and the difficulties for the form.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: status, in: query, schema: { type: string, enum: [brouillon, publie, archive] } }
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - $ref: '#/components/parameters/AdminPage'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminListing'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/AdminCourse' } }
+                      counters:
+                        type: object
+                        properties:
+                          all: { type: integer }
+                          brouillon: { type: integer }
+                          publie: { type: integer }
+                          archive: { type: integer }
+                      difficulties: { type: array, items: { $ref: '#/components/schemas/Difficulty' } }
+                      themes: { type: array, items: { type: string } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+    post:
+      tags: [admin]
+      operationId: createAdminCourse
+      summary: Creates a course, as a draft
+      description: |
+        `title` 5 to 150 characters, `description` 20 to 500, `theme` at
+        most 100, `difficulty` one of `debutant`, `intermediaire`, `avance`,
+        `duration_minutes` 5 to 600 or absent. Its chapters and lessons are
+        not written here (`import-content`, `content fix`).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                theme: { type: string, example: Mathématiques – Analyse }
+                difficulty: { $ref: '#/components/schemas/Difficulty' }
+                duration_minutes: { type: [integer, 'null'] }
+      responses:
+        '201':
+          description: The draft
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminCourse' } } }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/courses/{slug}:
+    delete:
+      tags: [admin]
+      operationId: deleteAdminCourse
+      summary: Deletes a course nobody follows
+      description: '`409` with `reason: has_enrollments` when members follow it: archive it instead.'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '204': { description: Deleted, with its chapters, lessons and exercises }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /v1/admin/courses/{slug}/publish:
+    post:
+      tags: [admin]
+      operationId: publishAdminCourse
+      summary: Publishes a course
+      description: |
+        `422` with code `no_lessons` (on the body, `parameter: ""`) for a
+        course without lessons. The first publication date is kept.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The course
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminCourse' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/courses/{slug}/unpublish:
+    post:
+      tags: [admin]
+      operationId: unpublishAdminCourse
+      summary: Back to draft (the publication date is kept)
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The course
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminCourse' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/courses/{slug}/archive:
+    post:
+      tags: [admin]
+      operationId: archiveAdminCourse
+      summary: Archives a course (out of the library, progress kept)
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The course
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminCourse' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/exams:
+    get:
+      tags: [admin]
+      operationId: listAdminExams
+      summary: Every exam, newest first, not paginated
+      description: With the subjects and countries of the upload form.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The exams
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, subjects, countries]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/AdminExam' } }
+                  subjects:
+                    type: array
+                    items:
+                      type: object
+                      properties: { value: { $ref: '#/components/schemas/ExamSubject' }, label: { type: string } }
+                  countries: { type: array, items: { type: string, example: FR } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+    post:
+      tags: [admin]
+      operationId: uploadAdminExam
+      summary: Uploads an exam paper (PDF)
+      description: |
+        `multipart/form-data`: `pdf` (required, a PDF by its content, at
+        most 20 MiB: `not_pdf`, `too_large`), `subject`, `country` and an
+        optional `ai_prompt` (at most 5000 characters). The body may be 21
+        MiB (`413` beyond); another `Content-Type` is a `415`.
+
+        The PDF is stored in `contenu.fichiers` (disk `local`, path
+        `examens/<40 letters and digits>.pdf`). The exam waits
+        (`attente_import`), titled after the file name, with the
+        `import_prompt` to send to an AI with the PDF.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [pdf, subject, country]
+              properties:
+                pdf: { type: string, format: binary }
+                subject: { $ref: '#/components/schemas/ExamSubject' }
+                country: { type: string, example: FR }
+                ai_prompt: { type: string, maxLength: 5000 }
+      responses:
+        '201':
+          description: The exam, waiting for the AI's answer
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminExam' } } }
+        '400': { $ref: '#/components/responses/InvalidBody' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '415': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/exams/{slug}:
+    delete:
+      tags: [admin]
+      operationId: deleteAdminExam
+      summary: Deletes an exam, its parts and its statement PDF
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/exams/{slug}/pdf:
+    get:
+      tags: [admin]
+      operationId: getAdminExamPdf
+      summary: The statement PDF of any exam, drafts included
+      description: 'Shown inline under its original name; `Cache-Control: private, no-store`.'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/exams/{slug}/import:
+    post:
+      tags: [admin]
+      operationId: importAdminExam
+      summary: Imports the AI's answer
+      description: |
+        `ai_response`: the JSON the prompt asks for (French keys), at most
+        2 000 000 characters, maybe in a ```` ```json ```` fence:
+
+        ```json
+        {"titre": "≤180", "type": "brevet|bac|blanc", "niveau": "≤50",
+         "session": "≤80|null", "duree_minutes": "1..1440|null",
+         "points_total": "1..1000|null", "description": "≤1000|null",
+         "parties": [{"titre": "≤180", "points": "0..1000|null",
+                      "enonce_md": "…", "corrige_md": "…"}]}
+        ```
+
+        Not JSON: `422` code `invalid_json` on `ai_response`; a field at
+        fault is named `ai_response.parties.0.titre`. On success the parts
+        are replaced (in order), the slug is made again from the title, and
+        the exam is a draft (`brouillon`) to proofread. The body may be 16
+        MiB.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ai_response]
+              properties:
+                ai_response: { type: string }
+      responses:
+        '200':
+          description: The draft
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminExam' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/exams/{slug}/publish:
+    post:
+      tags: [admin]
+      operationId: publishAdminExam
+      summary: Publishes an exam
+      description: '`422` code `no_parts` without parts. Dated now; the AI error is cleared.'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The exam
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminExam' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/exams/{slug}/unpublish:
+    post:
+      tags: [admin]
+      operationId: unpublishAdminExam
+      summary: Back to draft, `published_at` null
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminSlug'
+      responses:
+        '200':
+          description: The exam
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminExam' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/resource-requests:
+    get:
+      tags: [admin]
+      operationId: listAdminResourceRequests
+      summary: The resources members propose
+      description: Newest first, 20 a page.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: status, in: query, schema: { type: string, enum: [en_attente, acceptee, refusee] } }
+        - $ref: '#/components/parameters/AdminPage'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminListing'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/ResourceRequest' } }
+                      counters:
+                        type: object
+                        properties:
+                          all: { type: integer }
+                          en_attente: { type: integer }
+                          acceptee: { type: integer }
+                          refusee: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/resource-requests/{id}/file:
+    get:
+      tags: [admin]
+      operationId: getAdminResourceRequestFile
+      summary: The proposed PDF, to read before deciding
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminId'
+      responses:
+        '200':
+          description: The PDF, inline
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/resource-requests/{id}/accept:
+    post:
+      tags: [admin]
+      operationId: acceptAdminResourceRequest
+      summary: Accepts a request and publishes the resource
+      description: |
+        Optional `title` (≤200), `category` (≤120) and `reason` (≤1000).
+        The resource is published from a copy of the file
+        (`ressources/<uuid>.pdf`), with the request's credit, licence and
+        language, credited internally to the member. `409`
+        `already_handled` unless the request is pending; `404` when its
+        file is not stored.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                category: { type: string }
+                reason: { type: string }
+      responses:
+        '200':
+          description: The request, with `resource_slug`
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ResourceRequest' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/resource-requests/{id}/reject:
+    post:
+      tags: [admin]
+      operationId: rejectAdminResourceRequest
+      summary: Refuses a request, with a reason
+      description: '`reason` required (≤1000). `409` `already_accepted` for an accepted request.'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: The request
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/ResourceRequest' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/members:
+    get:
+      tags: [admin]
+      operationId: listAdminMembers
+      summary: Accounts and their roles
+      description: |
+        By pseudo, 25 a page; `q` searches the pseudo and the address. With
+        the role catalogue by category and whether the reader may give
+        permission roles (a super admin).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: q, in: query, schema: { type: string, maxLength: 60 } }
+        - $ref: '#/components/parameters/AdminPage'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminListing'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/AdminMember' } }
+                      catalog:
+                        type: object
+                        additionalProperties:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              slug: { type: string }
+                              name: { type: string }
+                              color: { type: string }
+                              description: { type: [string, 'null'] }
+                      can_manage_permissions: { type: boolean }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/members/{id}/roles/{role}:
+    parameters:
+      - $ref: '#/components/parameters/SessionToken'
+      - { name: id, in: path, required: true, schema: { type: integer } }
+      - { name: role, in: path, required: true, schema: { type: string, example: physique } }
+    put:
+      tags: [admin]
+      operationId: grantAdminRole
+      summary: Gives a role (nothing changes if it is there)
+      description: '`403` for a permission role unless the reader is a super admin; `404` for an unknown role or account.'
+      responses:
+        '200':
+          description: The account
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminMember' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [admin]
+      operationId: revokeAdminRole
+      summary: Takes a role away
+      description: |
+        Same rules as giving it; `422` code `own_super_admin` for one's own
+        `super-admin` role.
+      responses:
+        '200':
+          description: The account
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/AdminMember' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/reports:
+    get:
+      tags: [admin]
+      operationId: listAdminReports
+      summary: What readers reported
+      description: Newest first, 25 a page.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: status, in: query, schema: { type: string, enum: [nouveau, retenu, corrige, refuse] } }
+        - { name: type, in: query, schema: { type: string, enum: [faute, amelioration, spam, abus, hors_sujet] } }
+        - $ref: '#/components/parameters/AdminPage'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminListing'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Report' } }
+                      counters:
+                        type: object
+                        properties:
+                          all: { type: integer }
+                          nouveau: { type: integer }
+                          retenu: { type: integer }
+                          corrige: { type: integer }
+                          refuse: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/reports/{id}:
+    patch:
+      tags: [admin]
+      operationId: fileAdminReport
+      summary: Files a report
+      description: |
+        `status` required; `reply` (≤1000) kept as it was when absent. Back
+        to `nouveau`, who handled it and when are cleared; otherwise they
+        become the reader and now.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [nouveau, retenu, corrige, refuse] }
+                reply: { type: string }
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Report' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/suggestions:
+    get:
+      tags: [admin]
+      operationId: listAdminSuggestions
+      summary: What members suggested
+      description: Newest first, 20 a page.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: status, in: query, schema: { type: string, enum: [nouvelle, retenue, realisee, ecartee] } }
+        - $ref: '#/components/parameters/AdminPage'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AdminListing'
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: '#/components/schemas/Suggestion' } }
+                      counters:
+                        type: object
+                        properties:
+                          all: { type: integer }
+                          nouvelle: { type: integer }
+                          retenue: { type: integer }
+                          realisee: { type: integer }
+                          ecartee: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/suggestions/{id}:
+    patch:
+      tags: [admin]
+      operationId: fileAdminSuggestion
+      summary: Files a suggestion
+      description: As a report; back to `nouvelle` clears who handled it.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/AdminId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [nouvelle, retenue, realisee, ecartee] }
+                reply: { type: string }
+      responses:
+        '200':
+          description: The suggestion
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/Suggestion' } } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  # --- Members (step B): called by pulsars-web, from its server or its relay.
+
+  /v1/me/progress:
+    get:
+      tags: [progress]
+      operationId: getMyProgress
+      summary: The gauge of every course the member started
+      description: |
+        `{slug: {done, total, percent}}` for each published course with at
+        least one lesson completed (Laravel's `progressionsPour`): the
+        library cards and the sidebar. Any session. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The gauges
+          content:
+            application/json:
+              example:
+                data: { les-bases-du-calcul: { done: 3, total: 4, percent: 75 } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/me/courses/{slug}/progress:
+    get:
+      tags: [progress]
+      operationId: getMyCourseProgress
+      summary: The member's progress on a course
+      description: |
+        What the course and lesson pages show for the member
+        (`Progression::resume`, `lessonDeReprise`): completed lessons (ids of
+        `/v1/courses/{slug}`), percentage (`round`), and the lesson to resume
+        at, the first one not completed, else the first. Any session;
+        published courses only. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The progress
+          content:
+            application/json:
+              example:
+                data:
+                  enrolled: true
+                  completed_lesson_ids: [1, 3]
+                  done: 2
+                  total: 4
+                  percent: 50
+                  completed: false
+                  resume_lesson: { slug: les-fractions, title: Les fractions, lang: fr }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/lessons/{id}/completion:
+    put:
+      tags: [progress]
+      operationId: setLessonCompletion
+      summary: Mark a lesson completed, or to do again
+      description: |
+        Laravel's toggle (`POST cours/{course}/lecon/{slug}/termine`) with
+        the wanted state in the body, so that a retried request does not undo
+        itself. `completed: true`: the progress row (idempotent), the
+        enrollment, its last lesson, its completion at 100 %, and 5 brains the
+        first time the lesson is ever completed (`lecon:{id}`), in one
+        transaction. `rewards.xp` is 10 when the lesson was not completed.
+        `completed: false`: the row goes and the course is no longer
+        completed; brains stay. Verified members (`auth`, `verified`,
+        `onboarding`).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [completed]
+              additionalProperties: false
+              properties:
+                completed: { type: boolean }
+      responses:
+        '200':
+          description: Done
+          content:
+            application/json:
+              example:
+                data: { completed: true, progress: { done: 1, total: 4, percent: 25 }, course_completed: false }
+                rewards: { xp: 10, brains: 5 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/me/exercises/{id}:
+    get:
+      tags: [practice]
+      operationId: getMyExercise
+      summary: The member's attempts at an exercise, and its solution once tried
+      description: |
+        The statement is `GET /v1/exercises/{id}`. `solution_md` is `null`
+        until the member made an attempt (Laravel's rule: it would otherwise
+        be read before answering); in `lang` when translated. The expected
+        answers (`correctes`, `acceptees`) are never sent. Any session.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The member's state
+          content:
+            application/json:
+              example:
+                data:
+                  attempt_count: 1
+                  solved: false
+                  last_attempt: { answer: { options: [a] }, correct: false, at: '2026-11-02T10:00:00Z' }
+                  solution_md: La réponse est **7**.
+                  lang: fr
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/exercises/{id}/attempts:
+    post:
+      tags: [practice]
+      operationId: postAttempt
+      summary: Answer an exercise
+      description: |
+        Graded here, as `CorrecteurExercice`: a QCM is right with exactly the
+        right option ids (any order, duplicates ignored); a short answer when,
+        normalized (case, accents, Cyrillic, spaces, final punctuation; `,` is
+        `.`), it is one of the accepted answers of the exercise or of any of
+        its translations; a free answer is never graded (`correct: null`).
+        Every attempt is kept and enrolls on the course. `rewards.xp` is 8 on
+        the first success only. The solution comes with the result. Verified
+        members.
+
+        Body: `{"options": [...]}` (QCM: at least one, each at most 50
+        characters) or `{"text": "..."}` (short answer: at most 500; free
+        answer: at most 5000), trimmed.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/Lang'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                options: { type: array, minItems: 1, items: { type: string, maxLength: 50 } }
+                text: { type: string, maxLength: 5000 }
+      responses:
+        '201':
+          description: Graded
+          content:
+            application/json:
+              example:
+                data: { correct: true, attempt_count: 1, solution_md: La réponse est `3/4`., lang: fr }
+                rewards: { xp: 8, brains: null }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/exercises/catalog:
+    get:
+      tags: [practice]
+      operationId: getExerciseCatalog
+      summary: The catalogue of exercises, with the member's state
+      description: |
+        Laravel's `/exercices`: published exercises by course, chapter and
+        position, 24 a page (`page`, `total`). `q` searches the title and the
+        statement; `subject` is a slug of `/v1/exercises/facets`; `state`
+        (`todo`: never solved, `new`: never tried, `solved`) only applies to a
+        member and is ignored for a visitor. `solved` is `null` when never
+        tried. Not cached (`no-store`): it changes with the reader; the
+        public, cached list is `GET /v1/exercises`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: subject, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string, enum: [qcm, reponse_courte, reponse_libre] } }
+        - { name: difficulty, in: query, schema: { type: string, enum: [debutant, intermediaire, avance] } }
+        - { name: state, in: query, schema: { type: string, enum: [todo, new, solved] } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              example:
+                data:
+                  - id: 1
+                    title: Appliquer les priorités
+                    lang: fr
+                    type: qcm
+                    auto_corrected: true
+                    course: { slug: les-bases-du-calcul, title: Les bases du calcul, lang: fr }
+                    theme: Mathématiques
+                    difficulty: debutant
+                    xp: 8
+                    solved: true
+                    web_url: https://pulsars.science/cours/les-bases-du-calcul/exercice/1
+                next_cursor: null
+                total: 5
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/exercises/random:
+    get:
+      tags: [practice]
+      operationId: getRandomExercise
+      summary: One exercise drawn among the catalogue's filters
+      description: |
+        Same filters as the catalogue (`/exercices/aleatoire`). The exercise
+        as `GET /v1/exercises/{id}`; 404 when none matches.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200': { description: 'The exercise: `{"data": Exercise}`' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/exercises/facets:
+    get:
+      tags: [practice]
+      operationId: getExerciseFacets
+      summary: The subjects of the catalogue
+      description: The start of the published courses' themes, with exercises only.
+      responses:
+        '200':
+          description: The subjects
+          content:
+            application/json:
+              example:
+                data: { subjects: [{ slug: mathematiques, name: Mathématiques, exercise_count: 5 }] }
+
+  /v1/me/dashboard:
+    get:
+      tags: [dashboard]
+      operationId: getDashboard
+      summary: The member's dashboard
+      description: |
+        `TableauDeBordController`: enrollments in progress and completed
+        (latest first, the course's own title as Laravel showed it, the last
+        lesson completed to resume at), distinct exercises tried and solved,
+        the brains balance and its last 20 movements (lesson titles in
+        `lang`), and the 4 latest published courses not started. Verified
+        members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The dashboard
+          content:
+            application/json:
+              example:
+                data:
+                  in_progress:
+                    - title: Les bases du calcul
+                      slug: les-bases-du-calcul
+                      difficulty: debutant
+                      progress: { done: 1, total: 4, percent: 25 }
+                      resume_lesson: { slug: les-fractions, title: Les fractions }
+                  completed: []
+                  stats: { courses_started: 1, courses_completed: 0, exercises_attempted: 2, exercises_solved: 1 }
+                  brains:
+                    balance: 5
+                    movements:
+                      - { id: 12, date: '2026-11-02T10:00:00Z', reason: lecon, amount: 5, lesson_title: Les fractions, season: null, subject: null, rank: null }
+                  suggestions: [{ title: Le tableau périodique des éléments, slug: chimie-le-tableau-periodique, description: '…', difficulty: intermediaire }]
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+
+  /v1/me/brains:
+    get:
+      tags: [dashboard]
+      operationId: getMyBrains
+      summary: The member's brain movements, newest first
+      description: The movements of the dashboard, paginated by cursor. Any session.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Lang'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': { description: '`{"data": [BrainMovement], "next_cursor"}`' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/leaderboard/xp:
+    get:
+      tags: [dashboard]
+      operationId: getXpLeaderboard
+      summary: Every member by XP
+      description: |
+        `ClassementController`: every account, XP 0 included, most XP first
+        then pseudo; followers, whether the reader follows, roles. Laravel
+        sent the whole list; here pages of `limit` (default 50) by cursor,
+        and `me`, the reader's own line wherever it is. Verified members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: One page
+          content:
+            application/json:
+              example:
+                data:
+                  - { rank: 1, pseudo: ada, avatar_url: null, xp: 102, level: 2, followers: 0, followed: false, me: false, roles: [] }
+                next_cursor: null
+                me: { rank: 4, pseudo: jikuji, avatar_url: null, xp: 0, level: 1, followers: 1, followed: false, me: true, roles: [] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+
+  /v1/leaderboard/top:
+    get:
+      tags: [dashboard]
+      operationId: getXpTop
+      summary: The home page's best members
+      description: '`Experience::meilleurs`: members with some XP only. Public.'
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 10, default: 5 } }
+      responses:
+        '200':
+          description: The best
+          content:
+            application/json:
+              example:
+                data: [{ rank: 1, pseudo: ada, avatar_url: null, xp: 102, level: 2 }]
+
+  /v1/rewards:
+    get:
+      tags: [dashboard]
+      operationId: getRewards
+      summary: What actions earn, in XP and brains
+      responses:
+        '200':
+          description: The scale
+          content:
+            application/json:
+              example:
+                data:
+                  xp: { lesson: 10, exercise: 8, course: 40, question: 4, answer: 4, accepted_answer: 12, game: 3, game_win: 5, game_daily_cap: 30 }
+                  brains: { lesson: 5, game: 2, victory: 3, game_daily_cap: 20 }
+
+  /v1/me/profile:
+    get:
+      tags: [profile]
+      operationId: getProfile
+      summary: The member's profile form
+      description: Verified members. The goals and school levels are Laravel's `Support\Onboarding` keys.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The profile
+          content:
+            application/json:
+              example:
+                data:
+                  pseudo: ada
+                  email: ada@example.org
+                  bio: Mathématiques et café.
+                  avatar_url: null
+                  goals: [curiosite]
+                  school_level: lycee
+                  class: Terminale
+                  locale: fr
+                  member_since: '2026-08-10T09:00:00Z'
+                  roles: [{ slug: mathematiques, name: Mathematiques, category: matiere, color: '#4f7df0' }]
+                  interests: [mathematiques]
+                  has_password: true
+                  brains_public: true
+                  linked_accounts: [{ provider: google, email: ada@gmail.com }]
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+    patch:
+      tags: [profile]
+      operationId: updateProfile
+      summary: Save the profile form
+      description: |
+        As Laravel's form, the body is the whole form: a field left out is
+        cleared (`interests` too: the subject roles become exactly the list),
+        except `brains_public`, kept when absent. `pseudo`: required, 3 to
+        30 letters, digits, `_` or `-`, free (ignoring case); it is also the
+        `name`. `bio` at most 280, `class` at most 60; `goals` and
+        `school_level` known keys. `interests` touch subject roles only,
+        unknown slugs are ignored. Answers the new profile.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                pseudo: { type: string }
+                bio: { type: [string, 'null'], maxLength: 280 }
+                goals: { type: array, items: { type: string, enum: [reviser-examen, rattraper, approfondir, curiosite, enseigner] } }
+                school_level: { type: [string, 'null'], enum: [college, lycee, superieur, adulte, null] }
+                class: { type: [string, 'null'], maxLength: 60 }
+                interests: { type: array, items: { type: string } }
+                brains_public: { type: boolean }
+      responses:
+        '200': { description: The new profile, as `GET`. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { description: Address not verified or welcome steps not done. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/me/onboarding:
+    post:
+      tags: [profile]
+      operationId: postOnboarding
+      summary: Answer the welcome questions
+      description: |
+        `goals` (at least one) and `school_level` are required, `class` (at
+        most 60) and `interests` optional; the subjects are added to the
+        member's, never removed. Sets `onboarding_at`, which `Verified`
+        routes need. Any session, before the address is verified too.
+        Replayable, as Laravel's.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                goals: { type: array, minItems: 1, items: { type: string } }
+                school_level: { type: string, enum: [college, lycee, superieur, adulte] }
+                class: { type: [string, 'null'], maxLength: 60 }
+                interests: { type: array, items: { type: string } }
+      responses:
+        '204': { description: Done. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/me/locale:
+    put:
+      tags: [profile]
+      operationId: putLocale
+      summary: The account's language
+      description: '`LangueController`: for a member, `users.locale`. A visitor''s choice stays in the site''s cookie. Any session.'
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locale]
+              additionalProperties: false
+              properties:
+                locale: { type: string, enum: [fr, en, ru] }
+      responses:
+        '204': { description: Saved. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/me/avatar:
+    put:
+      tags: [profile]
+      operationId: putAvatar
+      summary: Upload an avatar
+      description: |
+        `multipart/form-data`, field `avatar`: a JPEG, PNG, WebP or GIF
+        recognised by its content, at most 4 MiB and 6000 px a side (the
+        rules of a suggestion's image: Laravel had no avatar upload). Stored
+        in `contenu.fichiers` (disk `public`, `avatars/<random>.<ext>`), the
+        previous one deleted. Codes: `required`, `too_large`,
+        `invalid_image`, `too_large_dimensions`. Verified members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [avatar]
+              properties:
+                avatar: { type: string, format: binary }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              example:
+                data: { avatar_url: 'https://pulsars.science/storage/avatars/Xq3….png' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '413': { description: Body over 21 MiB. }
+        '415': { description: Not `multipart/form-data`. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+    delete:
+      tags: [profile]
+      operationId: deleteAvatar
+      summary: Remove the avatar
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '204': { description: Removed. }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/storage/{path}:
+    get:
+      tags: [profile]
+      operationId: getPublicFile
+      summary: A file of the public disk (avatars, suggestion images)
+      description: |
+        The old site's `/storage/{chemin}` (`FichierPublicController`):
+        `PUBLIC_STORAGE_URL` points here through the site's `/storage/`
+        relay. Random names that
+        never change content: `Cache-Control: public, max-age=31536000,
+        immutable`; `Content-Security-Policy: default-src 'none'; sandbox`.
+      parameters:
+        - { name: path, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: The file. }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/roles:
+    get:
+      tags: [profile]
+      operationId: getRoles
+      summary: The roles, by category
+      description: E.g. `?category=matiere`, the subjects the forms offer.
+      parameters:
+        - { name: category, in: query, schema: { type: string, enum: [permission, matiere, distinction] } }
+      responses:
+        '200':
+          description: The roles
+          content:
+            application/json:
+              example:
+                data: [{ slug: physique, name: Physique, category: matiere, color: '#6a5acd' }]
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /v1/captcha:
+    get:
+      tags: [feedback]
+      operationId: getCaptcha
+      summary: A captcha question for a visitor's report
+      description: |
+        `CaptchaArithmetique`: the sum of two digits from 1 to 9; `a` and
+        `b` for a question in another language. The answer stays on the
+        server, under the token, 10 minutes. 30 a minute per address.
+      responses:
+        '200':
+          description: The question
+          content:
+            application/json:
+              example:
+                data: { token: 3q2v…, question: Combien font 3 + 4 ?, a: 3, b: 4 }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { description: Redis is down. }
+
+  /v1/reports:
+    post:
+      tags: [feedback]
+      operationId: postReport
+      summary: Report a mistake, or suggest an improvement, on a content
+      description: |
+        `SignalementController`, open to visitors. `target_type`: `course`,
+        `lesson`, `exercise` or `exam`, `target_id` its id; `type` one of
+        `faute`, `amelioration`, `spam`, `abus`, `hors_sujet`; `message` 10 to
+        2000 characters, `location` at most 300. A visitor sends
+        `captcha_token` and `captcha_answer`: wrong (`incorrect`, the token
+        stays usable) or already used (`used`). A content that does not exist
+        is a 422 on `message` (`target_missing`). The same message on the
+        same content (by the same member) again is a success with no new
+        report. At most 30 an hour per member, 5 per visitor (`too_many` on
+        `message`), and 20 a minute (429).
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [target_type, target_id, type, message]
+              properties:
+                target_type: { type: string, enum: [course, lesson, exercise, exam] }
+                target_id: { type: integer }
+                type: { type: string, enum: [faute, amelioration, spam, abus, hors_sujet] }
+                message: { type: string, minLength: 10, maxLength: 2000 }
+                location: { type: [string, 'null'], maxLength: 300 }
+                captcha_token: { type: string }
+                captcha_answer: { type: string }
+      responses:
+        '204': { description: Received. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/suggestions:
+    post:
+      tags: [feedback]
+      operationId: postSuggestion
+      summary: Send an idea to the team
+      description: |
+        `multipart/form-data`: `title` (at most 150), `message` (10 to 4000),
+        an optional `image` (JPEG, PNG, WebP or GIF by content, at most
+        4 MiB and 6000 px a side), stored on the public disk
+        (`suggestions/<random>.<ext>`). At most 10 an hour (`too_many` on
+        `message`) and 20 a minute (429). Verified members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                title: { type: string, maxLength: 150 }
+                message: { type: string, minLength: 10, maxLength: 4000 }
+                image: { type: string, format: binary }
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              example: { data: { id: 7 } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '413': { description: Body over 21 MiB. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/resource-requests:
+    post:
+      tags: [feedback]
+      operationId: postResourceRequest
+      summary: Propose a resource to publish
+      description: |
+        `DemandeRessourceController`, `multipart/form-data`: `title` and
+        `author_name` (at most 200), `license` (a key of `/v1/licenses`;
+        `autre` needs `license_custom`, at most 200, ignored otherwise),
+        `description` (4000), `category` (120), `lang` (`fr`, `en`, `ru`),
+        and `file`: a PDF (by content) of at most 20 MiB, stored on the
+        private disk (`demandes-ressources/<random>.pdf`) with its original
+        name and size. Pending (`en_attente`) until an admin decides. At most
+        8 an hour (`too_many` on `file`) and 20 a minute (429). Verified
+        members.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [title, author_name, license, file]
+              properties:
+                title: { type: string }
+                author_name: { type: string }
+                license: { type: string }
+                license_custom: { type: string }
+                description: { type: string }
+                category: { type: string }
+                lang: { type: string, enum: [fr, en, ru] }
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Proposed
+          content:
+            application/json:
+              example: { data: { id: 3, status: en_attente } }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '413': { description: Body over 21 MiB. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+
+  /v1/licenses:
+    get:
+      tags: [feedback]
+      operationId: getLicenses
+      summary: The licences a resource may have
+      responses:
+        '200':
+          description: The licences, `autre` last
+          content:
+            application/json:
+              example:
+                data: [{ key: cc-by-4.0, name: CC BY 4.0, url: 'https://creativecommons.org/licenses/by/4.0/', free: false }, { key: autre, name: Autre (à préciser), url: null, free: true }]
+
+  /v1/settings/donation-goal:
+    get:
+      tags: [feedback]
+      operationId: getDonationGoal
+      summary: The donations goal of the site's header
+      description: |
+        `ObjectifDons`, read side: `null` until a goal above 0 is set
+        (`site.reglages`, `objectif_dons`). `percent` is
+        `floor(raised / goal × 100)`, at most 100; amounts are numbers, for
+        the site to format.
+      responses:
+        '200':
+          description: The goal
+          content:
+            application/json:
+              example:
+                data: { percent: 24, raised: 120.5, goal: 500.0, currency: EUR }
+
+  /v1/exams/{slug}/corrections:
+    get:
+      tags: [exams]
+      operationId: getExamCorrections
+      summary: What the exam page adds to the statement
+      description: |
+        `ExamenController::show`: the model answer of each part (in `lang`
+        when translated), whether a correction PDF is stored, and the
+        counters. Laravel showed corrections to everyone for a published
+        exam: so does this route, for published exams only. The page calls
+        it on every display: it counts the view, not again for the same
+        member or visitor fingerprint within 20 seconds (`CompteurVues`).
+        `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The corrections
+          content:
+            application/json:
+              example:
+                data:
+                  parts: [{ part_id: 46, position: 1, lang: fr, correction_md: '…' }]
+                  has_correction_pdf: true
+                  views: 120
+                  downloads: 45
+                  downloaders: 31
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/exams/{slug}/correction-pdf:
+    get:
+      tags: [exams]
+      operationId: getExamCorrectionPdf
+      summary: The correction PDF of a published exam
+      description: |
+        As `/v1/exams/{slug}/pdf` (ranges, ETag), named `{slug}-corrige.pdf`.
+        With `disposition=attachment` it is a download of the exam: counted
+        (robots excepted, by `User-Agent`), `Cache-Control: private,
+        no-store`.
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - $ref: '#/components/parameters/Disposition'
+      responses:
+        '200': { $ref: '#/components/responses/File' }
+        '206': { $ref: '#/components/responses/FilePart' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
 components:
   securitySchemes:
@@ -1541,10 +4819,44 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        EdDSA (Ed25519) JWT issued by `POST https://pulsars.science/jeu/jeton`.
-        See `auth-jwt.md`.
+        EdDSA (Ed25519) JWT signed by the API and issued by
+        `POST /v1/auth/token` (`iss` `https://api.pulsars.science`, `aud`
+        `api.pulsars.science`, 5 minutes). Verified with the API's own key
+        only; its public half is at `/.well-known/jwks.json`. See
+        `auth-jwt.md`.
 
   parameters:
+    AdminPage:
+      name: page
+      in: query
+      description: Page number, from 1. Past the last page, `data` is empty.
+      schema: { type: integer, minimum: 1, maximum: 1000, default: 1 }
+    AdminSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string }
+    AdminId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    OptionalSessionToken:
+      name: Pulsars-Session
+      in: header
+      description: A session token, to read as that member (votes, moderation view).
+      schema: { type: string, minLength: 43, maxLength: 43 }
+    ForumQuestionKey:
+      name: question
+      in: path
+      required: true
+      description: The question's id or slug (a slug always holds a `-` and letters).
+      schema: { type: string, example: comment-factoriser-un-trinome-x7k2qa }
+    ForumMessageId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
     SessionToken:
       name: Pulsars-Session
       in: header
@@ -1599,6 +4911,42 @@ components:
       in: path
       required: true
       schema: { type: string, example: les-bases-du-calcul }
+    OptionalSession:
+      name: Pulsars-Session
+      in: header
+      required: false
+      description: A session token, when the reader is signed in.
+      schema: { type: string, minLength: 43, maxLength: 43 }
+    Pseudo:
+      name: pseudo
+      in: path
+      required: true
+      description: A member's pseudo, exactly.
+      schema: { type: string }
+    RoomSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string }
+    InviteToken:
+      name: token
+      in: path
+      required: true
+      schema: { type: string, maxLength: 40 }
+    ThreadAfter:
+      name: after
+      in: query
+      description: Only messages after this id, oldest first (polling).
+      schema: { type: integer, minimum: 0 }
+    ThreadBefore:
+      name: before
+      in: query
+      description: The latest messages before this id. Not with `after`.
+      schema: { type: integer, minimum: 0 }
+    ThreadLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
 
   headers:
     ETag:
@@ -1616,7 +4964,75 @@ components:
     RetryAfter:
       schema: { type: integer, example: 12 }
 
+  requestBodies:
+    MessageBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [body]
+            properties:
+              body: { type: string, minLength: 1, maxLength: 2000, description: 'Plain text, trimmed.' }
+    ForumTranslate:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            properties:
+              lang: { type: string, enum: [en, fr, ru] }
+    ForumHide:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            properties:
+              reason: { type: [string, 'null'], maxLength: 300 }
+
   responses:
+    AdminOnly:
+      description: The member is not an admin, has not verified their address or finished the welcome steps, or (roles) is not a super admin
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ForumTranslation:
+      description: The translation
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data: { $ref: '#/components/schemas/ForumTranslation' }
+    ForumHidden:
+      description: The state afterwards
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [hidden]
+                properties:
+                  hidden: { type: boolean }
+    TranslationUnavailable:
+      description: '`not_configured` (no DeepL key) or `upstream_failed` (DeepL did not answer properly)'
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.pulsars.science/problems/unavailable
+            title: Service unavailable
+            status: 503
+            detail: The translation service is not configured.
+            reason: not_configured
     Opened:
       description: A new session and its account
       headers:
@@ -1803,6 +5219,65 @@ components:
             title: Too many requests
             status: 429
             detail: Limit of 60 requests per minute reached.
+    FollowResult:
+      description: Where the member stands with the other one now
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [following, friendship]
+                properties:
+                  following: { type: boolean }
+                  friendship: { $ref: '#/components/schemas/FriendshipState' }
+    FriendshipStateResponse:
+      description: The friendship
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data: { $ref: '#/components/schemas/FriendshipState' }
+    FriendQr:
+      description: The token and the link the QR code encodes
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [token, url]
+                properties:
+                  token: { type: string, pattern: '^[a-z0-9]{24}$' }
+                  url: { type: string, format: uri, example: 'https://pulsars.science/ami/3f9k2m0q7x1b8n4c6v5z2l0p' }
+    RoomOpened:
+      description: A room, as its page shows it
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data: { $ref: '#/components/schemas/RoomDetail' }
+    ConversationId:
+      description: The conversation
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [data]
+            properties:
+              data:
+                type: object
+                required: [id]
+                properties:
+                  id: { type: integer }
 
   examples:
     CoursesPage:
@@ -2046,14 +5521,14 @@ components:
                 description: |
                   Stable code of a field error (`/v1/auth/*`), for clients that
                   translate the message.
-                enum: [required, too_short, too_long, invalid_format, invalid_email, taken, mismatch, incorrect, invalid, email_missing]
+                enum: [required, too_short, too_long, invalid_format, invalid_email, taken, mismatch, incorrect, invalid, email_missing, too_small, too_large, not_pdf, invalid_json, no_lessons, no_parts, own_super_admin]
         reason:
           type: string
           description: |
             For 401, why the token was refused; for 403, `insufficient_scope`
             (`auth-jwt.md`); for 409 `conflict`, what conflicts
             (`auth-sessions.md`).
-          enum: [missing, malformed, expired, not_yet_valid, bad_signature, unknown_kid, bad_issuer, bad_audience, bad_algorithm, insufficient_scope, taken, email_unverified, last_login_method]
+          enum: [missing, malformed, expired, not_yet_valid, bad_signature, unknown_kid, bad_issuer, bad_audience, bad_algorithm, insufficient_scope, taken, email_unverified, last_login_method, has_enrollments, already_handled, already_accepted]
         trace_id: { type: string }
       additionalProperties: false
 
@@ -2130,7 +5605,7 @@ components:
         description: { type: string, description: Translatable. }
         theme:
           type: string
-          description: Raw Laravel `theme`, kept so clients can display what the site displays.
+          description: Raw `theme` of the course, kept so clients can display what the site displays.
         subject: { $ref: '#/components/schemas/SubjectRef' }
         topic:
           oneOf:
@@ -2171,7 +5646,7 @@ components:
                 type: object
                 required: [position, title, lang, lessons, exercises]
                 properties:
-                  position: { type: integer, description: 'Laravel `ordre`, starting at 1.' }
+                  position: { type: integer, description: 'The stored `ordre`, starting at 1.' }
                   title: { type: string }
                   lang: { $ref: '#/components/schemas/LangCode' }
                   lessons:
@@ -2257,7 +5732,7 @@ components:
           description: |
             QCM choices, in stored order; null for other types. Option texts
             are **never translated** (they live in the `donnees` JSON, which
-            Laravel does not translate).
+            translations do not cover).
           oneOf:
             - type: array
               items:
@@ -2300,7 +5775,7 @@ components:
         lang:
           type: string
           const: fr
-          description: Exam titles are not translatable in Laravel; always `fr`.
+          description: Exam titles are not translatable; always `fr`.
         title: { type: string }
         type: { $ref: '#/components/schemas/ExamType' }
         competition:
@@ -2320,15 +5795,14 @@ components:
         pdf_url:
           type: [string, 'null']
           format: uri
-          description: The statement PDF served by Laravel, when Pulsars hosts it.
+          description: The site's download of the statement PDF, when Pulsars hosts it.
         official_url:
           type: [string, 'null']
           format: uri
           description: |
             The statement on the organiser's site, for exams Pulsars does not
-            host. Laravel only shows URLs that pass `App\Support\SujetOfficiel`
-            (domain and path allow-list); the API must apply the same filter
-            and return null otherwise.
+            host. Only URLs that pass the old site's `SujetOfficiel`
+            allow-list (domain and path) are returned; null otherwise.
         source_url:
           type: [string, 'null']
           format: uri
@@ -2442,6 +5916,11 @@ components:
       required: [id, pseudo, avatar_url, bio, member_since, roles, xp, brains, profile_url]
       properties:
         id: { type: string, description: Same value as the JWT `sub`. }
+        email: { type: string, description: With a session only. }
+        email_verified: { type: boolean, description: With a session only. }
+        onboarded: { type: boolean, description: With a session only. }
+        locale: { type: [string, 'null'], description: With a session only. }
+        forum_muted_until: { type: [string, 'null'], format: date-time, description: With a session only. }
         pseudo: { type: string }
         avatar_url: { type: [string, 'null'], format: uri }
         bio: { type: [string, 'null'], maxLength: 280 }
@@ -2453,8 +5932,8 @@ components:
         xp:
           type: object
           description: |
-            Computed exactly like `App\Services\Experience::pour()`. See
-            `webhooks.md` for the scale.
+            Computed exactly like `App\Services\Experience::pour()` (the view
+            `site.member_xp`): level `n` starts at `50 × (n − 1) × n` XP.
           required: [total, level, level_start, next_level_at]
           properties:
             total: { type: integer }
@@ -2466,7 +5945,7 @@ components:
           minimum: 0
           description: |
             Brains balance, the sum of the member's ledger (`brains.md` §4,
-            `api_read.member_brains`). Shown to its owner even when
+            `site.member_brains`). Shown to its owner even when
             `cerveaux_publics` is false.
         profile_url: { type: string, format: uri }
 
@@ -2534,7 +6013,7 @@ components:
     GameAdminStats:
       type: object
       description: See `game-protocol.md` §9.1. All times UTC.
-      required: [generated_at, live, today, daily, subjects, rules, quality, ratings, webhook, seasons]
+      required: [generated_at, live, today, daily, subjects, rules, quality, ratings, seasons]
       properties:
         generated_at: { type: string, format: date-time }
         live:
@@ -2614,13 +6093,6 @@ components:
                 properties:
                   subject: { $ref: '#/components/schemas/GameSubject' }
                   players: { type: integer, minimum: 0 }
-        webhook:
-          type: object
-          description: Results webhook outbox, now.
-          required: [pending, dead]
-          properties:
-            pending: { type: integer, minimum: 0 }
-            dead: { type: integer, minimum: 0 }
         seasons:
           type: array
           description: The last 12 closed season rows, newest month first.
@@ -2648,3 +6120,617 @@ components:
         forfeit: { type: integer, minimum: 0 }
         accounts: { type: integer, minimum: 0, description: Distinct accounts with a seat. }
         guests: { type: integer, minimum: 0, description: Guest seats. }
+    Language:
+      type: object
+      required: [code, name, lang, native_name, script, reading_system, countries, level_count, word_count]
+      properties:
+        code: { type: string, description: 'BCP 47 tag of the language taught.', example: zh }
+        name: { type: string, description: In the requested interface language. }
+        lang: { $ref: '#/components/schemas/LangCode' }
+        native_name: { type: string, example: 中文 }
+        script: { type: string, description: ISO 15924 script of the written forms., example: Hans }
+        reading_system: { type: [string, 'null'], description: How `Word.reading` is written., example: pinyin }
+        countries:
+          type: array
+          description: ISO 3166-1 alpha-2 codes of the countries where the language is spoken, in display order.
+          items: { type: string, pattern: '^[A-Z]{2}$' }
+          example: [CN, TW, SG]
+        level_count: { type: integer, minimum: 0 }
+        word_count: { type: integer, minimum: 0 }
+    LanguageLevel:
+      type: object
+      required: [slug, framework, position, title, description, lang, word_count]
+      properties:
+        slug: { type: string, example: hsk-1 }
+        framework: { type: string, description: The scale of the level., example: HSK }
+        position: { type: integer, minimum: 1 }
+        title: { type: string }
+        description: { type: string }
+        lang:
+          allOf: [{ $ref: '#/components/schemas/LangCode' }]
+          description: '`en` only when both the title and the description are translated.'
+        word_count: { type: integer, minimum: 0 }
+    LanguageLevelRef:
+      type: [object, 'null']
+      required: [slug, title]
+      properties:
+        slug: { type: string }
+        title: { type: string }
+    Word:
+      type: object
+      required: [id, text, reading, meaning, lang]
+      properties:
+        id: { type: integer }
+        text: { type: string, description: The written form., example: 你 }
+        reading: { type: [string, 'null'], description: In the language's reading system., example: nǐ }
+        meaning: { type: string, description: In the requested interface language. }
+        lang: { $ref: '#/components/schemas/LangCode' }
+    ForumTheme:
+      type: object
+      required: [slug, name, description, color, question_count]
+      properties:
+        slug: { type: string, example: mathematiques }
+        name: { type: string, example: Mathematiques }
+        description: { type: [string, 'null'] }
+        color: { type: string, example: '#4f7df0' }
+        question_count: { type: integer, minimum: 0 }
+    ForumThemeRef:
+      type: object
+      required: [slug, name, color]
+      properties:
+        slug: { type: string }
+        name: { type: string }
+        color: { type: string }
+    ForumQuestionSummary:
+      type: object
+      required: [id, slug, title, excerpt, theme, author, author_id, votes, answer_count, views, solved, has_voted, is_hidden, is_locked, is_pinned, created_at, updated_at]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        title: { type: string }
+        excerpt:
+          type: [string, 'null']
+          description: The body without HTML tags, cut at 160 characters with `...`; null when hidden, except for moderators.
+        theme: { $ref: '#/components/schemas/ForumThemeRef' }
+        author: { type: [string, 'null'], description: The author's pseudo; null once the account is deleted. }
+        author_id: { type: [string, 'null'], example: '42' }
+        votes: { type: integer, minimum: 0 }
+        answer_count: { type: integer, minimum: 0 }
+        views: { type: integer, minimum: 0 }
+        solved: { type: boolean, description: An answer is accepted. }
+        has_voted: { type: boolean, description: The reader voted for it. }
+        is_hidden: { type: boolean }
+        is_locked: { type: boolean }
+        is_pinned: { type: boolean }
+        created_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: [string, 'null'], format: date-time }
+    ForumQuestion:
+      type: object
+      required: [id, slug, title, body_md, theme, author, author_id, votes, views, has_voted, accepted_answer_id, is_hidden, hidden_reason, is_locked, is_pinned, created_at, updated_at, answer_count, answers, viewer]
+      properties:
+        id: { type: integer }
+        slug: { type: string }
+        title: { type: string }
+        body_md: { type: [string, 'null'], description: Null when hidden, except for moderators. }
+        theme: { $ref: '#/components/schemas/ForumThemeRef' }
+        author: { type: [string, 'null'] }
+        author_id: { type: [string, 'null'] }
+        votes: { type: integer, minimum: 0 }
+        views: { type: integer, minimum: 0 }
+        has_voted: { type: boolean }
+        accepted_answer_id: { type: [integer, 'null'] }
+        is_hidden: { type: boolean }
+        hidden_reason: { type: [string, 'null'], description: The moderator's reason, shown to everyone. }
+        is_locked: { type: boolean }
+        is_pinned: { type: boolean }
+        created_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: [string, 'null'], format: date-time }
+        answer_count: { type: integer, minimum: 0, description: Every answer, replies included. }
+        answers:
+          type: array
+          description: Answers to the question, oldest first, each with its replies.
+          items: { $ref: '#/components/schemas/ForumAnswer' }
+        viewer:
+          type: object
+          required: [is_author, can_participate, is_moderator]
+          properties:
+            is_author: { type: boolean }
+            can_participate: { type: boolean, description: A member who is not muted, on a thread that is not locked. }
+            is_moderator: { type: boolean }
+    ForumAnswer:
+      type: object
+      required: [id, body_md, author, author_id, votes, has_voted, is_hidden, hidden_reason, created_at, children]
+      properties:
+        id: { type: integer }
+        body_md: { type: [string, 'null'], description: Null when hidden, except for moderators. }
+        author: { type: [string, 'null'] }
+        author_id: { type: [string, 'null'] }
+        votes: { type: integer, minimum: 0 }
+        has_voted: { type: boolean }
+        is_hidden: { type: boolean }
+        hidden_reason: { type: [string, 'null'] }
+        created_at: { type: [string, 'null'], format: date-time }
+        children:
+          type: array
+          description: Replies, oldest first.
+          items: { $ref: '#/components/schemas/ForumAnswer' }
+    ForumTranslation:
+      type: object
+      required: [title, body_md, source_lang, target_lang, cached]
+      properties:
+        title: { type: [string, 'null'], description: Null for an answer. }
+        body_md: { type: string }
+        source_lang: { type: [string, 'null'], description: What DeepL detected, lower case., example: en }
+        target_lang: { type: string, enum: [en, fr, ru] }
+        cached: { type: boolean, description: Served from the stored translation of the same text. }
+    MemberRole:
+      allOf:
+        - $ref: '#/components/schemas/Role'
+        - type: object
+          required: [level]
+          properties:
+            level: { type: integer, description: 'Permission level (`niveau`); 0 for a subject or a distinction.' }
+    MemberSummary:
+      type: object
+      required: [id, pseudo, avatar_url, bio, roles]
+      properties:
+        id: { type: string, example: '42' }
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+        bio: { type: [string, 'null'], maxLength: 280 }
+        roles:
+          type: array
+          description: Highest permission first.
+          items: { $ref: '#/components/schemas/MemberRole' }
+    MemberRef:
+      type: object
+      required: [id, pseudo, avatar_url]
+      properties:
+        id: { type: string }
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+    XpDetail:
+      type: object
+      description: '`Experience::pour`. Level n starts at 50 × (n − 1) × n XP.'
+      required: [total, level, level_start, next_level_at, in_level, for_level, breakdown]
+      properties:
+        total: { type: integer }
+        level: { type: integer, minimum: 1 }
+        level_start: { type: integer }
+        next_level_at: { type: integer }
+        in_level: { type: integer, description: XP inside the current level. }
+        for_level: { type: integer, description: XP the current level spans. }
+        breakdown:
+          type: array
+          items:
+            type: object
+            required: [key, count, unit_points, xp]
+            properties:
+              key: { type: string, enum: [lesson, exercise, course, question, answer, accepted_answer, games] }
+              count: { type: integer }
+              unit_points: { type: integer }
+              xp: { type: integer, description: 'For `games`, capped at 30 a day (UTC), wins counting 5 more.' }
+    FriendshipState:
+      type: object
+      required: [state, id]
+      properties:
+        state: { type: string, enum: [visitor, self, none, friends, sent, received] }
+        id: { type: [integer, 'null'], description: The friendship, to accept or remove it. }
+    MemberProfile:
+      allOf:
+        - $ref: '#/components/schemas/MemberSummary'
+        - type: object
+          required: [school_level, class, member_since, question_count, answer_count, profile_url, xp, brains, friendship, following]
+          properties:
+            school_level: { type: [string, 'null'] }
+            class: { type: [string, 'null'] }
+            member_since: { type: [string, 'null'], format: date-time }
+            question_count: { type: integer, description: Forum questions, deleted ones aside. }
+            answer_count: { type: integer }
+            profile_url: { type: string, format: uri }
+            xp: { $ref: '#/components/schemas/XpDetail' }
+            brains:
+              type: [object, 'null']
+              required: [balance, private]
+              properties:
+                balance: { type: integer }
+                private: { type: boolean, description: Hidden from others; only its owner gets it. }
+            friendship: { $ref: '#/components/schemas/FriendshipState' }
+            following:
+              type: [object, 'null']
+              description: '`null` for a visitor or on one''s own profile.'
+              required: [following]
+              properties:
+                following: { type: boolean }
+    FriendLine:
+      type: object
+      required: [friendship_id, member, since]
+      properties:
+        friendship_id: { type: integer }
+        member:
+          type: object
+          required: [id, pseudo, avatar_url, bio]
+          properties:
+            id: { type: string }
+            pseudo: { type: string }
+            avatar_url: { type: [string, 'null'], format: uri }
+            bio: { type: [string, 'null'] }
+        since: { type: [string, 'null'], format: date-time }
+    RoomType:
+      type: string
+      enum: [public, prive]
+      description: As Laravel stores it. `prive` rooms are entered by invitation only.
+    RoomInfo:
+      type: object
+      required: [name, slug, description, type, is_private, member_count]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        description: { type: [string, 'null'] }
+        type: { $ref: '#/components/schemas/RoomType' }
+        is_private: { type: boolean }
+        member_count: { type: integer }
+    RoomListed:
+      allOf:
+        - $ref: '#/components/schemas/RoomInfo'
+        - type: object
+          required: [message_count, joined]
+          properties:
+            message_count: { type: integer }
+            joined: { type: boolean }
+    RoomDetail:
+      allOf:
+        - $ref: '#/components/schemas/RoomInfo'
+        - type: object
+          required: [viewer, messages, has_older]
+          properties:
+            viewer:
+              type: object
+              required: [joined, can_write, can_manage]
+              properties:
+                joined: { type: boolean }
+                can_write: { type: boolean, description: 'A member, or anyone in a public room (writing joins it).' }
+                can_manage: { type: boolean, description: The owner or a site moderator. }
+            messages:
+              type: array
+              description: The 100 latest, oldest first.
+              items: { $ref: '#/components/schemas/RoomMessage' }
+            has_older: { type: boolean }
+    RoomMessage:
+      type: object
+      required: [id, body, author, author_id, sent_at]
+      properties:
+        id: { type: integer }
+        body: { type: string, description: Plain text. }
+        author: { type: [string, 'null'], description: 'Pseudo; `null` once the account is deleted.' }
+        author_id: { type: [string, 'null'] }
+        sent_at: { type: [string, 'null'], format: date-time }
+    InvalidReason:
+      type: [string, 'null']
+      enum: [revoked, expired, exhausted, null]
+    RoomInvitation:
+      type: object
+      required: [token, url, creator, uses, max_uses, expires_at, valid, invalid_reason]
+      properties:
+        token: { type: string }
+        url: { type: string, format: uri, description: 'https://pulsars.science/salons/invite/{token}' }
+        creator: { type: [string, 'null'] }
+        uses: { type: integer }
+        max_uses: { type: [integer, 'null'] }
+        expires_at: { type: [string, 'null'], format: date-time }
+        valid: { type: boolean }
+        invalid_reason: { $ref: '#/components/schemas/InvalidReason' }
+    Correspondent:
+      type: object
+      required: [pseudo, avatar_url]
+      properties:
+        pseudo: { type: string }
+        avatar_url: { type: [string, 'null'], format: uri }
+    ConversationLine:
+      type: object
+      required: [id, with, last_message, last_message_from_me, last_message_at, unread_count]
+      properties:
+        id: { type: integer }
+        with: { $ref: '#/components/schemas/Correspondent' }
+        last_message: { type: [string, 'null'], description: In clear. }
+        last_message_from_me: { type: boolean }
+        last_message_at: { type: [string, 'null'], format: date-time }
+        unread_count: { type: integer }
+    DirectMessage:
+      allOf:
+        - $ref: '#/components/schemas/RoomMessage'
+        - type: object
+          required: [read]
+          properties:
+            read: { type: boolean, description: The recipient opened it. }
+
+    Series:
+      type: object
+      required: [values, total, previous]
+      properties:
+        values: { type: array, items: { type: integer }, description: One per day of the period, oldest first. }
+        total: { type: integer }
+        previous: { type: integer, description: The total of the N days before. }
+    Windows:
+      type: object
+      properties:
+        24h: { type: integer }
+        7d: { type: integer }
+        28d: { type: integer }
+        total: { type: integer }
+    AdminPending:
+      type: object
+      required: [resource_requests, reports, suggestions, total]
+      properties:
+        resource_requests: { type: integer }
+        reports: { type: integer }
+        suggestions: { type: integer }
+        total: { type: integer }
+    DonationGoal:
+      type: object
+      required: [goal, raised]
+      properties:
+        goal: { type: number, minimum: 0, maximum: 1000000, description: 0 takes the goal off the site. }
+        raised: { type: number, minimum: 0, maximum: 1000000 }
+    AdminStats:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            days: { type: integer, enum: [7, 30, 90] }
+            choices: { type: array, items: { type: integer } }
+            dates: { type: array, items: { type: string, format: date } }
+        audience:
+          type: object
+          properties:
+            available: { type: boolean }
+            configured: { type: boolean }
+            visitors: { oneOf: [{ $ref: '#/components/schemas/Windows' }, { type: 'null' }] }
+            page_views: { oneOf: [{ $ref: '#/components/schemas/Windows' }, { type: 'null' }] }
+            measured_since: { type: [string, 'null'], format: date-time }
+            connected_24h: { type: integer }
+        accounts:
+          type: object
+          properties:
+            signups: { $ref: '#/components/schemas/Windows' }
+            verified: { type: integer }
+            onboarded: { type: integer }
+            with_role: { type: integer }
+            active_7d: { type: integer }
+        content:
+          type: object
+          properties:
+            courses:
+              type: object
+              properties: { total: { type: integer }, published: { type: integer }, drafts: { type: integer }, archived: { type: integer } }
+            lessons: { type: integer }
+            exercises: { type: integer }
+            exams:
+              type: object
+              properties: { total: { type: integer }, published: { type: integer }, drafts: { type: integer }, pending_import: { type: integer } }
+            exercise_attempts: { type: integer }
+        community:
+          type: object
+          properties:
+            questions: { type: integer }
+            answers: { type: integer }
+            unanswered_questions: { type: integer }
+            rooms: { type: integer }
+            room_messages: { type: integer }
+            questions_7d: { type: integer }
+        series:
+          type: object
+          description: |
+            `signups, visitors (null without Umami), lessons, attempts,
+            attempts_solved, attempts_graded, course_enrollments,
+            courses_completed, questions, answers, room_messages, brains,
+            games`.
+          additionalProperties:
+            oneOf: [{ $ref: '#/components/schemas/Series' }, { type: 'null' }]
+        active_members:
+          allOf:
+            - $ref: '#/components/schemas/Series'
+            - type: object
+              properties:
+                dau: { type: integer }
+                wau: { type: integer }
+                mau: { type: integer }
+                stickiness: { type: [number, 'null'] }
+        funnel:
+          type: array
+          items:
+            type: object
+            properties:
+              step: { type: string, enum: [signed_up, verified, onboarded, first_lesson, first_exercise] }
+              n: { type: integer }
+        top_courses:
+          type: array
+          items:
+            type: object
+            properties: { title: { type: string }, slug: { type: string }, completed: { type: integer }, enrolled: { type: integer } }
+        brains:
+          type: object
+          properties:
+            by_reason:
+              type: object
+              description: By reason, the most rewarding first.
+              additionalProperties: { $ref: '#/components/schemas/Series' }
+            in_circulation: { type: integer }
+            holders: { type: integer }
+        top_brains:
+          type: array
+          items: { type: object, properties: { pseudo: { type: string }, balance: { type: integer } } }
+        games:
+          type: object
+          properties:
+            by_mode:
+              type: object
+              description: '`duel`, `room`, `ghost`, and `autre` only when there were others.'
+              additionalProperties: { $ref: '#/components/schemas/Series' }
+            ranked: { type: integer }
+            outcomes:
+              type: object
+              properties: { win: { type: integer }, loss: { type: integer }, draw: { type: integer }, forfeit: { type: integer } }
+            players: { type: integer }
+        popular_pages:
+          type: array
+          items: { type: object, properties: { path: { type: string }, views: { type: integer } } }
+        latest_signups:
+          type: array
+          items:
+            type: object
+            properties: { pseudo: { type: string }, verified: { type: boolean }, date: { type: [string, 'null'], format: date-time } }
+        to_process:
+          type: object
+          properties:
+            reports: { type: integer }
+            suggestions: { type: integer }
+            resource_requests: { type: integer }
+            draft_courses: { type: integer }
+            pending_exams: { type: integer }
+            draft_exams: { type: integer }
+            unanswered_questions: { type: integer }
+            unverified_accounts: { type: integer }
+        pending: { $ref: '#/components/schemas/AdminPending' }
+        donation_goal: { $ref: '#/components/schemas/DonationGoal' }
+    AdminListing:
+      type: object
+      required: [data, page, per_page, total, counters]
+      properties:
+        data: { type: array, items: {} }
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer, description: Rows matching the filters, over every page. }
+        counters: { type: object, description: 'Rows per status, whatever the filters.' }
+    AdminNews:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        slug: { type: string }
+        lead: { type: [string, 'null'] }
+        content_md: { type: string }
+        published: { type: boolean, description: Published and its date reached. }
+        published_at: { type: [string, 'null'], format: date-time }
+        author: { type: [string, 'null'] }
+        updated_at: { type: [string, 'null'], format: date-time }
+        web_url: { type: string }
+    AdminNewsBody:
+      type: object
+      properties:
+        title: { type: string, minLength: 5, maxLength: 150 }
+        lead: { type: [string, 'null'], maxLength: 500 }
+        content_md: { type: string, minLength: 20, maxLength: 20000 }
+    AdminCourse:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        slug: { type: string }
+        theme: { type: string }
+        status: { type: string, enum: [brouillon, publie, archive] }
+        difficulty: { $ref: '#/components/schemas/Difficulty' }
+        author: { type: [string, 'null'] }
+        chapter_count: { type: integer }
+        lesson_count: { type: integer }
+        exercise_count: { type: integer }
+        enrollment_count: { type: integer }
+        publishable: { type: boolean, description: It has lessons. }
+        published_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: [string, 'null'], format: date-time }
+        web_url: { type: string }
+    AdminExam:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        slug: { type: string }
+        subject: { $ref: '#/components/schemas/ExamSubject' }
+        subject_label: { type: string, example: Mathématiques }
+        country: { type: string, example: FR }
+        status: { type: string, enum: [attente_import, brouillon, publie] }
+        part_count: { type: integer }
+        original_filename: { type: [string, 'null'] }
+        ai_prompt: { type: [string, 'null'] }
+        import_prompt: { type: string, description: The whole prompt to send to an AI with the PDF. }
+        ai_error: { type: [string, 'null'] }
+        analyzed_at: { type: [string, 'null'], format: date-time }
+        published_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: [string, 'null'], format: date-time }
+        web_url: { type: string }
+        pdf_url: { type: [string, 'null'], example: /v1/admin/exams/bac-2025/pdf }
+    ResourceRequest:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        author_name: { type: string }
+        license: { oneOf: [{ $ref: '#/components/schemas/License' }, { type: 'null' }] }
+        description: { type: [string, 'null'] }
+        category: { type: [string, 'null'] }
+        lang: { type: [string, 'null'] }
+        size_bytes: { type: integer }
+        original_filename: { type: string }
+        file_url: { type: string, example: /v1/admin/resource-requests/3/file }
+        status: { type: string, enum: [en_attente, acceptee, refusee] }
+        reason: { type: [string, 'null'] }
+        requested_by: { type: [string, 'null'] }
+        handled_by: { type: [string, 'null'] }
+        handled_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: [string, 'null'], format: date-time }
+        resource_slug: { type: [string, 'null'] }
+    AdminMember:
+      type: object
+      properties:
+        id: { type: string }
+        pseudo: { type: string }
+        email: { type: string }
+        roles: { type: array, items: { type: string } }
+        goals: { type: array, items: { type: string } }
+        school_level: { type: [string, 'null'] }
+        class: { type: [string, 'null'] }
+    Report:
+      type: object
+      properties:
+        id: { type: integer }
+        type: { type: string, enum: [faute, amelioration, spam, abus, hors_sujet] }
+        status: { type: string, enum: [nouveau, retenu, corrige, refuse] }
+        message: { type: string }
+        location: { type: [string, 'null'] }
+        reply: { type: [string, 'null'] }
+        author: { type: [string, 'null'] }
+        target:
+          type: object
+          description: |
+            What the report is about. `exists` is false once deleted (`label`
+            and `web_url` null). The slugs and ids that build its page are
+            given for its type only.
+          properties:
+            type: { type: string, enum: [course, lesson, exercise, exam, question, answer] }
+            id: { type: integer }
+            exists: { type: boolean }
+            label: { type: [string, 'null'], description: 'Its title; for an answer, its author''s pseudo.' }
+            web_url: { type: [string, 'null'] }
+            course_slug: { type: string }
+            lesson_slug: { type: string }
+            exercise_id: { type: integer }
+            exam_slug: { type: string }
+            question_slug: { type: string }
+            answer_id: { type: integer }
+        handled_by: { type: [string, 'null'] }
+        handled_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: [string, 'null'], format: date-time }
+    Suggestion:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: [string, 'null'] }
+        message: { type: string }
+        image_url: { type: [string, 'null'], description: On the public storage (`PUBLIC_STORAGE_URL`). }
+        status: { type: string, enum: [nouvelle, retenue, realisee, ecartee] }
+        reply: { type: [string, 'null'] }
+        author: { type: [string, 'null'] }
+        handled_by: { type: [string, 'null'] }
+        handled_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: [string, 'null'], format: date-time }

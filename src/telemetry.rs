@@ -4,8 +4,7 @@
 //!   `tracing-subscriber`.
 //! - Every request carries a W3C Trace Context (`traceparent`): taken from the
 //!   caller when valid, created otherwise. Its trace id is attached to every
-//!   log line of the request and to 500 error bodies, and will be forwarded
-//!   on outgoing calls (webhooks).
+//!   log line of the request and to 500 error bodies.
 //! - Metrics are recorded with the `metrics` facade and rendered by the
 //!   Prometheus exporter on a separate, internal listener.
 
@@ -156,8 +155,6 @@ pub mod names {
     pub const HTTP_REQUEST_DURATION_SECONDS: &str = "http_request_duration_seconds";
     pub const HEALTH_CHECK_UP: &str = "health_check_up";
     pub const AUTH_REJECTIONS_TOTAL: &str = "auth_rejections_total";
-    pub const JWKS_FETCHES_TOTAL: &str = "jwks_fetches_total";
-    pub const JWKS_KEYS: &str = "jwks_keys";
     pub const RATE_LIMITED_TOTAL: &str = "rate_limited_total";
     pub const RATE_LIMIT_ERRORS_TOTAL: &str = "rate_limit_errors_total";
     pub const GAME_CONNECTIONS_TOTAL: &str = "game_connections_total";
@@ -169,10 +166,6 @@ pub mod names {
     pub const GAME_MATCHES_ENDED_TOTAL: &str = "game_matches_ended_total";
     pub const GAME_PERSIST_ERRORS_TOTAL: &str = "game_persist_errors_total";
     pub const GAME_SEASONS_CLOSED_TOTAL: &str = "game_seasons_closed_total";
-    pub const WEBHOOK_ATTEMPTS_TOTAL: &str = "webhook_attempts_total";
-    pub const WEBHOOK_PENDING: &str = "webhook_pending";
-    pub const WEBHOOK_DEAD_TOTAL: &str = "webhook_dead_total";
-    pub const WEBHOOK_LATENCY_SECONDS: &str = "webhook_latency_seconds";
 }
 
 /// Installs the global metrics recorder and returns the handle that renders
@@ -210,13 +203,8 @@ fn describe_metrics() {
     );
     metrics::describe_counter!(
         names::AUTH_REJECTIONS_TOTAL,
-        "Requests refused by token verification, by reason (no_keys: JWKS unusable)."
+        "Requests refused by token verification, by reason (no_key: no signing key configured)."
     );
-    metrics::describe_counter!(
-        names::JWKS_FETCHES_TOTAL,
-        "JWKS fetches, by result (ok, error)."
-    );
-    metrics::describe_gauge!(names::JWKS_KEYS, "Usable keys in the last JWKS loaded.");
     metrics::describe_counter!(
         names::RATE_LIMITED_TOTAL,
         "Requests refused with 429, by scope (ip, sub)."
@@ -251,23 +239,6 @@ fn describe_metrics() {
     metrics::describe_counter!(
         names::GAME_SEASONS_CLOSED_TOTAL,
         "Monthly duel seasons closed, by subject key."
-    );
-    metrics::describe_counter!(
-        names::WEBHOOK_ATTEMPTS_TOTAL,
-        "Webhook delivery attempts, by status (sent, rejected, failed)."
-    );
-    metrics::describe_gauge!(
-        names::WEBHOOK_PENDING,
-        "Webhook outbox rows waiting to be sent."
-    );
-    metrics::describe_counter!(
-        names::WEBHOOK_DEAD_TOTAL,
-        "Webhook events given up (dead letters)."
-    );
-    metrics::describe_histogram!(
-        names::WEBHOOK_LATENCY_SECONDS,
-        metrics::Unit::Seconds,
-        "Duration of webhook delivery attempts."
     );
 }
 

@@ -1,95 +1,105 @@
 # Pulsars architecture
 
-Target architecture, validated on 2026-10-13. Translated from the product
-owner's French original; the "Notes" at the end record where the current
-Laravel code differs.
+Decided on 2026-10-28, when the Laravel site was retired: the server is
+rebuilt from scratch, the site is rewritten in Nuxt, and this API owns the
+database and every feature. Only the content (courses, exams, resources,
+news, files, translations, the languages section) was carried over from
+the old database.
 
 ## Repositories
 
 | Repository | Content |
 |---|---|
-| `pulsars-web` | The Laravel site (today's GitHub repository is `0jikuji0/pulsars`). |
-| `pulsars-api` | This repository: the public API and the game server, in Rust. |
-| `pulsars-game` | The front end of `pulsars.science/jeux` (Vue 3 + Vite). |
+| `pulsars-web` | The site, `pulsars.science`: Nuxt with server rendering, a Node service. Pages, translations, the login cookie, the relay to the API. |
+| `pulsars-api` | This repository: the back end and the game server, in Rust. |
+| `pulsars-game` | The games, `pulsars.science/jeux` (Vue 3 + Vite, static). |
+| `pulsars-langues` | The languages section, `pulsars.science/langues` (static). |
 
 ## Services
 
-- **pulsars.science**: Laravel 13 with Inertia/Vue SSR. Pages, SEO,
-  translations, accounts (e-mail, Google, Discord), forum, XP, guilds, admin.
-  **Issues game tokens (JWT).**
-- **api.pulsars.science**: Rust (Axum + Tokio). `/v1` read-only content
-  (courses, exercises, exams, resources), `/v1/game` (matchmaking, matches),
-  the match WebSocket, `/metrics` on an internal port.
-- **pulsars.science/jeux**: Vue 3 + Vite SPA, static. Sends actions, never
-  scores: the server arbitrates.
-- **Edge**: Caddy / FrankenPHP: HTTPS and routing by domain.
+```
+browser ──▶ pulsars.science (nginx)
+              ├─ /jeux/, /langues/       static files
+              └─ everything else ──▶ pulsars-web (Nuxt, Node, 127.0.0.1:3000)
+                                       ├─ pages (server rendering)
+                                       ├─ /api/**      relay to the API
+                                       ├─ /storage/**  relay to /v1/storage/**
+                                       └─ /auth/**     login, sign-up, Google, the cookie
+                                              │  Pulsars-Session, Pulsars-Service-Key,
+                                              ▼  X-Forwarded-For, User-Agent
+                                 pulsars-api (Axum, 127.0.0.1:8080) ──▶ PostgreSQL, Redis
+api.pulsars.science ──▶ pulsars-api (the games, the languages section, public clients)
+```
+
+- **pulsars-web** renders every page on its server and calls the API from
+  there, server to server, with the visitor's session token
+  (`Pulsars-Session`, from the httpOnly `pulsars_auth` cookie), the
+  server's key (`Pulsars-Service-Key`) and the visitor's address. The
+  browser only ever talks to `pulsars.science`: the site relays
+  `/api/v1/**` to `http://127.0.0.1:8080/v1/**`, and refuses writes whose
+  `Origin` is not its own (CSRF).
+- **pulsars-api** (Rust, Axum + Tokio): public content (`/v1/courses`,
+  `/v1/exams`, …), accounts and sessions (`/v1/auth/*`), the member's pages
+  (`/v1/me/*`), the forum and its moderation, follows, friends, rooms and
+  private messages, reports and suggestions, the administration
+  (`/v1/admin/*`), the languages section (`/v1/languages/*`), the game
+  (`/v1/game/*` and the match WebSocket), the game token
+  (`POST /v1/auth/token`) and its public key (`/.well-known/jwks.json`).
+  `/metrics` on a loopback port.
+- **The games and the languages section** are static files served by nginx.
+  They call `api.pulsars.science` from the browser with a short JWT the API
+  signs (`POST /v1/auth/token`, with the `pulsars_auth` cookie set on
+  `.pulsars.science`). The games send actions, never scores: the server
+  arbitrates.
+- **Edge**: nginx, in front of `pulsars.science` and `api.pulsars.science`,
+  HTTPS with certbot.
 
 ## Data
 
-- PostgreSQL, one schema per service: `site` (written by Laravel), `game`
-  (written by the API). The API reads `site` **only** through the read-only
-  views of the `api_read` schema.
-- Redis: matchmaking queues, pub/sub between instances, rate limits.
-- Execution sandbox (if code matches): self-hosted Judge0 or Piston, on a
-  separate VM, without network, with time and memory limits.
+- One PostgreSQL database, four schemas: `site` (accounts, progress, forum,
+  social, moderation), `contenu` (the content and its files), `game`,
+  `langues`. **Only the API connects to it**, as `pulsars_api`, which reads
+  and writes rows and changes no structure; `pulsars-api migrate`, as
+  `pulsars_migrate`, owns the structure (`contract/database.md`).
+- Files (PDFs, avatars, images) are stored in the database
+  (`contenu.fichiers`); the API serves them.
+- Redis: rate limits, the single-use `jti` of game tokens, short-lived
+  counters and caches.
 
 ## Flow of a match
 
-1. The front end asks `pulsars.science` for a token (Laravel session cookie,
-   CORS with credentials).
-2. Laravel returns a JWT signed with EdDSA, valid 5 minutes.
-3. The front end opens the WebSocket to the API; the API verifies the JWT
-   with Laravel's public key (JWKS).
-4. Matchmaking in Redis, match arbitrated by the API, match stored in `game`.
-5. End: HMAC-signed webhook API → Laravel, which awards the XP.
-
-## Data ownership
-
-| Data | Written by | Read by |
-|---|---|---|
-| Accounts, profiles | Laravel | API (token) |
-| Courses, exercises, exams | Laravel | API, read-only |
-| XP, guilds, badges | Laravel | API sends the results |
-| Matches, Elo, rankings | API | Laravel through `/v1/game` |
-| Queues, live state | API (Redis) | — |
+1. The game asks `api.pulsars.science` for a token (`POST /v1/auth/token`,
+   the `pulsars_auth` cookie, CORS with credentials).
+2. The API returns a JWT signed with EdDSA, valid 5 minutes.
+3. The game opens the WebSocket to the API; the API verifies the JWT with
+   its own key.
+4. Matchmaking and the match run in the API's memory; the match is stored
+   in `game`.
+5. End: the API writes the match, the ratings, the players' results
+   (`site.game_results`, from which XP is computed) and their brains in one
+   transaction.
 
 ## Rules
 
-- No service writes into the other's schema.
-- The public API never exposes solutions or expected answers.
-- Players' code never runs on Pulsars' machine.
-- `/metrics`, webhooks and PostgreSQL stay on the private network.
+- The API owns the data: no other program reads or writes the database.
+- The public routes never expose solutions or expected answers.
+- Players' code never runs on Pulsars' machine (there is no code mode).
+- `/metrics` and PostgreSQL stay on the loopback or the private network.
 - JSON logs everywhere, and the `traceparent` header is propagated.
+- Secrets live in the environment files of the server, never in a
+  repository (`docs/deployment.md`).
 
 ## Later: observability
 
 Grafana Alloy (collection) → Prometheus (metrics), Loki (logs), Tempo
 (traces) → Grafana. PostgreSQL, Redis and node exporters.
-Rust: `tracing` (JSON) + `metrics-exporter-prometheus`. Laravel: JSON log
-channel + `spatie/laravel-prometheus`.
+Rust: `tracing` (JSON) + `metrics-exporter-prometheus`.
 
-## Prerequisite
+## Notes
 
-- Move production to PostgreSQL before the game.
-
-## Notes: where the Laravel code differs today (2026-10-13)
-
-Details and sources are in `docs/contract/`.
-
-- Production runs **MySQL**, not SQLite (`docs/MISE-EN-PROD.md`, systemd units
-  `After=mysql.service`). The prerequisite is a MySQL → PostgreSQL migration:
-  `contract/postgres-migration.md`.
-- The game front end is served by nginx under **`pulsars.science/jeux/`**,
-  not a `game.` subdomain (decided 2026-10-17): no extra DNS or certificate,
-  same origin as the site. The flash questions (30 generators, wall, défi)
-  moved there from Laravel, ported to TypeScript with identical output.
-- The edge in production is **nginx** in front of Octane/FrankenPHP, not Caddy
-  (`deploy/pulsars.science.conf`).
-- **Guilds and badges do not exist** in Laravel (planned v2). Distinction
+- **Guilds and badges do not exist** (planned, never built). Distinction
   roles act as badges.
-- **XP is computed, not stored** (`App\Services\Experience`): "Laravel awards
-  XP" means Laravel stores a result row that its XP computation counts.
-- The domain → subject → topic catalogue does not exist; courses have a single
-  `theme` string, from which the API derives subject and topic.
-- Rule "Laravel reads game data through `/v1/game`": the contract also
-  forbids Laravel any read access to the `game` schema, for symmetry.
+- **XP is computed, not stored** (`site.member_xp`): awarding XP means
+  adding a source to that view.
+- The domain → subject → topic catalogue does not exist; courses have a
+  single `theme` string, from which the API derives subject and topic.

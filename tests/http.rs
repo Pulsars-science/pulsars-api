@@ -7,18 +7,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
-use axum::extract::State;
 use axum::http::{Request, StatusCode, header};
-use ed25519_dalek::SigningKey;
 use pulsars_api::auth::token::testing;
-use pulsars_api::auth::{Jwks, JwksSettings};
-use pulsars_api::config::Config;
+use pulsars_api::config::{Config, TokenSigner};
 use pulsars_api::game::{Game, GameSettings, store};
 use pulsars_api::state::AppState;
 use pulsars_api::{db, redis, routes};
@@ -28,7 +24,6 @@ use tower::ServiceExt as _;
 /// Nothing listens on port 1: connections are refused immediately.
 const DEAD_POSTGRES: &str = "postgres://pulsars_api:x@127.0.0.1:1/pulsars";
 const DEAD_REDIS: &str = "redis://127.0.0.1:1";
-const DEAD_JWKS: &str = "http://127.0.0.1:1/.well-known/jwks.json";
 
 fn integration_urls() -> Option<(String, String)> {
     let db = std::env::var("TEST_DATABASE_URL")
@@ -56,7 +51,6 @@ fn config(database_url: &str, redis_url: &str, extra: &[(&str, &str)]) -> Config
         ("PULSARS_ENV".to_owned(), "development".to_owned()),
         ("DATABASE_URL".to_owned(), database_url.to_owned()),
         ("REDIS_URL".to_owned(), redis_url.to_owned()),
-        ("JWKS_URL".to_owned(), DEAD_JWKS.to_owned()),
         (
             "RATE_LIMIT_ANONYMOUS_PER_MINUTE".to_owned(),
             "1000000".to_owned(),
@@ -74,22 +68,8 @@ fn config(database_url: &str, redis_url: &str, extra: &[(&str, &str)]) -> Config
     Config::from_vars(vars).expect("valid test config")
 }
 
-/// Short timeouts, production intervals otherwise.
-fn jwks_settings() -> JwksSettings {
-    JwksSettings {
-        fetch_timeout: Duration::from_secs(2),
-        ..JwksSettings::default()
-    }
-}
-
-/// The application, with a JWKS client for `config.jwks_url` that has not
-/// fetched anything yet.
+/// The application, without a signing key (development allows it).
 async fn app(config: Config) -> (Router, AppState) {
-    let jwks = Jwks::with_settings(&config.jwks_url, false, jwks_settings()).unwrap();
-    app_with(config, jwks)
-}
-
-fn app_with(config: Config, jwks: Jwks) -> (Router, AppState) {
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
         mailer: pulsars_api::mail::Mailer::recording(),
@@ -97,87 +77,39 @@ fn app_with(config: Config, jwks: Jwks) -> (Router, AppState) {
         db,
         redis: redis::connect(&config).unwrap(),
         config: Arc::new(config),
-        jwks,
     };
     (routes::router(state.clone()), state)
 }
 
-/// The application with its JWKS loaded from a fresh [`JwksServer`].
-async fn app_with_keys(database_url: &str, redis_url: &str) -> (Router, AppState, JwksServer) {
-    let server = JwksServer::start().await;
-    let (app, state) = app(config(
-        database_url,
-        redis_url,
-        &[("JWKS_URL", server.url.as_str())],
-    ))
-    .await;
-    state.jwks.refresh().await.expect("JWKS loads");
-    (app, state, server)
+/// The application with a fresh signing key, and that key.
+async fn app_with_keys(database_url: &str, redis_url: &str) -> (Router, AppState, Keys) {
+    app_with_keys_and(config(database_url, redis_url, &[])).await
 }
 
-/// Laravel's JWKS endpoint, served in-process. Starts with one key, `KID`.
-struct JwksServer {
-    url: String,
-    key: SigningKey,
-    shared: Arc<JwksShared>,
+async fn app_with_keys_and(mut config: Config) -> (Router, AppState, Keys) {
+    let keys = Keys {
+        signer: testing::signer(),
+    };
+    config.token_signer = Some(keys.signer.clone());
+    let (app, state) = app(config).await;
+    (app, state, keys)
 }
 
-struct JwksShared {
-    document: Mutex<Value>,
-    status: AtomicU16,
-    hits: AtomicUsize,
+/// The API's signing key, as the test application holds it.
+struct Keys {
+    signer: TokenSigner,
 }
 
-const KID: &str = "2026-10-ed25519-1";
+const KID: &str = testing::KID;
 
-impl JwksServer {
-    async fn start() -> Self {
-        let key = testing::signing_key();
-        let shared = Arc::new(JwksShared {
-            document: Mutex::new(json!({"keys": [testing::jwk(&key, KID)]})),
-            status: AtomicU16::new(200),
-            hits: AtomicUsize::new(0),
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "http://{}/.well-known/jwks.json",
-            listener.local_addr().unwrap()
-        );
-        let router = Router::new()
-            .route(
-                "/.well-known/jwks.json",
-                axum::routing::get(|State(shared): State<Arc<JwksShared>>| async move {
-                    shared.hits.fetch_add(1, Ordering::SeqCst);
-                    let status =
-                        StatusCode::from_u16(shared.status.load(Ordering::SeqCst)).unwrap();
-                    let body = shared.document.lock().unwrap().to_string();
-                    (
-                        status,
-                        [(header::CONTENT_TYPE, "application/jwk-set+json")],
-                        body,
-                    )
-                }),
-            )
-            .with_state(shared.clone());
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        Self { url, key, shared }
+impl Keys {
+    fn key(&self) -> &ed25519_dalek::SigningKey {
+        &self.signer.key
     }
 
-    fn set_document(&self, document: Value) {
-        *self.shared.document.lock().unwrap() = document;
-    }
-
-    fn set_status(&self, status: u16) {
-        self.shared.status.store(status, Ordering::SeqCst);
-    }
-
-    fn hits(&self) -> usize {
-        self.shared.hits.load(Ordering::SeqCst)
-    }
-
-    /// A valid token for user `sub`, signed with the served key.
+    /// A valid token for user `sub`.
     fn token(&self, sub: &str) -> String {
-        testing::token(&self.key, KID, sub, now())
+        testing::token(self.key(), KID, sub, now())
     }
 }
 
@@ -345,7 +277,7 @@ async fn healthz_is_ok_with_real_services() {
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
     };
-    let (app, state, _jwks) = app_with_keys(&database_url, &redis_url).await;
+    let (app, state, _keys) = app_with_keys(&database_url, &redis_url).await;
     // The Redis connection is established in the background.
     tokio::time::timeout(Duration::from_secs(5), async {
         use fred::prelude::ClientLike as _;
@@ -365,7 +297,7 @@ async fn healthz_is_degraded_without_redis() {
     let Some((database_url, _)) = integration_urls() else {
         return;
     };
-    let (app, _, _jwks) = app_with_keys(&database_url, DEAD_REDIS).await;
+    let (app, _, _keys) = app_with_keys(&database_url, DEAD_REDIS).await;
     let (status, _, body) = send(&app, get("/healthz")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "degraded");
@@ -387,112 +319,39 @@ async fn apply_migrations(database_url: &str) {
 
 /// The grants of deploy/sql/phase-1.sql, as the service's role sees them.
 #[tokio::test]
-async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
+async fn the_api_role_writes_rows_and_changes_no_structure() {
     let Some((database_url, _)) = integration_urls() else {
         return;
     };
-    // The game tables must exist for the structure checks below.
     apply_migrations(&database_url).await;
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let denied = |error: sqlx::Error| {
-        let message = error.to_string();
-        assert!(message.contains("permission denied"), "{message}");
-    };
 
-    // Accounts (phase 2): the login columns of site.users, nothing else
-    // of site.
-    let logins: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM site.users WHERE password IS NOT NULL OR email_verified_at IS NULL",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert!(logins > 0, "demo accounts are loaded");
-    for query in [
-        "SELECT two_factor_secret FROM site.users LIMIT 1",
-        "SELECT two_factor_recovery_codes FROM site.users LIMIT 1",
-        "SELECT remember_token FROM site.users LIMIT 1",
-        "SELECT * FROM site.users LIMIT 1",
-        "SELECT 1 FROM site.sessions LIMIT 1",
-        "SELECT 1 FROM site.direct_messages LIMIT 1",
-        "SELECT 1 FROM site.passkeys LIMIT 1",
-        "SELECT 1 FROM site.personal_access_tokens LIMIT 1",
-        "SELECT 1 FROM site.password_reset_tokens LIMIT 1",
-        "UPDATE site.users SET email = email WHERE false",
-        "UPDATE site.users SET pseudo = pseudo WHERE false",
-        "UPDATE site.users SET onboarding_at = now() WHERE false",
-        "DELETE FROM site.users WHERE false",
-        "SELECT description FROM site.roles LIMIT 1",
-        "INSERT INTO site.role_user (role_id, user_id) SELECT 1, 1 WHERE false",
-        "DELETE FROM site.role_user WHERE false",
-        "UPDATE site.roles SET slug = slug WHERE false",
-    ] {
-        denied(sqlx::query(query).execute(&pool).await.expect_err(query));
-    }
+    // The API is the only application: it reads and writes the rows of
+    // every schema (deploy/sql/roles.sql, migrations/…_schema.sql).
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query("UPDATE site.users SET password = password, updated_at = updated_at WHERE false")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api changes passwords");
-    sqlx::query("SELECT count(*) FROM site.auth_sessions")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api reads sessions");
-    // Links sent by mail, verified addresses, Google accounts.
-    sqlx::query("SELECT count(*) FROM site.email_tokens")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api reads mailed links");
-    sqlx::query("UPDATE site.users SET email_verified_at = email_verified_at WHERE false")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api marks addresses verified");
-    sqlx::query("DELETE FROM site.comptes_sociaux WHERE false")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api links Google accounts");
-    // Permission roles, for the `roles` claim of the game tokens it signs.
-    sqlx::query(
-        "SELECT r.slug FROM site.role_user ru JOIN site.roles r ON r.id = ru.role_id
-          WHERE r.categorie = 'permission' ORDER BY r.niveau",
-    )
-    .execute(&mut *tx)
-    .await
-    .expect("pulsars_api reads permission roles");
-    tx.rollback().await.unwrap();
-
-    // Content: read, never written.
-    let raw: i64 = sqlx::query_scalar("SELECT count(*) FROM contenu.courses")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert!(raw > 0, "demo data is loaded");
-    denied(
-        sqlx::query("UPDATE contenu.courses SET vues = vues WHERE false")
-            .execute(&pool)
+    for query in [
+        "UPDATE site.users SET pseudo = pseudo WHERE false",
+        "DELETE FROM site.role_user WHERE false",
+        "UPDATE contenu.courses SET vues = vues WHERE false",
+        "DELETE FROM contenu.fichiers WHERE false",
+        "UPDATE game.ratings SET games = games WHERE false",
+        "DELETE FROM langues.events WHERE false",
+        "SELECT total FROM site.member_xp LIMIT 1",
+    ] {
+        sqlx::query(query)
+            .execute(&mut *tx)
             .await
-            .expect_err("pulsars_api must not write content"),
-    );
-
-    let courses: i64 = sqlx::query_scalar("SELECT count(*) FROM api_read.courses")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert!(courses > 0, "demo data is loaded");
-
-    let draft: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM api_read.courses WHERE slug = 'demo-draft-course'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(draft, 0, "drafts are invisible");
+            .unwrap_or_else(|error| panic!("{query}: {error}"));
+    }
+    tx.rollback().await.unwrap();
 
     // Structure belongs to pulsars_owner: `pulsars-api migrate` changes it.
     for ddl in [
         "CREATE TABLE game.write_check (id int)",
+        "CREATE TABLE site.write_check (id int)",
         "CREATE TABLE contenu.write_check (id int)",
         "ALTER TABLE game.ratings ADD COLUMN write_check int",
+        "ALTER TABLE site.users ADD COLUMN write_check int",
         "DROP TABLE game.seasons",
     ] {
         let error = sqlx::query(ddl)
@@ -505,84 +364,6 @@ async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
             "{ddl}: {message}"
         );
     }
-
-    // But it writes the rows of game.
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO game.ratings (user_id, subject, rating, rd, volatility, games, wins, losses, draws)
-         VALUES (999999, 'all', 1500, 350, 0.06, 0, 0, 0, 0)",
-    )
-    .execute(&mut *tx)
-    .await
-    .expect("pulsars_api writes game rows");
-    tx.rollback().await.unwrap();
-}
-
-#[tokio::test]
-async fn no_answer_or_private_data_reaches_the_views() {
-    let Some((database_url, _)) = integration_urls() else {
-        return;
-    };
-    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let views: Vec<String> = sqlx::query_scalar(
-        "SELECT table_name::text FROM information_schema.views WHERE table_schema = 'api_read'",
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    assert!(views.len() >= 18, "views: {views:?}");
-
-    let mut dump = String::new();
-    for view in &views {
-        // View names come from the catalogue, not from user input.
-        let rows: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT string_agg(row_to_json(t)::text, '\n') FROM api_read.\"{view}\" t"
-        )))
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        dump.push_str(&rows.unwrap_or_default());
-    }
-
-    // Markers planted in dev/db/30-demo-data.sql.
-    for marker in [
-        "SOLUTION-MARKER",
-        "CORRIGE-MARKER",
-        "PROMPT-MARKER",
-        "example.invalid",
-        "demofriendtoken",
-        "not-a-real-hash",
-        "Terminale B (private)",
-        "correctes",
-        "acceptees",
-        "demo-draft-course",
-        "demo-future-course",
-        "demo-pending-resource",
-        "-corrige.pdf",
-    ] {
-        assert!(!dump.contains(marker), "`{marker}` leaked into api_read");
-    }
-}
-
-/// What the API reads of `contenu` (src/db/sources.rs) is, row for row,
-/// what the `api_read` views showed: same published rows, same columns.
-#[tokio::test]
-async fn the_content_sources_read_exactly_what_the_views_show() {
-    let Some((database_url, _)) = integration_urls() else {
-        return;
-    };
-    // contenu.matieres, contenu.licences.
-    apply_migrations(&database_url).await;
-    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let comparisons = pulsars_api::db::sources::compare_with_views(&pool)
-        .await
-        .unwrap();
-    assert_eq!(comparisons.len(), pulsars_api::db::sources::SOURCES.len());
-    for c in &comparisons {
-        assert!(c.is_same(), "{c:?}");
-    }
-    let courses = comparisons.iter().find(|c| c.view == "courses").unwrap();
-    assert!(courses.rows > 0, "demo data is loaded");
 }
 
 #[tokio::test]
@@ -628,71 +409,50 @@ async fn no_answer_or_private_data_reaches_the_content_sources() {
             "`{marker}` leaked into a content source"
         );
     }
+
+    // The answers and corrections have their own sources, read only by the
+    // member routes that apply Laravel's rules (`db::sources`): published
+    // content only, never a draft's answer or a private column.
+    let mut answers = String::new();
+    for &(name, source) in pulsars_api::db::sources::ANSWER_SOURCES {
+        let rows: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT string_agg(row_to_json(t)::text, '\n') FROM {source} t"
+        )))
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+        answers.push_str(&rows.unwrap_or_default());
+    }
+    for expected in [
+        "SOLUTION-MARKER-1",
+        "CORRIGE-MARKER-46",
+        "CORRIGE-MARKER-EN-46",
+    ] {
+        assert!(answers.contains(expected), "`{expected}` missing");
+    }
+    for marker in [
+        "SOLUTION-MARKER-6",
+        "CORRIGE-MARKER-10",
+        "CORRIGE-MARKER-EN-10",
+        "FILE-CORRIGE-MARKER",
+        "FILE-DRAFT-MARKER",
+        "PROMPT-MARKER",
+        "example.invalid",
+        "demo-draft-course",
+        "dnb-2026",
+    ] {
+        assert!(
+            !answers.contains(marker),
+            "`{marker}` leaked into an answer source"
+        );
+    }
 }
 
-// --- Authentication (in-process JWKS, no database needed) -----------------
-
-#[tokio::test]
-async fn healthz_is_down_until_the_jwks_is_loaded() {
-    let Some((database_url, redis_url)) = integration_urls() else {
-        return;
-    };
-    let server = JwksServer::start().await;
-    server.set_status(500);
-    let (app, state) = app(config(
-        &database_url,
-        &redis_url,
-        &[("JWKS_URL", server.url.as_str())],
-    ))
-    .await;
-
-    // Laravel down at boot: the process lives on, but is not ready.
-    assert!(state.jwks.refresh().await.is_err());
-    let (status, _, body) = send(&app, get("/healthz")).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(body["status"], "down");
-    assert_eq!(check(&body, "postgres")["ok"], true);
-
-    server.set_status(200);
-    state.jwks.refresh().await.expect("JWKS loads");
-    let (status, _, body) = send(&app, get("/healthz")).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-}
-
-#[tokio::test]
-async fn the_refresh_task_loads_the_keys_once_laravel_answers() {
-    let server = JwksServer::start().await;
-    server.set_status(503);
-    let jwks = Jwks::with_settings(
-        &server.url,
-        false,
-        JwksSettings {
-            min_retry_interval: Duration::from_millis(20),
-            max_retry_interval: Duration::from_millis(50),
-            ..jwks_settings()
-        },
-    )
-    .unwrap();
-    let task = jwks.spawn_refresh();
-
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(!jwks.is_loaded());
-    assert!(server.hits() >= 2, "failures are retried");
-
-    server.set_status(200);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !jwks.is_loaded() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("loaded once the JWKS answers");
-    task.abort();
-}
+// --- Authentication (the API's own key, no database needed) ---------------
 
 #[tokio::test]
 async fn me_without_a_token_is_401_with_a_bare_challenge() {
-    let (app, _, _jwks) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    let (app, _, _keys) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
     let (status, headers, body) = send(&app, get("/v1/me")).await;
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -717,19 +477,19 @@ async fn me_without_a_token_is_401_with_a_bare_challenge() {
 
 #[tokio::test]
 async fn me_with_an_invalid_token_is_401_invalid_token() {
-    let (app, _, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    let (app, _, keys) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
     let other = testing::signing_key();
-    let expired = testing::token(&server.key, KID, "1", now() - 3600);
+    let expired = testing::token(keys.key(), KID, "1", now() - 3600);
     let forged = testing::token(&other, KID, "1", now());
     let none = testing::sign(
-        &server.key,
+        keys.key(),
         &json!({"alg": "none", "kid": KID}),
         &testing::claims("1", now()),
     );
     let wrong_aud = {
         let mut claims = testing::claims("1", now());
         claims["aud"] = json!("other.pulsars.science");
-        testing::sign(&server.key, &json!({"alg": "EdDSA", "kid": KID}), &claims)
+        testing::sign(keys.key(), &json!({"alg": "EdDSA", "kid": KID}), &claims)
     };
 
     for (token, reason, description) in [
@@ -756,74 +516,25 @@ async fn me_with_an_invalid_token_is_401_invalid_token() {
 }
 
 #[tokio::test]
-async fn unknown_kids_refetch_the_jwks_at_most_once_a_minute() {
-    let (app, _, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
-    assert_eq!(server.hits(), 1);
-
-    for i in 0..5 {
-        let token = testing::token(&server.key, &format!("random-{i}"), "1", now());
+async fn unknown_kids_and_other_issuers_are_refused() {
+    let (app, _, keys) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    for kid in ["2027-04-ed25519-1", "random"] {
+        let token = testing::token(keys.key(), kid, "1", now());
         let (status, _, body) = send(&app, get_with_token("/v1/me", &token)).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["reason"], "unknown_kid");
     }
-    assert_eq!(server.hits(), 2, "a single refetch for five unknown kids");
+    // The old site's tokens, even signed with the right key.
+    let mut claims = testing::claims("1", now());
+    claims["iss"] = json!("https://pulsars.science");
+    let token = testing::sign(keys.key(), &json!({"alg": "EdDSA", "kid": KID}), &claims);
+    let (status, _, body) = send(&app, get_with_token("/v1/me", &token)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["reason"], "bad_issuer");
 }
 
 #[tokio::test]
-async fn a_new_key_is_picked_up_through_the_unknown_kid_refetch() {
-    let (app, state, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
-    // Rotation step 1: Laravel publishes the next key.
-    let next = testing::signing_key();
-    server.set_document(json!({"keys": [
-        testing::jwk(&server.key, KID),
-        testing::jwk(&next, "2027-04-ed25519-1"),
-    ]}));
-
-    let token = testing::token(&next, "2027-04-ed25519-1", "1", now());
-    let (status, headers, body) = send(&app, get_with_token("/v1/me", &token)).await;
-    // Authenticated: the request got as far as the (dead) database.
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert!(!headers.contains_key(header::WWW_AUTHENTICATE));
-    assert_eq!(server.hits(), 2);
-    assert!(matches!(
-        state.jwks.key("2027-04-ed25519-1").await,
-        pulsars_api::auth::Lookup::Found(_)
-    ));
-}
-
-#[tokio::test]
-async fn a_failed_refresh_keeps_the_previous_keys() {
-    let (app, state, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
-    server.set_status(500);
-    assert!(state.jwks.refresh().await.is_err());
-    server.set_status(200);
-    server.set_document(json!({"keys": []}));
-    assert!(
-        state.jwks.refresh().await.is_err(),
-        "an empty set is a failure"
-    );
-
-    let (status, _, body) = send(&app, get_with_token("/v1/me", &server.token("1"))).await;
-    assert_ne!(status, StatusCode::UNAUTHORIZED, "{body}");
-}
-
-#[tokio::test]
-async fn keys_older_than_24_hours_are_not_used() {
-    let (app, state, server) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
-    server.set_status(500);
-    state.jwks.age_by(Duration::from_secs(24 * 60 * 60 + 1));
-
-    let (status, headers, body) = send(&app, get_with_token("/v1/me", &server.token("1"))).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    assert_eq!(
-        body["type"],
-        "https://api.pulsars.science/problems/unavailable"
-    );
-    assert!(!headers.contains_key(header::WWW_AUTHENTICATE));
-}
-
-#[tokio::test]
-async fn me_answers_503_while_no_key_was_ever_loaded() {
+async fn me_answers_503_without_a_signing_key() {
     let (app, _) = app(config(DEAD_POSTGRES, DEAD_REDIS, &[])).await;
     let key = testing::signing_key();
     let token = testing::token(&key, KID, "1", now());
@@ -834,28 +545,8 @@ async fn me_answers_503_while_no_key_was_ever_loaded() {
 }
 
 #[tokio::test]
-async fn https_only_clients_refuse_a_plain_http_jwks() {
-    let server = JwksServer::start().await;
-    let jwks = Jwks::with_settings(&server.url, true, jwks_settings()).unwrap();
-    assert!(jwks.refresh().await.is_err());
-    assert_eq!(server.hits(), 0);
-}
-
-#[tokio::test]
-async fn oversized_jwks_documents_are_refused() {
-    let server = JwksServer::start().await;
-    server.set_document(json!({
-        "keys": [testing::jwk(&server.key, KID)],
-        "padding": "x".repeat(100 * 1024),
-    }));
-    let jwks = Jwks::with_settings(&server.url, false, jwks_settings()).unwrap();
-    assert!(jwks.refresh().await.is_err());
-    assert!(!jwks.is_loaded());
-}
-
-#[tokio::test]
 async fn me_allows_only_the_game_origin() {
-    let (app, _, _jwks) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
+    let (app, _, _keys) = app_with_keys(DEAD_POSTGRES, DEAD_REDIS).await;
     let preflight = |origin: &str| {
         Request::options("/v1/me")
             .header(header::ORIGIN, origin)
@@ -893,10 +584,10 @@ async fn me_returns_the_public_profile() {
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
     };
-    let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
+    let (app, _, keys) = app_with_keys(&database_url, &redis_url).await;
 
     // `ada` (dev/db/30-demo-data.sql): bio, two roles, 102 XP, 15 brains.
-    let (status, headers, body) = send(&app, get_with_token("/v1/me", &server.token("2"))).await;
+    let (status, headers, body) = send(&app, get_with_token("/v1/me", &keys.token("2"))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(headers[header::CONTENT_TYPE], "application/json");
     assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
@@ -928,7 +619,7 @@ async fn me_returns_the_public_profile() {
     );
 
     // `jikuji`: the OpenAPI example.
-    let (status, _, body) = send(&app, get_with_token("/v1/me", &server.token("1"))).await;
+    let (status, _, body) = send(&app, get_with_token("/v1/me", &keys.token("1"))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["roles"][0]["slug"], "super-admin");
     assert_eq!(
@@ -939,7 +630,7 @@ async fn me_returns_the_public_profile() {
     assert_eq!(body["data"]["brains"], 0);
 
     // `emmy` hides her balance from others, not from herself.
-    let (status, _, body) = send(&app, get_with_token("/v1/me", &server.token("3"))).await;
+    let (status, _, body) = send(&app, get_with_token("/v1/me", &keys.token("3"))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["brains"], 0);
 }
@@ -949,8 +640,8 @@ async fn me_never_returns_private_fields() {
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
     };
-    let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
-    let (_, _, body) = send(&app, get_with_token("/v1/me", &server.token("2"))).await;
+    let (app, _, keys) = app_with_keys(&database_url, &redis_url).await;
+    let (_, _, body) = send(&app, get_with_token("/v1/me", &keys.token("2"))).await;
     let text = body.to_string();
     for marker in [
         "example.invalid",
@@ -968,10 +659,9 @@ async fn me_is_404_when_the_account_is_gone() {
     let Some((database_url, redis_url)) = integration_urls() else {
         return;
     };
-    let (app, _, server) = app_with_keys(&database_url, &redis_url).await;
+    let (app, _, keys) = app_with_keys(&database_url, &redis_url).await;
     for sub in ["999999", "not-a-number", "02"] {
-        let (status, headers, body) =
-            send(&app, get_with_token("/v1/me", &server.token(sub))).await;
+        let (status, headers, body) = send(&app, get_with_token("/v1/me", &keys.token(sub))).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{sub}: {body}");
         assert_eq!(headers[header::CONTENT_TYPE], "application/problem+json");
         assert_eq!(headers[header::CACHE_CONTROL], "no-store");
@@ -2513,23 +2203,20 @@ async fn authenticated_clients_are_limited_per_sub() {
     let Some(redis_url) = test_redis_url() else {
         return;
     };
-    let server = JwksServer::start().await;
-    let (app, state) = app(config(
+    let (app, state, keys) = app_with_keys_and(config(
         DEAD_POSTGRES,
         &redis_url,
         &[
-            ("JWKS_URL", server.url.as_str()),
             ("RATE_LIMIT_ANONYMOUS_PER_MINUTE", "1000"),
             ("RATE_LIMIT_AUTHENTICATED_PER_MINUTE", "2"),
         ],
     ))
     .await;
-    state.jwks.refresh().await.expect("JWKS loads");
     wait_for_redis(&state).await;
 
     // A `sub` naming no account answers 404 without touching PostgreSQL.
     let sub = format!("rate-{}", uuid::Uuid::new_v4().simple());
-    let token = server.token(&sub);
+    let token = keys.token(&sub);
     let ip = fresh_ip();
     let request = |path: &str, ip: &str| {
         Request::get(path)

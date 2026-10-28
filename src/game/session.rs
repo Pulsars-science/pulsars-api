@@ -25,7 +25,7 @@ use super::hub::{Command, Connected, HubCmd, Login};
 use super::protocol::{self, ClientMsg, ErrorCode, ServerMsg, close};
 use super::rules::QueueKey;
 use super::{Game, Outbox, Outgoing, Player, glicko, store};
-use crate::auth::{self, Expected, Failure};
+use crate::auth::{self, Failure};
 use crate::flash::Lang;
 use crate::state::AppState;
 use crate::telemetry::names;
@@ -275,28 +275,20 @@ async fn authenticate(
 
 async fn account(state: &AppState, token: &str) -> Result<Login, Closing> {
     let header = format!("Bearer {token}");
-    let expected = Expected {
-        issuer: &state.config.jwt_issuer,
-        audience: &state.config.jwt_audience,
-    };
     let now = chrono::Utc::now().timestamp();
     let claims = match auth::authenticate(
         Some(header.as_bytes()),
-        &state.jwks,
-        expected,
         state.config.token_signer.as_ref(),
         now,
-    )
-    .await
-    {
+    ) {
         Ok(claims) => claims,
         Err(Failure::Rejected { reason, .. }) => {
             metrics::counter!(names::AUTH_REJECTIONS_TOTAL, "reason" => reason.code()).increment(1);
             tracing::info!(reason = reason.code(), "game token rejected");
             return Err(Closing::new(close::INVALID_TOKEN, reason.code()));
         }
-        Err(Failure::NoKeys) => {
-            return Err(Closing::new(close::TRY_AGAIN_LATER, "no usable JWKS key"));
+        Err(Failure::NoKey) => {
+            return Err(Closing::new(close::TRY_AGAIN_LATER, "no signing key"));
         }
     };
     let Some(user_id) = auth::user_id(&claims.sub) else {

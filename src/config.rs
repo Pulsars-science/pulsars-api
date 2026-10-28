@@ -17,13 +17,13 @@ pub const GAME_ORIGIN: &str = "https://pulsars.science";
 /// Origin of the Vite dev server, allowed only in development.
 pub const DEV_GAME_ORIGIN: &str = "http://localhost:5173";
 
-/// The Laravel site: issuer of game tokens and home of member profiles.
+/// The site (`pulsars-web`): home of the pages the API links to.
 pub const SITE_URL: &str = "https://pulsars.science";
 
-/// `aud` of the game tokens meant for this API.
+/// `aud` of the game tokens the API signs.
 pub const API_AUDIENCE: &str = "api.pulsars.science";
 
-/// `iss` of the game tokens the API signs itself (`JWT_OWN_ISSUER`).
+/// `iss` of the game tokens the API signs. It verifies no other.
 pub const API_ISSUER: &str = "https://api.pulsars.science";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,15 +68,9 @@ pub struct Config {
     pub database_url: Secret,
     pub database_max_connections: u32,
     pub redis_url: Secret,
-    /// Laravel's public keys (`docs/contract/auth-jwt.md` §3). HTTPS only in
-    /// production.
-    pub jwks_url: String,
-    /// Expected `iss` of game tokens.
-    pub jwt_issuer: String,
-    /// Expected `aud` of game tokens.
-    pub jwt_audience: String,
-    /// Base URL of Laravel's `public` disk, without trailing slash. Avatar
-    /// URLs are `<base>/<avatar_path>`.
+    /// Public base URL of the `public` files (avatars, suggestion images),
+    /// without trailing slash: the site's `/storage`, which relays to
+    /// `GET /v1/storage/{path}`. Avatar URLs are `<base>/<avatar_path>`.
     pub public_storage_url: String,
     /// Origins allowed to call authenticated and game endpoints with
     /// credentials. Public content endpoints allow any origin.
@@ -92,22 +86,72 @@ pub struct Config {
     pub log_filter: String,
     /// How long in-flight requests get to finish after SIGTERM.
     pub shutdown_grace: Duration,
-    /// Where match results go (`docs/contract/webhooks.md`). `None`: the
-    /// outbox fills up and nothing is sent.
-    pub webhook: Option<WebhookConfig>,
-    /// `SERVICE_KEY`: requests that carry it in `Pulsars-Service-Key` (the
-    /// site, from the same machine) are not rate limited. `None`: every
+    /// `SERVICE_KEY`: requests that carry it in `Pulsars-Service-Key`
+    /// (`pulsars-web`, from the same machine) are not rate limited. `None`: every
     /// request is.
     pub service_key: Option<Secret>,
-    /// `BCRYPT_COST` of the hashes the API writes (12, as Laravel).
-    pub bcrypt_cost: u32,
-    /// The key the API signs game tokens with (`JWT_SIGNING_KEY_FILE`,
-    /// `JWT_SIGNING_KID`). `None`: `POST /v1/auth/token` answers 503.
+    /// The key private messages are sealed with (`MESSAGES_KEY`,
+    /// `MESSAGES_KEY_VERSION`). Required in production; `None` in
+    /// development: the private message routes answer 503.
+    pub messages_key: Option<MessagesKey>,
+    /// `ARGON2_MEMORY_KIB`: memory cost of the password hashes the API
+    /// writes (19 456 KiB). Lowered only by the tests.
+    pub argon2_memory_kib: u32,
+    /// The key the API signs and verifies game tokens with
+    /// (`JWT_SIGNING_KEY_FILE`, `JWT_SIGNING_KID`). Required in production;
+    /// `None` in development: `POST /v1/auth/token` and every route that
+    /// needs a game token answer 503.
     pub token_signer: Option<TokenSigner>,
     /// Where account mails go (`MAIL_SMTP_URL`, `MAIL_FROM`). `None`: they
     /// are only logged, without their link.
     pub mail: Option<MailConfig>,
+    /// Translation of forum posts and `pulsars-api content translate`
+    /// (`DEEPL_API_KEY`, `DEEPL_API_URL`,
+    /// `DEEPL_LANGUAGES`). `None` without a key: the translation routes
+    /// answer 503 `not_configured`, as Laravel did.
+    pub deepl: Option<DeeplConfig>,
+    /// The Umami instance that measures the site's audience, read by the
+    /// admin dashboard. `None`: the dashboard says it is not configured.
+    pub umami: Option<UmamiConfig>,
 }
+
+/// `UMAMI_URL`, `UMAMI_WEBSITE_ID`, `UMAMI_USERNAME` and `UMAMI_PASSWORD`,
+/// all four or none (Laravel's `services.umami`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UmamiConfig {
+    /// Usually on the same machine: plain http is accepted.
+    pub url: String,
+    pub website_id: String,
+    pub username: String,
+    pub password: Secret,
+}
+
+/// DeepL, which translates forum posts (Laravel's `services.deepl`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeeplConfig {
+    pub key: Secret,
+    /// `https://api-free.deepl.com` or `https://api.deepl.com`, without
+    /// trailing slash.
+    pub url: String,
+    /// The site's languages and DeepL's `target_lang` for each.
+    pub languages: Vec<(String, String)>,
+}
+
+impl DeeplConfig {
+    /// DeepL's `target_lang` for one of the site's languages.
+    pub fn target(&self, lang: &str) -> Option<&str> {
+        self.languages
+            .iter()
+            .find(|(site, _)| site == lang)
+            .map(|(_, deepl)| deepl.as_str())
+    }
+}
+
+/// DeepL's free endpoint, as in Laravel's `config/services.php`.
+pub const DEEPL_URL: &str = "https://api-free.deepl.com";
+
+/// The site's languages and their DeepL target, as in Laravel.
+pub const DEEPL_LANGUAGES: &str = "fr=FR,en=EN-GB,ru=RU";
 
 /// The SMTP server of account mails (`docs/contract/auth-sessions.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,14 +167,30 @@ pub struct MailConfig {
 /// `docs/EMAIL.md`.
 pub const MAIL_FROM: &str = "Pulsars <noreply@blackenium.com>";
 
+/// The AES-256-GCM key of private messages (`src/crypto.rs`): 32 random
+/// bytes in base64 (`openssl rand -base64 32`), and the version stored with
+/// each message it seals, so a later key can take over.
+#[derive(Clone, PartialEq, Eq)]
+pub struct MessagesKey {
+    pub version: i16,
+    pub key: [u8; 32],
+}
+
+impl fmt::Debug for MessagesKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MessagesKey")
+            .field("version", &self.version)
+            .field("key", &"***")
+            .finish()
+    }
+}
+
 /// What the API needs to issue game tokens (`docs/contract/auth-jwt.md`).
 #[derive(Clone)]
 pub struct TokenSigner {
     /// `YYYY-MM-ed25519-N`.
     pub kid: String,
     pub key: ed25519_dalek::SigningKey,
-    /// `JWT_OWN_ISSUER`, `https://api.pulsars.science` by default.
-    pub issuer: String,
     /// `JWT_TOKEN_TTL_SECS`, 300 by default.
     pub ttl_secs: i64,
 }
@@ -140,30 +200,13 @@ impl fmt::Debug for TokenSigner {
         f.debug_struct("TokenSigner")
             .field("kid", &self.kid)
             .field("key", &"***")
-            .field("issuer", &self.issuer)
             .field("ttl_secs", &self.ttl_secs)
             .finish()
     }
 }
 
-/// `LARAVEL_WEBHOOK_URL`, `LARAVEL_WEBHOOK_SECRET` and the optional
-/// `LARAVEL_WEBHOOK_HOST`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebhookConfig {
-    /// Laravel's receiver, usually on the loopback or a private network:
-    /// plain http is accepted in production.
-    pub url: String,
-    /// At least 32 characters (`GAME_WEBHOOK_SECRET` on the Laravel side).
-    pub secret: Secret,
-    /// `Host` header to send instead of the URL's host.
-    pub host: Option<String>,
-}
-
 /// Shortest service key accepted.
 const SERVICE_KEY_MIN_CHARS: usize = 32;
-
-/// Shortest webhook secret accepted.
-const WEBHOOK_SECRET_MIN_CHARS: usize = 32;
 
 /// All the problems found in the environment.
 #[derive(Debug, PartialEq, Eq)]
@@ -252,17 +295,10 @@ impl Config {
             .optional("SHUTDOWN_GRACE_SECS", "20", |v| parse_range(v, 1, 300))
             .map(|s| Duration::from_secs(u64::from(s)));
         let origins_raw = reader.optional_raw("CORS_ALLOWED_ORIGINS");
-        let jwks_raw = reader.required("JWKS_URL", |v| Ok(v.to_owned()));
-        let jwt_issuer = reader.optional("JWT_ISSUER", SITE_URL, |v| Ok(v.to_owned()));
-        let jwt_audience = reader.optional("JWT_AUDIENCE", API_AUDIENCE, |v| Ok(v.to_owned()));
         let storage_raw = reader.optional_raw("PUBLIC_STORAGE_URL");
-        let webhook = parse_webhook(
-            reader.optional_raw("LARAVEL_WEBHOOK_URL"),
-            reader.optional_raw("LARAVEL_WEBHOOK_SECRET"),
-            reader.optional_raw("LARAVEL_WEBHOOK_HOST"),
-            &mut reader.problems,
-        );
-        let bcrypt_cost = reader.optional("BCRYPT_COST", "12", |v| parse_range(v, 4, 31));
+        let argon2_memory_kib = reader.optional("ARGON2_MEMORY_KIB", "19456", |v| {
+            parse_range(v, 8, 4_194_304)
+        });
         let mail_from = reader.optional("MAIL_FROM", MAIL_FROM, |v| {
             v.parse::<lettre::message::Mailbox>()
                 .map(|_| v.to_owned())
@@ -283,10 +319,22 @@ impl Config {
                 None
             }
         };
+        let umami = parse_umami(
+            [
+                reader.optional_raw("UMAMI_URL"),
+                reader.optional_raw("UMAMI_WEBSITE_ID"),
+                reader.optional_raw("UMAMI_USERNAME"),
+                reader.optional_raw("UMAMI_PASSWORD"),
+            ],
+            &mut reader.problems,
+        );
         let signer_file = reader.optional_raw("JWT_SIGNING_KEY_FILE");
         let signer_kid = reader.optional_raw("JWT_SIGNING_KID");
-        let own_issuer = reader.optional("JWT_OWN_ISSUER", API_ISSUER, |v| Ok(v.to_owned()));
         let token_ttl = reader.optional("JWT_TOKEN_TTL_SECS", "300", |v| parse_range(v, 60, 3600));
+        let deepl_key = reader.optional_raw("DEEPL_API_KEY");
+        let deepl_url_raw = reader.optional_raw("DEEPL_API_URL");
+        let deepl_languages =
+            reader.optional("DEEPL_LANGUAGES", DEEPL_LANGUAGES, parse_deepl_languages);
         let service_key = match reader.optional_raw("SERVICE_KEY") {
             Some(key) if key.chars().count() < SERVICE_KEY_MIN_CHARS => {
                 reader.problems.push(format!(
@@ -297,13 +345,43 @@ impl Config {
             key => key.map(Secret::new),
         };
 
+        let messages_key_raw = reader.optional_raw("MESSAGES_KEY");
+        let messages_key_version = reader.optional("MESSAGES_KEY_VERSION", "1", |v| {
+            parse_range(v, 1, i16::MAX as u32).map(|n| n as i16)
+        });
+        let messages_key = match (messages_key_raw, environment) {
+            (Some(raw), _) => match parse_messages_key(&raw) {
+                Ok(key) => messages_key_version.map(|version| MessagesKey { version, key }),
+                Err(message) => {
+                    reader.problems.push(format!("MESSAGES_KEY: {message}"));
+                    None
+                }
+            },
+            (None, Some(Environment::Production)) => {
+                reader.problems.push(
+                    "MESSAGES_KEY: required in production (32 random bytes in base64: \
+                     openssl rand -base64 32)"
+                        .to_owned(),
+                );
+                None
+            }
+            (None, _) => None,
+        };
+
         let token_signer = match (signer_file, signer_kid) {
+            (None, None) if environment == Some(Environment::Production) => {
+                reader.problems.push(
+                    "JWT_SIGNING_KEY_FILE and JWT_SIGNING_KID: required in production \
+                     (docs/deployment.md, the game token key)"
+                        .to_owned(),
+                );
+                None
+            }
             (None, None) => None,
             (Some(file), Some(kid)) => match load_signer(&file, &kid, environment) {
                 Ok((kid, key)) => Some(TokenSigner {
                     kid,
                     key,
-                    issuer: own_issuer.clone().unwrap_or_else(|| API_ISSUER.to_owned()),
                     ttl_secs: i64::from(token_ttl.unwrap_or(300)),
                 }),
                 Err(message) => {
@@ -342,17 +420,6 @@ impl Config {
             }
         });
 
-        // Over plain http, anyone on the path could swap the keys.
-        let jwks_url = match (environment, jwks_raw) {
-            (Some(env), Some(raw)) => match parse_http_url(&raw, env) {
-                Ok(url) => Some(url),
-                Err(message) => {
-                    reader.problems.push(format!("JWKS_URL: {message}"));
-                    None
-                }
-            },
-            _ => None,
-        };
         let public_storage_url = environment.and_then(|env| {
             let raw = storage_raw.unwrap_or_else(|| format!("{SITE_URL}/storage"));
             match parse_http_url(&raw, env) {
@@ -365,6 +432,25 @@ impl Config {
                 }
             }
         });
+
+        let deepl_url = environment.and_then(|env| {
+            let raw = deepl_url_raw.unwrap_or_else(|| DEEPL_URL.to_owned());
+            match parse_http_url(&raw, env) {
+                Ok(url) => Some(url.trim_end_matches('/').to_owned()),
+                Err(message) => {
+                    reader.problems.push(format!("DEEPL_API_URL: {message}"));
+                    None
+                }
+            }
+        });
+        let deepl = match (deepl_key, deepl_url, deepl_languages) {
+            (Some(key), Some(url), Some(languages)) => Some(DeeplConfig {
+                key: Secret::new(key),
+                url,
+                languages,
+            }),
+            _ => None,
+        };
 
         if let (Some(bind), Some(metrics)) = (bind_addr, metrics_addr) {
             if !is_internal(metrics.ip()) {
@@ -396,9 +482,6 @@ impl Config {
             database_url,
             database_max_connections,
             redis_url,
-            jwks_url,
-            jwt_issuer,
-            jwt_audience,
             public_storage_url,
             cors_allowed_origins,
             rate_limit_anonymous,
@@ -416,9 +499,6 @@ impl Config {
                 Some(database_url),
                 Some(database_max_connections),
                 Some(redis_url),
-                Some(jwks_url),
-                Some(jwt_issuer),
-                Some(jwt_audience),
                 Some(public_storage_url),
                 Some(cors_allowed_origins),
                 Some(rate_limit_anonymous),
@@ -435,9 +515,6 @@ impl Config {
                 database_url,
                 database_max_connections,
                 redis_url,
-                jwks_url,
-                jwt_issuer,
-                jwt_audience,
                 public_storage_url,
                 cors_allowed_origins,
                 rate_limit_anonymous,
@@ -447,11 +524,14 @@ impl Config {
                 log_format,
                 log_filter,
                 shutdown_grace,
-                webhook,
                 service_key,
-                bcrypt_cost: bcrypt_cost.unwrap_or(12),
+                messages_key,
+                argon2_memory_kib: argon2_memory_kib
+                    .unwrap_or(crate::auth::password::DEFAULT_MEMORY_KIB),
                 token_signer,
                 mail,
+                umami,
+                deepl,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
@@ -517,7 +597,8 @@ fn parse_socket_addr(value: &str) -> Result<SocketAddr, String> {
         .map_err(|_| "must be an IP address and port, e.g. 127.0.0.1:8080".to_owned())
 }
 
-/// Whether `kid` reads `YYYY-MM-ed25519-N` (Laravel's `ClesJeu` format).
+/// Whether `kid` reads `YYYY-MM-ed25519-N`: the month the key was made, and
+/// a counter.
 pub fn is_valid_kid(kid: &str) -> bool {
     let Some((date, counter)) = kid.split_once("-ed25519-") else {
         return false;
@@ -535,9 +616,8 @@ pub fn is_valid_kid(kid: &str) -> bool {
     date_ok && counter_ok
 }
 
-/// The 32-byte Ed25519 seed in `path`, base64 (as Laravel's
-/// `storage/app/private/jeu/<kid>.key`). In production the file must not be
-/// readable by its group or others.
+/// The 32-byte Ed25519 seed in `path`, base64 (`openssl rand -base64 32`).
+/// In production the file must not be readable by its group or others.
 fn load_signer(
     path: &str,
     kid: &str,
@@ -574,6 +654,45 @@ fn load_signer(
         .try_into()
         .map_err(|_| problem(format!("{path} does not hold a 32-byte seed")))?;
     Ok((kid.to_owned(), ed25519_dalek::SigningKey::from_bytes(&seed)))
+}
+
+/// `fr=FR,en=EN-GB`: the site's language, `=`, DeepL's `target_lang`.
+fn parse_deepl_languages(value: &str) -> Result<Vec<(String, String)>, String> {
+    let message = || "must look like `fr=FR,en=EN-GB,ru=RU`".to_owned();
+    value
+        .split(',')
+        .map(|pair| {
+            let (site, deepl) = pair.split_once('=').ok_or_else(message)?;
+            let (site, deepl) = (site.trim(), deepl.trim());
+            let valid = |s: &str| {
+                !s.is_empty()
+                    && s.len() <= 10
+                    && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            };
+            if valid(site) && valid(deepl) {
+                Ok((site.to_owned(), deepl.to_owned()))
+            } else {
+                Err(message())
+            }
+        })
+        .collect()
+}
+
+/// 32 bytes in standard base64, padded or not. The value is never echoed.
+fn parse_messages_key(value: &str) -> Result<[u8; 32], String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+
+    let bytes = STANDARD
+        .decode(value)
+        .or_else(|_| STANDARD_NO_PAD.decode(value))
+        .map_err(|_| "is not base64".to_owned())?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+        format!(
+            "must decode to 32 bytes, not {} (openssl rand -base64 32)",
+            bytes.len()
+        )
+    })
 }
 
 fn parse_range(value: &str, min: u32, max: u32) -> Result<u32, String> {
@@ -614,57 +733,33 @@ fn parse_http_url(value: &str, environment: Environment) -> Result<String, Strin
     Ok(value.to_owned())
 }
 
-/// Both the URL and the secret, or neither.
-fn parse_webhook(
-    url: Option<String>,
-    secret: Option<String>,
-    host: Option<String>,
-    problems: &mut Vec<String>,
-) -> Option<WebhookConfig> {
-    let (url, secret) = match (url, secret) {
-        (None, None) => {
-            if host.is_some() {
-                problems.push("LARAVEL_WEBHOOK_HOST: requires LARAVEL_WEBHOOK_URL".to_owned());
+/// The four Umami variables, or none.
+fn parse_umami(values: [Option<String>; 4], problems: &mut Vec<String>) -> Option<UmamiConfig> {
+    match values {
+        [None, None, None, None] => None,
+        [Some(url), Some(website_id), Some(username), Some(password)] => {
+            match parse_url_scheme(&url, &["http", "https"]) {
+                Ok(()) => Some(UmamiConfig {
+                    url: url.trim_end_matches('/').to_owned(),
+                    website_id,
+                    username,
+                    password: Secret::new(password),
+                }),
+                Err(message) => {
+                    problems.push(format!("UMAMI_URL: {message}"));
+                    None
+                }
             }
-            return None;
         }
-        (Some(_), None) => {
-            problems.push("LARAVEL_WEBHOOK_SECRET: required with LARAVEL_WEBHOOK_URL".to_owned());
-            return None;
+        _ => {
+            problems.push(
+                "UMAMI_URL, UMAMI_WEBSITE_ID, UMAMI_USERNAME and UMAMI_PASSWORD: \
+                 set all four or none"
+                    .to_owned(),
+            );
+            None
         }
-        (None, Some(_)) => {
-            problems.push("LARAVEL_WEBHOOK_URL: required with LARAVEL_WEBHOOK_SECRET".to_owned());
-            return None;
-        }
-        (Some(url), Some(secret)) => (url, secret),
-    };
-    let mut ok = true;
-    // Laravel listens on the loopback or a private network: http is fine
-    // in production too.
-    if let Err(message) = parse_http_url(&url, Environment::Development) {
-        problems.push(format!("LARAVEL_WEBHOOK_URL: {message}"));
-        ok = false;
     }
-    if secret.chars().count() < WEBHOOK_SECRET_MIN_CHARS {
-        problems.push(format!(
-            "LARAVEL_WEBHOOK_SECRET: must be at least {WEBHOOK_SECRET_MIN_CHARS} characters"
-        ));
-        ok = false;
-    }
-    if let Some(host) = &host
-        && (host.is_empty()
-            || !host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':')))
-    {
-        problems.push("LARAVEL_WEBHOOK_HOST: must be a host name, e.g. pulsars.science".to_owned());
-        ok = false;
-    }
-    ok.then(|| WebhookConfig {
-        url,
-        secret: Secret::new(secret),
-        host,
-    })
 }
 
 fn default_origins(environment: Environment) -> Vec<String> {
@@ -717,6 +812,29 @@ fn is_internal(ip: IpAddr) -> bool {
 mod tests {
     use super::*;
 
+    /// A signing key file only its owner may read, shared by the tests:
+    /// production requires one.
+    fn key_file() -> &'static str {
+        static FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        FILE.get_or_init(|| {
+            use base64::Engine as _;
+            let dir = std::env::temp_dir().join(format!("pulsars-key-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&dir).unwrap();
+            let path = dir.join("signing.key");
+            std::fs::write(
+                &path,
+                base64::engine::general_purpose::STANDARD.encode([9u8; 32]),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            path.to_str().unwrap().to_owned()
+        })
+    }
+
     fn base() -> Vec<(&'static str, &'static str)> {
         vec![
             ("PULSARS_ENV", "production"),
@@ -725,8 +843,21 @@ mod tests {
                 "postgres://pulsars_api:secret@localhost/pulsars",
             ),
             ("REDIS_URL", "redis://localhost:6379"),
-            ("JWKS_URL", "https://pulsars.science/.well-known/jwks.json"),
+            (
+                "MESSAGES_KEY",
+                "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+            ),
+            ("JWT_SIGNING_KEY_FILE", key_file()),
+            ("JWT_SIGNING_KID", "2026-10-ed25519-1"),
         ]
+    }
+
+    /// `base()` without the variables `names`.
+    fn without(names: &[&str]) -> Vec<(&'static str, &'static str)> {
+        base()
+            .into_iter()
+            .filter(|(k, _)| !names.contains(k))
+            .collect()
     }
 
     fn with(extra: &[(&'static str, &'static str)]) -> Result<Config, ConfigError> {
@@ -750,40 +881,13 @@ mod tests {
         );
         assert_eq!(config.body_limit_bytes, 65536);
         assert_eq!(config.log_format, LogFormat::Json);
-        assert_eq!(config.jwt_issuer, "https://pulsars.science");
-        assert_eq!(config.jwt_audience, "api.pulsars.science");
+        assert_eq!(
+            config.token_signer.map(|s| (s.kid, s.ttl_secs)),
+            Some(("2026-10-ed25519-1".to_owned(), 300))
+        );
         assert_eq!(config.public_storage_url, "https://pulsars.science/storage");
         assert_eq!(config.rate_limit_anonymous, 60);
         assert_eq!(config.rate_limit_authenticated, 120);
-    }
-
-    #[test]
-    fn jwks_url_must_be_https_in_production() {
-        let err = with(&[("JWKS_URL", "http://pulsars.test/.well-known/jwks.json")])
-            .expect_err("must fail");
-        assert_eq!(err.problems, vec!["JWKS_URL: must use https in production"]);
-        let dev = with(&[
-            ("PULSARS_ENV", "development"),
-            ("JWKS_URL", "http://localhost:8000/.well-known/jwks.json"),
-        ])
-        .expect("http is fine in development");
-        assert_eq!(dev.jwks_url, "http://localhost:8000/.well-known/jwks.json");
-    }
-
-    #[test]
-    fn rejects_unusable_jwks_urls() {
-        for bad in [
-            "pulsars.science/.well-known/jwks.json",
-            "ftp://pulsars.science/jwks.json",
-            "https://user:pass@pulsars.science/jwks.json",
-        ] {
-            let err = with(&[("JWKS_URL", bad)]).expect_err(bad);
-            assert!(err.problems[0].starts_with("JWKS_URL: "), "{bad}");
-            assert!(
-                !err.problems[0].contains("pass@"),
-                "never echoes credentials"
-            );
-        }
     }
 
     #[test]
@@ -812,8 +916,7 @@ mod tests {
             vec![
                 "PULSARS_ENV: missing",
                 "DATABASE_URL: missing",
-                "REDIS_URL: missing",
-                "JWKS_URL: missing"
+                "REDIS_URL: missing"
             ]
         );
     }
@@ -869,35 +972,38 @@ mod tests {
     }
 
     #[test]
-    fn the_webhook_needs_its_url_and_secret_together() {
-        assert_eq!(with(&[]).expect("valid").webhook, None);
-        let secret = "0123456789abcdef0123456789abcdef";
-        let config = with(&[
-            (
-                "LARAVEL_WEBHOOK_URL",
-                "http://127.0.0.1:8000/internal/jeu/evenements",
-            ),
-            ("LARAVEL_WEBHOOK_SECRET", secret),
-            ("LARAVEL_WEBHOOK_HOST", "pulsars.science"),
-        ])
-        .expect("http on the loopback is fine in production");
-        let webhook = config.webhook.expect("configured");
-        assert_eq!(webhook.host.as_deref(), Some("pulsars.science"));
-        assert!(!format!("{webhook:?}").contains(secret));
+    fn deepl_needs_a_key_and_has_laravel_defaults() {
+        assert_eq!(with(&[]).expect("valid").deepl, None);
+        let config = with(&[("DEEPL_API_KEY", "a-key:fx")]).expect("valid");
+        let deepl = config.deepl.expect("configured");
+        assert_eq!(deepl.url, "https://api-free.deepl.com");
+        assert_eq!(deepl.target("en"), Some("EN-GB"));
+        assert_eq!(deepl.target("ru"), Some("RU"));
+        assert_eq!(deepl.target("de"), None);
+        assert!(!format!("{deepl:?}").contains("a-key"));
 
-        let err =
-            with(&[("LARAVEL_WEBHOOK_URL", "http://127.0.0.1:8000/x")]).expect_err("no secret");
-        assert_eq!(
-            err.problems,
-            vec!["LARAVEL_WEBHOOK_SECRET: required with LARAVEL_WEBHOOK_URL"]
-        );
-        let err = with(&[
-            ("LARAVEL_WEBHOOK_URL", "ftp://x/y"),
-            ("LARAVEL_WEBHOOK_SECRET", "short"),
+        let config = with(&[
+            ("DEEPL_API_KEY", "k"),
+            ("DEEPL_API_URL", "https://api.deepl.com/"),
+            ("DEEPL_LANGUAGES", "fr=FR, en=EN-US"),
+        ])
+        .expect("valid");
+        let deepl = config.deepl.expect("configured");
+        assert_eq!(deepl.url, "https://api.deepl.com");
+        assert_eq!(deepl.target("en"), Some("EN-US"));
+
+        let error = with(&[
+            ("DEEPL_API_URL", "http://deepl.example"),
+            ("DEEPL_LANGUAGES", "fr"),
         ])
         .expect_err("invalid");
-        assert_eq!(err.problems.len(), 2);
-        assert!(!err.to_string().contains("short"));
+        assert_eq!(
+            error.problems,
+            vec![
+                "DEEPL_LANGUAGES: must look like `fr=FR,en=EN-GB,ru=RU`",
+                "DEEPL_API_URL: must use https in production",
+            ]
+        );
     }
 
     #[test]
@@ -912,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn kids_follow_the_laravel_format() {
+    fn kids_name_a_month_and_a_counter() {
         for kid in ["2026-10-ed25519-1", "2027-01-ed25519-123456"] {
             assert!(is_valid_kid(kid), "{kid}");
         }
@@ -966,7 +1072,6 @@ mod tests {
         .unwrap();
         let signer = config.token_signer.expect("signer");
         assert_eq!(signer.kid, "2026-10-ed25519-1");
-        assert_eq!(signer.issuer, API_ISSUER);
         assert_eq!(signer.ttl_secs, 300);
         assert_eq!(signer.key.to_bytes(), [7u8; 32]);
         assert!(
@@ -974,12 +1079,19 @@ mod tests {
             "the key never shows in Debug"
         );
 
-        let problems = with(&[("JWT_SIGNING_KEY_FILE", file)])
+        let problems = Config::from_vars(without(&["JWT_SIGNING_KID"]))
             .unwrap_err()
             .problems;
         assert_eq!(
             problems,
             ["JWT_SIGNING_KID: required with JWT_SIGNING_KEY_FILE"]
+        );
+        let problems = Config::from_vars(without(&["JWT_SIGNING_KEY_FILE"]))
+            .unwrap_err()
+            .problems;
+        assert_eq!(
+            problems,
+            ["JWT_SIGNING_KEY_FILE: required with JWT_SIGNING_KID"]
         );
         let problems = with(&[("JWT_SIGNING_KEY_FILE", file), ("JWT_SIGNING_KID", "bad")])
             .unwrap_err()
@@ -993,8 +1105,40 @@ mod tests {
         .unwrap_err()
         .problems;
         assert!(problems[0].ends_with("is not base64"), "{problems:?}");
-        assert!(with(&[]).unwrap().token_signer.is_none());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_signing_key_is_required_in_production_only() {
+        let problems = Config::from_vars(without(&["JWT_SIGNING_KEY_FILE", "JWT_SIGNING_KID"]))
+            .unwrap_err()
+            .problems;
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0]
+                .starts_with("JWT_SIGNING_KEY_FILE and JWT_SIGNING_KID: required in production"),
+            "{problems:?}"
+        );
+        let development = without(&["JWT_SIGNING_KEY_FILE", "JWT_SIGNING_KID"])
+            .into_iter()
+            .map(|(k, v)| (k, if k == "PULSARS_ENV" { "development" } else { v }));
+        assert!(
+            Config::from_vars(development)
+                .unwrap()
+                .token_signer
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_old_site_token_settings_are_gone() {
+        // Ignored if still set: nothing reads them any more.
+        let config = with(&[
+            ("JWKS_URL", "http://pulsars.test/.well-known/jwks.json"),
+            ("JWT_ISSUER", "https://pulsars.science"),
+        ])
+        .expect("valid");
+        assert!(config.token_signer.is_some());
     }
 
     #[test]
@@ -1023,6 +1167,24 @@ mod tests {
     }
 
     #[test]
+    fn umami_needs_its_four_variables() {
+        let config = with(&[]).unwrap();
+        assert_eq!(config.umami, None);
+        let config = with(&[
+            ("UMAMI_URL", "http://127.0.0.1:3001/"),
+            ("UMAMI_WEBSITE_ID", "site"),
+            ("UMAMI_USERNAME", "admin"),
+            ("UMAMI_PASSWORD", "secret"),
+        ])
+        .unwrap();
+        let umami = config.umami.unwrap();
+        assert_eq!(umami.url, "http://127.0.0.1:3001");
+        assert_eq!(umami.password.expose(), "secret");
+        let error = with(&[("UMAMI_URL", "http://127.0.0.1:3001")]).unwrap_err();
+        assert!(error.problems[0].contains("set all four or none"));
+    }
+
+    #[test]
     fn a_service_key_must_be_long() {
         let problems = with(&[("SERVICE_KEY", "short")]).unwrap_err().problems;
         assert_eq!(problems, ["SERVICE_KEY: must be at least 32 characters"]);
@@ -1031,5 +1193,45 @@ mod tests {
             Config::from_vars(base().into_iter().chain([("SERVICE_KEY", key.as_str())])).unwrap();
         assert_eq!(config.service_key, Some(Secret::new(key.clone())));
         assert_eq!(with(&[]).unwrap().service_key, None);
+    }
+
+    #[test]
+    fn the_messages_key_is_32_bytes_of_base64() {
+        let config = with(&[]).unwrap();
+        let key = config.messages_key.expect("a key");
+        assert_eq!((key.version, key.key), (1, [7u8; 32]));
+        assert!(
+            !format!("{key:?}").contains('7'),
+            "the key never shows in Debug"
+        );
+
+        let config = with(&[("MESSAGES_KEY_VERSION", "3")]).unwrap();
+        assert_eq!(config.messages_key.map(|k| k.version), Some(3));
+        let problems = with(&[("MESSAGES_KEY_VERSION", "0")]).unwrap_err().problems;
+        assert_eq!(
+            problems,
+            ["MESSAGES_KEY_VERSION: must be an integer between 1 and 32767"]
+        );
+
+        let problems = with(&[("MESSAGES_KEY", "c2hvcnQ=")]).unwrap_err().problems;
+        assert_eq!(
+            problems,
+            ["MESSAGES_KEY: must decode to 32 bytes, not 5 (openssl rand -base64 32)"]
+        );
+        let problems = with(&[("MESSAGES_KEY", "not base64!")])
+            .unwrap_err()
+            .problems;
+        assert_eq!(problems, ["MESSAGES_KEY: is not base64"]);
+
+        // Required in production, optional in development.
+        let vars = base().into_iter().filter(|(k, _)| *k != "MESSAGES_KEY");
+        let problems = Config::from_vars(vars).unwrap_err().problems;
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].starts_with("MESSAGES_KEY: required in production"));
+        let vars = base()
+            .into_iter()
+            .filter(|(k, _)| *k != "MESSAGES_KEY")
+            .map(|(k, v)| (k, if k == "PULSARS_ENV" { "development" } else { v }));
+        assert_eq!(Config::from_vars(vars).unwrap().messages_key, None);
     }
 }
