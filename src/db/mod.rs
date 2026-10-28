@@ -1,9 +1,11 @@
 //! PostgreSQL access.
 //!
-//! The API's role (`pulsars_api`) can read the `api_read` views and owns the
-//! `game` schema; it has no right on `site` (see `docs/contract/database.md`).
-//! Its `search_path` is `game, api_read`, so queries name views without a
-//! schema only when unambiguous; new code should qualify them anyway.
+//! The API's role (`pulsars_api`) reads the `api_read` views and `contenu`,
+//! reads and writes the rows of `game` and `langues`, and has no right on
+//! `site`; it creates, alters or drops nothing (`deploy/sql/phase-1.sql`,
+//! `docs/contract/database.md` §2.1). Its `search_path` is
+//! `game, langues, api_read, contenu`: `api_read` before `contenu`, so a name
+//! without schema finds the filtered view. Queries name their schema anyway.
 
 pub mod courses;
 pub mod exams;

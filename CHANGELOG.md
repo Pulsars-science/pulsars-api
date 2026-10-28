@@ -20,9 +20,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   detail is now "This endpoint needs the admin or super-admin role.".
 - `scripts/site-schema-snapshot.sh`: regenerates `dev/db/20-site-schema.sql`
   from the Laravel migrations, run on a throwaway PostgreSQL 17.
+- `pulsars-api migrate`: applies the embedded migrations and exits, as
+  `DATABASE_MIGRATION_URL` (the new `pulsars_migrate` role) or, without it,
+  `DATABASE_URL`. `deploy-api` runs it with the new release before the
+  switch, reading the migration account from `/etc/pulsars-api/migrate.env`
+  (root only, never the service).
+- `deploy/sql/phase-1.sql` and `phase-1-retour.sql` (in the release archive
+  under `sql/`): `pulsars_owner` owns every table, `pulsars_migrate` runs the
+  migrations, the content tables move to a `contenu` schema, and neither
+  `pulsars_site` nor `pulsars_api` may create, alter or drop anything
+  (`docs/contract/database.md` §2.1). Production order and rollback:
+  `deploy/sql/README.md`. `scripts/dev-db-init.sh` applies it, so local and
+  CI databases have the production layout.
 
 ### Changed
 
+- The service no longer migrates at startup: it waits, logging the missing
+  versions, until every embedded migration is applied, then starts the
+  season close. Integration tests migrate with `TEST_MIGRATION_DATABASE_URL`.
 - `dev/db/20-site-schema.sql` is the real Laravel `site` schema (48 tables,
   generated), no longer a hand-written stand-in with only the columns the
   views read. Local and CI databases now have every table and constraint the
