@@ -10,6 +10,8 @@
 //! `insufficient-scope` a token whose `roles` do not include one of theirs.
 
 pub mod jwks;
+pub mod member;
+pub mod password;
 pub mod token;
 
 use axum::extract::{FromRequestParts, OriginalUri};

@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Create roles, schemas, demo data, api_read views and production grants
+      - name: Create roles, schemas, tables and demo data
         env:
           PGHOST: localhost
           PGUSER: postgres

@@ -9,6 +9,7 @@ pub mod exercises;
 pub mod files;
 pub mod game;
 pub mod health;
+pub mod languages;
 pub mod me;
 pub mod news;
 pub mod oauth;
@@ -71,6 +72,15 @@ pub fn router(state: AppState) -> Router {
             "/v1/resources/{slug}",
             get(resources::show).options(preflight),
         )
+        .route("/v1/languages", get(languages::list).options(preflight))
+        .route(
+            "/v1/languages/{code}",
+            get(languages::show).options(preflight),
+        )
+        .route(
+            "/v1/languages/{code}/levels/{level}",
+            get(languages::level).options(preflight),
+        )
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
@@ -98,6 +108,16 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
 
+    // What learners do in the languages section, sent by its front end
+    // (pulsars.science/langues): only that origin may post from a browser.
+    let languages_events = Router::new()
+        .route(
+            "/v1/languages/events",
+            axum::routing::post(languages::record_event).options(preflight),
+        )
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
+        .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
+
     // The match WebSocket checks its `Origin` itself, before the upgrade.
     let game_ws = Router::new()
         .route("/v1/game/ws", get(game::ws))
@@ -112,6 +132,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/game/admin/stats",
             get(game::admin_stats).options(preflight),
+        )
+        .route(
+            "/v1/languages/admin/stats",
+            get(languages::admin_stats).options(preflight),
         )
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_restricted(config.cors_allowed_origins.clone()));
@@ -159,6 +183,7 @@ pub fn router(state: AppState) -> Router {
         .merge(files)
         .merge(game_public)
         .merge(game_ws)
+        .merge(languages_events)
         .merge(authenticated)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)

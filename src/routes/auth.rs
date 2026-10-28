@@ -1,12 +1,10 @@
 //! `/v1/auth/*` (`openapi.yaml`, tag `auth`; `docs/contract/auth-sessions.md`):
 //! logging in, signing up, sessions and passwords of the site's members.
 //!
-//! The site calls these from its server, with the service key and the
-//! visitor's address in `X-Forwarded-For`. A session is an opaque token,
-//! given back in `Pulsars-Session`; only its SHA-256 is stored. Hashes are
-//! bcrypt in Laravel's `$2y$` format, so the site can still check them.
-
-use std::sync::OnceLock;
+//! The site (pulsars-web) calls these from its server, with the service key
+//! and the visitor's address in `X-Forwarded-For`. A session is an opaque
+//! token, given back in `Pulsars-Session`; only its SHA-256 is stored.
+//! Passwords are argon2id (`crate::auth::password`).
 
 use axum::extract::{FromRequestParts, OriginalUri, State};
 use axum::http::request::Parts;
@@ -18,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::courses::timestamp;
+use crate::auth::password;
 use crate::db::accounts::{self, AccountRow, CreateError};
 use crate::db::sessions::{self, SessionRow};
 use crate::error::{ApiError, ParameterError};
@@ -181,8 +180,8 @@ pub async fn login(
     let hash = account
         .as_ref()
         .and_then(|a| a.password.clone())
-        .unwrap_or_else(|| dummy_hash(state.config.bcrypt_cost).to_owned());
-    let matches = verify(body.password, hash).await;
+        .unwrap_or_else(|| password::dummy(state.config.argon2_memory_kib).to_owned());
+    let matches = password::verify(body.password, hash).await;
     let account = match account {
         Some(account) if matches && account.password.is_some() => account,
         _ => return Err(ApiError::InvalidCredentials),
@@ -235,7 +234,7 @@ pub async fn register(
     )
     .await?;
 
-    let hash = hash(state.config.bcrypt_cost, body.password).await?;
+    let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
     let account = accounts::create(
         &state.db,
         &body.pseudo,
@@ -316,7 +315,7 @@ pub async fn change_password(
                 "is required",
             )),
             Some(current) => {
-                if !verify(current, hash).await {
+                if !password::verify(current, hash).await {
                     errors.push(ParameterError::field(
                         "current_password",
                         "incorrect",
@@ -330,7 +329,7 @@ pub async fn change_password(
     if !errors.is_empty() {
         return Err(ApiError::InvalidFields(errors));
     }
-    let hash = hash(state.config.bcrypt_cost, body.password).await?;
+    let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
     accounts::set_password(&state.db, account.id, &hash).await?;
     sessions::revoke_others(&state.db, account.id, Some(session.id)).await?;
     Ok(empty())
@@ -351,7 +350,7 @@ pub async fn reset_password(
         return Err(ApiError::InvalidFields(errors));
     }
     let account = account_of(&state, &body.user_id, uri.path()).await?;
-    let hash = hash(state.config.bcrypt_cost, body.password).await?;
+    let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
     accounts::set_password(&state.db, account.id, &hash).await?;
     sessions::revoke_others(&state.db, account.id, None).await?;
     Ok(empty())
@@ -502,37 +501,6 @@ pub(crate) async fn limit(
         }),
         _ => Ok(()),
     }
-}
-
-// --- Passwords -------------------------------------------------------------
-
-pub(crate) async fn hash(cost: u32, password: String) -> Result<String, ApiError> {
-    tokio::task::spawn_blocking(move || {
-        bcrypt::hash_with_result(password, cost)
-            .map(|h| h.format_for_version(bcrypt::Version::TwoY))
-    })
-    .await
-    .map_err(|e| ApiError::Internal(format!("password hashing panicked: {e}")))?
-    .map_err(|e| ApiError::Internal(format!("password hashing failed: {e}")))
-}
-
-/// Whether `password` matches `hash` (`$2y$`, `$2b$`…). PHP keeps the first
-/// 72 bytes of a password; the `bcrypt` crate does the same.
-async fn verify(password: String, hash: String) -> bool {
-    tokio::task::spawn_blocking(move || bcrypt::verify(password, &hash).unwrap_or(false))
-        .await
-        .unwrap_or(false)
-}
-
-/// A hash to check against when there is no account, so that an unknown
-/// login takes as long as a wrong password.
-fn dummy_hash(cost: u32) -> &'static str {
-    static DUMMY: OnceLock<String> = OnceLock::new();
-    DUMMY.get_or_init(|| {
-        bcrypt::hash_with_result("not a password of anyone", cost)
-            .map(|h| h.format_for_version(bcrypt::Version::TwoY))
-            .unwrap_or_default()
-    })
 }
 
 // --- Validation (Laravel's CreateNewUser and Password::defaults) ------------
@@ -709,19 +677,6 @@ mod tests {
         assert_eq!(code("12345678", "12345679"), Some("mismatch"));
         assert_eq!(code(&"x".repeat(256), &"x".repeat(256)), Some("too_long"));
         assert_eq!(code("12345678", "12345678"), None);
-    }
-
-    #[test]
-    fn hashes_are_in_laravel_format_and_php_hashes_verify() {
-        let hash = bcrypt::hash_with_result("secret-pass", 4)
-            .unwrap()
-            .format_for_version(bcrypt::Version::TwoY);
-        assert!(hash.starts_with("$2y$04$"), "{hash}");
-        assert!(bcrypt::verify("secret-pass", &hash).unwrap());
-        // password_hash("secret-pass", PASSWORD_BCRYPT, ["cost" => 4]) in PHP.
-        let php = "$2y$04$XPWujD27Gwicj4vAhoXicOM2f.CDc44PWAG/oq2UeToLwvQxFUbQC";
-        assert!(bcrypt::verify("secret-pass", php).unwrap());
-        assert!(!bcrypt::verify("secret-pasS", php).unwrap());
     }
 
     #[test]

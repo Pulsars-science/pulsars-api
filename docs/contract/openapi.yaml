@@ -47,6 +47,11 @@ tags:
       its server (`auth-sessions.md`). A session is an opaque token given back
       in `Pulsars-Session`.
   - name: account
+  - name: languages
+    description: |
+      The languages taught on `pulsars.science/langues` (`docs/languages.md`):
+      their levels and the words of each level. Written by the API itself
+      (schema `langues`), not by Laravel.
   - name: game
     description: |
       Flash duels (`docs/game-protocol.md`). Matches themselves run over the
@@ -1533,6 +1538,231 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+  /v1/languages:
+    get:
+      tags: [languages]
+      operationId: listLanguages
+      summary: Published languages, in order
+      parameters:
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The languages
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Language' }
+              example:
+                data:
+                  - code: zh
+                    name: Mandarin
+                    lang: fr
+                    native_name: 中文
+                    script: Hans
+                    reading_system: pinyin
+                    countries: [CN, TW, SG]
+                    level_count: 2
+                    word_count: 38
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/{code}:
+    get:
+      tags: [languages]
+      operationId: getLanguage
+      summary: One published language, with its levels in order
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, example: zh }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The language
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/Language'
+                      - type: object
+                        required: [levels]
+                        properties:
+                          levels:
+                            type: array
+                            items: { $ref: '#/components/schemas/LanguageLevel' }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/{code}/levels/{level}:
+    get:
+      tags: [languages]
+      operationId: getLanguageLevel
+      summary: One level of a language, with all its words
+      description: |
+        Every word of the level, in teaching order, without pagination (a
+        level holds a few hundred words at most). `previous` and `next` name
+        the neighbouring levels.
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string, example: zh }
+        - name: level
+          in: path
+          required: true
+          schema: { type: string, example: hsk-1 }
+        - $ref: '#/components/parameters/Lang'
+      responses:
+        '200':
+          description: The level
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+            Cache-Control: { $ref: '#/components/headers/CacheControlPublic' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/LanguageLevel'
+                      - type: object
+                        required: [language, previous, next, words]
+                        properties:
+                          language:
+                            type: object
+                            required: [code, name, native_name, script, reading_system]
+                            properties:
+                              code: { type: string }
+                              name: { type: string }
+                              native_name: { type: string }
+                              script: { type: string }
+                              reading_system: { type: [string, 'null'] }
+                          previous: { $ref: '#/components/schemas/LanguageLevelRef' }
+                          next: { $ref: '#/components/schemas/LanguageLevelRef' }
+                          words:
+                            type: array
+                            items: { $ref: '#/components/schemas/Word' }
+              example:
+                data:
+                  language: { code: zh, name: Mandarin, native_name: 中文, script: Hans, reading_system: pinyin }
+                  slug: hsk-1
+                  framework: HSK
+                  position: 1
+                  title: HSK 1
+                  description: 'Les premiers mots : se présenter, saluer, compter, la famille et les repas.'
+                  lang: fr
+                  word_count: 38
+                  previous: null
+                  next: { slug: hsk-2, title: HSK 2 }
+                  words:
+                    - { id: 1, text: 我, reading: wǒ, meaning: 'je, moi', lang: fr }
+                    - { id: 2, text: 你, reading: nǐ, meaning: 'tu, toi', lang: fr }
+        '304': { $ref: '#/components/responses/NotModified' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/events:
+    post:
+      tags: [languages]
+      operationId: recordLanguageEvent
+      summary: Record what a learner did (anonymous)
+      description: |
+        Sent by the front end of `pulsars.science/langues` when a lesson ends
+        or a character is written (`docs/languages.md` §Statistics). No
+        account: `learner` is a random UUID the browser keeps. Restricted
+        CORS (the front end's origin only); rate limited like any request.
+        Missed word ids that are not in the level are dropped.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [kind, learner, language, level, score, correct, questions, duration_ms, missed_words]
+                  properties:
+                    kind: { const: lesson.completed }
+                    learner: { type: string, format: uuid }
+                    language: { type: string, example: zh }
+                    level: { type: string, example: hsk-1 }
+                    score: { type: integer, minimum: 0, maximum: 10000 }
+                    correct: { type: integer, minimum: 0, description: At most `questions`. }
+                    questions: { type: integer, minimum: 1, maximum: 100 }
+                    duration_ms: { type: integer, minimum: 0, maximum: 86400000 }
+                    missed_words: { type: array, maxItems: 100, items: { type: integer } }
+                - type: object
+                  required: [kind, learner, language, level, character, mode, mistakes]
+                  properties:
+                    kind: { const: writing.completed }
+                    learner: { type: string, format: uuid }
+                    language: { type: string, example: zh }
+                    level: { type: string, example: hsk-1 }
+                    character: { type: string, minLength: 1, maxLength: 1, example: 我 }
+                    mode: { enum: [trace, memory] }
+                    mistakes: { type: integer, minimum: 0, maximum: 1000 }
+      responses:
+        '202': { description: Recorded. No body. }
+        '400':
+          description: '`invalid-body` problem, with one entry per field at fault in `errors`.'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /v1/languages/admin/stats:
+    get:
+      tags: [languages]
+      operationId: getLanguageAdminStats
+      summary: Statistics of the languages section, for the admin dashboard
+      description: |
+        Over the last `days` UTC days (1–90, default 30): distinct learners,
+        lessons, questions and right answers, time in lessons, characters
+        written (and from memory without a mistake); the same per day
+        (zero-filled) and per level; the 10 most missed words and the 10
+        characters written with the most mistakes (at least 3 writings).
+        All-time totals too. Needs a game token whose `roles` contain `admin`
+        or `super-admin`. `Cache-Control: no-store`.
+      security: [{ gameToken: [] }]
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 90, default: 30 }
+      responses:
+        '200':
+          description: The statistics
+          content:
+            application/json:
+              example:
+                generated_at: '2026-10-20T15:30:00Z'
+                days: 30
+                totals: { learners: 12, lessons: 40, questions: 400, correct: 331, accuracy: 0.828, lesson_minutes: 61.5, writings: 95, from_memory: 30 }
+                all_time: { learners: 12, lessons: 40, writings: 95 }
+                daily: [{ date: '2026-10-20', learners: 3, lessons: 5, writings: 12 }]
+                levels: [{ language: zh, level: hsk-1, title: HSK 1, learners: 12, lessons: 40, accuracy: 0.828, average_score: 141.5, best_score: 260, writings: 95 }]
+                missed_words: [{ id: 8, text: 的, reading: de, meaning: particule du complément du nom, language: zh, level: hsk-1, misses: 9 }]
+                hardest_characters: [{ character: 飞, writings: 4, average_mistakes: 3.25, from_memory: 0 }]
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { description: Missing or invalid token. }
+        '403': { description: '`insufficient-scope`: not an admin.' }
 
 components:
   securitySchemes:
@@ -2648,3 +2878,48 @@ components:
         forfeit: { type: integer, minimum: 0 }
         accounts: { type: integer, minimum: 0, description: Distinct accounts with a seat. }
         guests: { type: integer, minimum: 0, description: Guest seats. }
+    Language:
+      type: object
+      required: [code, name, lang, native_name, script, reading_system, countries, level_count, word_count]
+      properties:
+        code: { type: string, description: 'BCP 47 tag of the language taught.', example: zh }
+        name: { type: string, description: In the requested interface language. }
+        lang: { $ref: '#/components/schemas/LangCode' }
+        native_name: { type: string, example: 中文 }
+        script: { type: string, description: ISO 15924 script of the written forms., example: Hans }
+        reading_system: { type: [string, 'null'], description: How `Word.reading` is written., example: pinyin }
+        countries:
+          type: array
+          description: ISO 3166-1 alpha-2 codes of the countries where the language is spoken, in display order.
+          items: { type: string, pattern: '^[A-Z]{2}$' }
+          example: [CN, TW, SG]
+        level_count: { type: integer, minimum: 0 }
+        word_count: { type: integer, minimum: 0 }
+    LanguageLevel:
+      type: object
+      required: [slug, framework, position, title, description, lang, word_count]
+      properties:
+        slug: { type: string, example: hsk-1 }
+        framework: { type: string, description: The scale of the level., example: HSK }
+        position: { type: integer, minimum: 1 }
+        title: { type: string }
+        description: { type: string }
+        lang:
+          allOf: [{ $ref: '#/components/schemas/LangCode' }]
+          description: '`en` only when both the title and the description are translated.'
+        word_count: { type: integer, minimum: 0 }
+    LanguageLevelRef:
+      type: [object, 'null']
+      required: [slug, title]
+      properties:
+        slug: { type: string }
+        title: { type: string }
+    Word:
+      type: object
+      required: [id, text, reading, meaning, lang]
+      properties:
+        id: { type: integer }
+        text: { type: string, description: The written form., example: 你 }
+        reading: { type: [string, 'null'], description: In the language's reading system., example: nǐ }
+        meaning: { type: string, description: In the requested interface language. }
+        lang: { $ref: '#/components/schemas/LangCode' }

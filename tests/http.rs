@@ -387,112 +387,39 @@ async fn apply_migrations(database_url: &str) {
 
 /// The grants of deploy/sql/phase-1.sql, as the service's role sees them.
 #[tokio::test]
-async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
+async fn the_api_role_writes_rows_and_changes_no_structure() {
     let Some((database_url, _)) = integration_urls() else {
         return;
     };
-    // The game tables must exist for the structure checks below.
     apply_migrations(&database_url).await;
     let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let denied = |error: sqlx::Error| {
-        let message = error.to_string();
-        assert!(message.contains("permission denied"), "{message}");
-    };
 
-    // Accounts (phase 2): the login columns of site.users, nothing else
-    // of site.
-    let logins: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM site.users WHERE password IS NOT NULL OR email_verified_at IS NULL",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert!(logins > 0, "demo accounts are loaded");
-    for query in [
-        "SELECT two_factor_secret FROM site.users LIMIT 1",
-        "SELECT two_factor_recovery_codes FROM site.users LIMIT 1",
-        "SELECT remember_token FROM site.users LIMIT 1",
-        "SELECT * FROM site.users LIMIT 1",
-        "SELECT 1 FROM site.sessions LIMIT 1",
-        "SELECT 1 FROM site.direct_messages LIMIT 1",
-        "SELECT 1 FROM site.passkeys LIMIT 1",
-        "SELECT 1 FROM site.personal_access_tokens LIMIT 1",
-        "SELECT 1 FROM site.password_reset_tokens LIMIT 1",
-        "UPDATE site.users SET email = email WHERE false",
-        "UPDATE site.users SET pseudo = pseudo WHERE false",
-        "UPDATE site.users SET onboarding_at = now() WHERE false",
-        "DELETE FROM site.users WHERE false",
-        "SELECT description FROM site.roles LIMIT 1",
-        "INSERT INTO site.role_user (role_id, user_id) SELECT 1, 1 WHERE false",
-        "DELETE FROM site.role_user WHERE false",
-        "UPDATE site.roles SET slug = slug WHERE false",
-    ] {
-        denied(sqlx::query(query).execute(&pool).await.expect_err(query));
-    }
+    // The API is the only application: it reads and writes the rows of
+    // every schema (deploy/sql/roles.sql, migrations/…_schema.sql).
     let mut tx = pool.begin().await.unwrap();
-    sqlx::query("UPDATE site.users SET password = password, updated_at = updated_at WHERE false")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api changes passwords");
-    sqlx::query("SELECT count(*) FROM site.auth_sessions")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api reads sessions");
-    // Links sent by mail, verified addresses, Google accounts.
-    sqlx::query("SELECT count(*) FROM site.email_tokens")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api reads mailed links");
-    sqlx::query("UPDATE site.users SET email_verified_at = email_verified_at WHERE false")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api marks addresses verified");
-    sqlx::query("DELETE FROM site.comptes_sociaux WHERE false")
-        .execute(&mut *tx)
-        .await
-        .expect("pulsars_api links Google accounts");
-    // Permission roles, for the `roles` claim of the game tokens it signs.
-    sqlx::query(
-        "SELECT r.slug FROM site.role_user ru JOIN site.roles r ON r.id = ru.role_id
-          WHERE r.categorie = 'permission' ORDER BY r.niveau",
-    )
-    .execute(&mut *tx)
-    .await
-    .expect("pulsars_api reads permission roles");
-    tx.rollback().await.unwrap();
-
-    // Content: read, never written.
-    let raw: i64 = sqlx::query_scalar("SELECT count(*) FROM contenu.courses")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert!(raw > 0, "demo data is loaded");
-    denied(
-        sqlx::query("UPDATE contenu.courses SET vues = vues WHERE false")
-            .execute(&pool)
+    for query in [
+        "UPDATE site.users SET pseudo = pseudo WHERE false",
+        "DELETE FROM site.role_user WHERE false",
+        "UPDATE contenu.courses SET vues = vues WHERE false",
+        "DELETE FROM contenu.fichiers WHERE false",
+        "UPDATE game.ratings SET games = games WHERE false",
+        "DELETE FROM langues.events WHERE false",
+        "SELECT total FROM site.member_xp LIMIT 1",
+    ] {
+        sqlx::query(query)
+            .execute(&mut *tx)
             .await
-            .expect_err("pulsars_api must not write content"),
-    );
-
-    let courses: i64 = sqlx::query_scalar("SELECT count(*) FROM api_read.courses")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert!(courses > 0, "demo data is loaded");
-
-    let draft: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM api_read.courses WHERE slug = 'demo-draft-course'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(draft, 0, "drafts are invisible");
+            .unwrap_or_else(|error| panic!("{query}: {error}"));
+    }
+    tx.rollback().await.unwrap();
 
     // Structure belongs to pulsars_owner: `pulsars-api migrate` changes it.
     for ddl in [
         "CREATE TABLE game.write_check (id int)",
+        "CREATE TABLE site.write_check (id int)",
         "CREATE TABLE contenu.write_check (id int)",
         "ALTER TABLE game.ratings ADD COLUMN write_check int",
+        "ALTER TABLE site.users ADD COLUMN write_check int",
         "DROP TABLE game.seasons",
     ] {
         let error = sqlx::query(ddl)
@@ -505,84 +432,6 @@ async fn the_api_role_reads_content_writes_game_and_changes_no_structure() {
             "{ddl}: {message}"
         );
     }
-
-    // But it writes the rows of game.
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO game.ratings (user_id, subject, rating, rd, volatility, games, wins, losses, draws)
-         VALUES (999999, 'all', 1500, 350, 0.06, 0, 0, 0, 0)",
-    )
-    .execute(&mut *tx)
-    .await
-    .expect("pulsars_api writes game rows");
-    tx.rollback().await.unwrap();
-}
-
-#[tokio::test]
-async fn no_answer_or_private_data_reaches_the_views() {
-    let Some((database_url, _)) = integration_urls() else {
-        return;
-    };
-    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let views: Vec<String> = sqlx::query_scalar(
-        "SELECT table_name::text FROM information_schema.views WHERE table_schema = 'api_read'",
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    assert!(views.len() >= 18, "views: {views:?}");
-
-    let mut dump = String::new();
-    for view in &views {
-        // View names come from the catalogue, not from user input.
-        let rows: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT string_agg(row_to_json(t)::text, '\n') FROM api_read.\"{view}\" t"
-        )))
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        dump.push_str(&rows.unwrap_or_default());
-    }
-
-    // Markers planted in dev/db/30-demo-data.sql.
-    for marker in [
-        "SOLUTION-MARKER",
-        "CORRIGE-MARKER",
-        "PROMPT-MARKER",
-        "example.invalid",
-        "demofriendtoken",
-        "not-a-real-hash",
-        "Terminale B (private)",
-        "correctes",
-        "acceptees",
-        "demo-draft-course",
-        "demo-future-course",
-        "demo-pending-resource",
-        "-corrige.pdf",
-    ] {
-        assert!(!dump.contains(marker), "`{marker}` leaked into api_read");
-    }
-}
-
-/// What the API reads of `contenu` (src/db/sources.rs) is, row for row,
-/// what the `api_read` views showed: same published rows, same columns.
-#[tokio::test]
-async fn the_content_sources_read_exactly_what_the_views_show() {
-    let Some((database_url, _)) = integration_urls() else {
-        return;
-    };
-    // contenu.matieres, contenu.licences.
-    apply_migrations(&database_url).await;
-    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let comparisons = pulsars_api::db::sources::compare_with_views(&pool)
-        .await
-        .unwrap();
-    assert_eq!(comparisons.len(), pulsars_api::db::sources::SOURCES.len());
-    for c in &comparisons {
-        assert!(c.is_same(), "{c:?}");
-    }
-    let courses = comparisons.iter().find(|c| c.view == "courses").unwrap();
-    assert!(courses.rows > 0, "demo data is loaded");
 }
 
 #[tokio::test]

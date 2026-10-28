@@ -1,254 +1,56 @@
-# Scripts SQL ponctuels
+# La base d'un serveur neuf
 
-Lancés **une fois**, à la main, en superutilisateur, sur la base de
-production. Chaque script a son retour arrière. Les deux sont idempotents et
-s'exécutent dans une transaction. L'archive de release les contient (`sql/`).
+Le serveur part de zéro (PLAN-REFONTE.md). On ne reprend de l'ancienne base
+que le contenu : cours, examens, ressources, actualités, PDF et traductions.
 
-| Script | Retour | Effet |
-|---|---|---|
-| `phase-1.sql` | `phase-1-retour.sql` | rôles `pulsars_owner` / `pulsars_migrate`, schéma `contenu`, plus aucun droit de structure pour `pulsars_site` et `pulsars_api` (`docs/contract/database.md` §2.1) |
+Une commande par ligne, en `ubuntu` sur le serveur. Les mots de passe sont
+dans `~/pulsars-secrets` (`MDP_MIGRATE`, `MDP_API`, `MDP_ADMIN`).
 
-## Phase 1 en production, dans l'ordre (0.2.0 → 0.5.0)
-
-Chaque étape laisse le site en marche. Une commande par ligne.
-
-Les 0.3.0 et 0.4.0 n'ont jamais été installées : la 0.5.0 les contient, et
-passe directement après la 0.2.0. Elle lit `contenu` : elle ne peut s'installer
-qu'**après** le script.
-Pendant ce temps, la 0.2.0 continue de servir : elle lit les vues `api_read`,
-qui suivent les tables déplacées. Ne pas la redémarrer entre les étapes 3
-et 5 : au démarrage, elle essaierait de migrer avec un rôle qui n'en a plus
-le droit (elle sert quand même, en l'écrivant au journal).
-
-### 1. Récupérer la release 0.5.0
-
-Sans encore l'installer : on a besoin de ses scripts SQL. Sur ton Mac
-(connecté à `gh`) :
+## 1. Base, rôles et schémas
 
 ```
-gh release download v0.5.0 -R Pulsars-science/pulsars-api -p "pulsars-api-v0.5.0-x86_64-unknown-linux-gnu.tar.gz*"
-scp pulsars-api-v0.5.0-x86_64-unknown-linux-gnu.tar.gz* tmh:/tmp/
+sudo -u postgres createdb pulsars
+sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 -v mdp_migrate="$(cat ~/pulsars-secrets/MDP_MIGRATE)" -v mdp_api="$(cat ~/pulsars-secrets/MDP_API)" -f /opt/pulsars-api/current/deploy/sql/roles.sql
 ```
 
-Puis sur le serveur :
+`roles.sql` crée `pulsars_owner` (sans connexion, propriétaire de tout),
+`pulsars_migrate` (les migrations) et `pulsars_api` (le service, qui lit et
+écrit les lignes sans jamais changer la structure), puis les schémas `site`,
+`contenu`, `game` et `langues`. Le relancer ne change rien.
+
+## 2. Les tables
+
+`deploy-api` lance `pulsars-api migrate` avant chaque mise en service, avec
+`DATABASE_MIGRATION_URL` (`/etc/pulsars-api/migrate.env`). La première
+migration crée tout le schéma, la seconde les données de référence (rôles,
+thèmes du forum, licences, matières, mandarin).
+
+## 3. Le compte d'administration
 
 ```
-ssh tmh
-cd /tmp
-sha256sum -c pulsars-api-v0.5.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar xzf pulsars-api-v0.5.0-x86_64-unknown-linux-gnu.tar.gz
-ls /tmp/pulsars-api-v0.5.0-x86_64-unknown-linux-gnu/sql
+sudo -u pulsars-api sh -c 'set -a; . /etc/pulsars-api/pulsars-api.env; /opt/pulsars-api/current/pulsars-api create-admin jikuji ADRESSE' < ~/pulsars-secrets/MDP_ADMIN
 ```
 
-### 2. Le site regarde aussi dans `contenu`
+Le mot de passe est lu sur l'entrée standard (12 caractères au moins) :
+jamais sur la ligne de commande.
 
-Laravel impose son propre `search_path` à chaque connexion. Sans ce
-changement, il ne trouverait plus les cours une fois déplacés. Le schéma
-n'existe pas encore, et PostgreSQL l'ignore d'ici là : ce réglage peut donc
-passer avant le script.
+## 4. Le contenu de l'ancienne base
 
-```
-cd /var/www/pulsars
-sudo -u www-data sed -i 's/^DB_SEARCH_PATH=.*/DB_SEARCH_PATH="site,contenu"/' .env
-grep ^DB_SEARCH_PATH .env
-sudo -u www-data php artisan config:cache
-sudo systemctl reload pulsars-octane
-sudo systemctl restart pulsars-queue
-curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
-cd /tmp
-```
-
-Le `grep` doit afficher `DB_SEARCH_PATH="site,contenu"`, et le `curl` 200.
-
-### 3. Sauvegarde, mot de passe, script
+La copie faite avant la remise à zéro (`pg_dump -Fc`) se restaure dans une
+base à part, qu'on supprime ensuite :
 
 ```
-sudo -u postgres pg_dump -Fc pulsars > ~/pulsars-avant-phase-1.dump
-ls -lh ~/pulsars-avant-phase-1.dump
-openssl rand -hex 24 > ~/pulsars-secrets/MDP_MIGRATE
-chmod 600 ~/pulsars-secrets/MDP_MIGRATE
-sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 -v mdp_migrate="$(cat ~/pulsars-secrets/MDP_MIGRATE)" -f /tmp/pulsars-api-v0.5.0-x86_64-unknown-linux-gnu/sql/phase-1.sql
-curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
-curl -s -o /dev/null -w '%{http_code}\n' https://api.pulsars.science/v1/courses
+sudo -u postgres createdb pulsars_ancien
+sudo -u postgres pg_restore -d pulsars_ancien --no-owner --no-acl ~/pulsars-avant-reset.dump
+sudo -u postgres psql pulsars_ancien -c "CREATE ROLE pulsars_lecture LOGIN PASSWORD 'lecture-temporaire'; GRANT USAGE ON SCHEMA site TO pulsars_lecture; GRANT SELECT ON ALL TABLES IN SCHEMA site TO pulsars_lecture;"
+sudo -u pulsars-api sh -c 'set -a; . /etc/pulsars-api/pulsars-api.env; /opt/pulsars-api/current/pulsars-api import-content postgres://pulsars_lecture:lecture-temporaire@127.0.0.1/pulsars_ancien jikuji'
+sudo -u postgres dropdb pulsars_ancien
+sudo -u postgres psql -c "DROP ROLE pulsars_lecture"
 ```
 
-Le script ne doit afficher aucune `ERROR`. Les `NOTICE` (« already exists,
-skipping ») ne sont normaux qu'à la deuxième fois. Les deux `curl` : 200.
-
-### 4. Connexion du compte de migration
-
-Dans `pg_hba.conf`, à côté des lignes de `pulsars_site` et `pulsars_api` :
-
-```
-sudo -u postgres psql -Atc 'show hba_file'
-sudo nano /etc/postgresql/17/main/pg_hba.conf
-```
-
-Ligne à ajouter (même méthode que les deux autres) :
-
-```
-host  pulsars  pulsars_migrate  127.0.0.1/32  scram-sha-256
-```
-
-```
-sudo systemctl reload postgresql
-echo "DATABASE_MIGRATION_URL=postgres://pulsars_migrate:$(cat ~/pulsars-secrets/MDP_MIGRATE)@127.0.0.1:5432/pulsars" | sudo tee /etc/pulsars-api/migrate.env > /dev/null
-sudo chmod 600 /etc/pulsars-api/migrate.env
-```
-
-### 4 bis. Clé de service
-
-Le site lira le contenu par l'API (étape 7), depuis la machine même, pour
-tous ses visiteurs. Avec cette clé, ses appels ne sont pas limités.
-
-```
-openssl rand -hex 32 > ~/pulsars-secrets/SERVICE_KEY
-chmod 600 ~/pulsars-secrets/SERVICE_KEY
-echo "SERVICE_KEY=$(cat ~/pulsars-secrets/SERVICE_KEY)" | sudo tee -a /etc/pulsars-api/pulsars-api.env > /dev/null
-sudo grep -c ^SERVICE_KEY= /etc/pulsars-api/pulsars-api.env
-```
-
-Le `grep` doit afficher `1`. La 0.2.0 ignore cette ligne ; la 0.5.0 la lit
-au démarrage de l'étape 5.
-
-### 5. Installer la 0.5.0
-
-```
-/tmp/pulsars-api-v0.5.0-x86_64-unknown-linux-gnu/deploy-api
-```
-
-- « Migrations » applique `20261028000000_contenu_reference` en tant que
-  `pulsars_migrate` (« migrations: applied … »). Si le script de l'étape 3
-  n'a pas tourné, elle échoue (« schema contenu does not exist ») et le
-  déploiement s'arrête avant la bascule : rien ne change.
-- « Content check » lance `pulsars-api check-content` : pour chaque
-  ressource, la 0.5.0 doit lire exactement les lignes que montre la vue
-  `api_read` correspondante. Une seule ligne de différence arrête le
-  déploiement avant la bascule.
-
-### 6. Vérifications
-
-```
-sudo -u postgres psql pulsars -Atc "select schemaname, tableowner, count(*) from pg_tables where schemaname in ('site','contenu','game') group by 1, 2 order by 1"
-curl -s https://api.pulsars.science/v1/courses | head -c 200; echo
-curl -s -o /dev/null -w '%{http_code}\n' https://api.pulsars.science/v1/news
-curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
-sudo systemd-run --quiet --wait --pipe --collect --property=EnvironmentFile=/etc/pulsars-api/pulsars-api.env --property=User=pulsars-api /opt/pulsars-api/current/pulsars-api check-content
-```
-
-- Toutes les tables doivent appartenir à `pulsars_owner`.
-- L'API et le site doivent répondre normalement.
-- La dernière commande refait la comparaison de l'étape 5 à la main.
-
-### 7. Le site lit le contenu par l'API
-
-Une fois le site déployé avec pulsars#29 (`deploy-pulsars`), et la 0.5.0
-vérifiée :
-
-```
-cd /var/www/pulsars
-echo "PULSARS_API_SERVICE_KEY=$(cat ~/pulsars-secrets/SERVICE_KEY)" | sudo -u www-data tee -a .env > /dev/null
-echo "PULSARS_API_URL=http://127.0.0.1:8080" | sudo -u www-data tee -a .env > /dev/null
-echo "PULSARS_CONTENU_VIA_API=true" | sudo -u www-data tee -a .env > /dev/null
-grep -c "^PULSARS_" .env
-sudo -u www-data php artisan config:cache
-sudo systemctl reload pulsars-octane
-curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/bibliotheque
-curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/actualite
-sudo grep -c "lecture en base" storage/logs/laravel.log
-```
-
-- Le premier `grep` : `3`. Les deux `curl` : 200.
-- Le dernier `grep` compte les pages qui ont dû relire la base faute de
-  réponse de l'API. Il doit rester à `0` (ou au chiffre d'avant) quand on
-  ouvre quelques pages de la bibliothèque.
-- Pour revenir en arrière : remettre `PULSARS_CONTENU_VIA_API=false`, puis
-  `config:cache` et `reload`. Voir `docs/CONTENU-VIA-API.md` du site.
-
-## Phase 2 en production : la connexion par l'API
-
-Après la phase 1, une fois la 0.5.0 installée et le site déployé avec
-pulsars#30 et #31. Les migrations de la phase 2 sont déjà passées avec
-`deploy-api` (étape 5). Une commande par ligne.
-
-### 8. Les mails de compte
-
-L'API envoie les mails de vérification et de mot de passe oublié, avec le
-même compte Resend que le site :
-
-```
-sudo grep -c ^MAIL_PASSWORD= /var/www/pulsars/.env
-echo "MAIL_SMTP_URL=smtps://resend:$(sudo grep ^MAIL_PASSWORD= /var/www/pulsars/.env | cut -d= -f2- | tr -d '"')@smtp.resend.com:465" | sudo tee -a /etc/pulsars-api/pulsars-api.env > /dev/null
-sudo grep -c ^MAIL_SMTP_URL= /etc/pulsars-api/pulsars-api.env
-```
-
-Les deux `grep` : `1`. L'expéditeur par défaut est
-`Pulsars <noreply@blackenium.com>`, comme le site (`MAIL_FROM` pour le
-changer).
-
-### 9. La clé des jetons de jeu
-
-```
-sudo install -d -m 0700 -o pulsars-api -g pulsars-api /opt/pulsars-api/keys
-sudo -u pulsars-api /opt/pulsars-api/current/pulsars-api jwt-keygen 2026-10-ed25519-1 /opt/pulsars-api/keys
-echo "JWT_SIGNING_KEY_FILE=/opt/pulsars-api/keys/2026-10-ed25519-1.key" | sudo tee -a /etc/pulsars-api/pulsars-api.env > /dev/null
-echo "JWT_SIGNING_KID=2026-10-ed25519-1" | sudo tee -a /etc/pulsars-api/pulsars-api.env > /dev/null
-sudo systemctl restart pulsars-api
-curl -s https://api.pulsars.science/.well-known/jwks.json; echo
-```
-
-Le `curl` doit montrer une clé (`"kid":"2026-10-ed25519-1"`). La clé ne
-quitte jamais `/opt/pulsars-api/keys` : ne pas la copier ailleurs.
-
-### 10. Le site laisse la connexion à l'API
-
-Tout le monde devra se reconnecter une fois (mêmes mots de passe).
-
-```
-cd /var/www/pulsars
-echo "PULSARS_AUTH_COOKIE_DOMAIN=.pulsars.science" | sudo -u www-data tee -a .env > /dev/null
-echo "PULSARS_AUTH_VIA_API=true" | sudo -u www-data tee -a .env > /dev/null
-sudo -u www-data php artisan config:cache
-sudo systemctl reload pulsars-octane
-curl -s -o /dev/null -w '%{http_code}\n' https://pulsars.science/login
-```
-
-Puis, dans un navigateur :
-
-- se connecter (avec un pseudo, puis avec un e-mail), ouvrir le profil ;
-- lancer un duel : le jeu prend son jeton à l'API (`POST /v1/auth/token`) ;
-- se déconnecter, cliquer « mot de passe oublié », suivre le lien du mail ;
-- se connecter avec Google.
-
-En cas de souci : `PULSARS_AUTH_VIA_API=false`, `config:cache`, `reload`.
-Le site reprend ses propres sessions (chacun se reconnecte encore une
-fois). Les mots de passe changés entre-temps restent valables : l'API écrit
-le même bcrypt que Laravel. Détail : `docs/CONNEXION-VIA-API.md` du site.
-
-## Retour arrière de la phase 1
-
-D'abord le site, s'il lit par l'API : `PULSARS_CONTENU_VIA_API=false`,
-`config:cache`, `reload` (il relirait sinon la base, mais en journalisant
-chaque page). Ensuite, ordre inverse : l'API d'abord (la 0.5.0 ne sait pas lire sans `contenu`),
-puis le script, puis le site.
-
-```
-sudo /opt/pulsars-api/current/deploy-api --rollback
-sudo rm /etc/pulsars-api/migrate.env
-sudo -u postgres psql pulsars -v ON_ERROR_STOP=1 -f /opt/pulsars-api/releases/v0.5.0/sql/phase-1-retour.sql
-sudo systemctl restart pulsars-api
-cd /var/www/pulsars
-sudo -u www-data sed -i 's/^DB_SEARCH_PATH=.*/DB_SEARCH_PATH=site/' .env
-sudo -u www-data php artisan config:cache
-sudo systemctl reload pulsars-octane
-```
-
-- `deploy-api --rollback` remet la 0.2.0, qui lit les vues, toujours en
-  place.
-- Après le script, `pulsars_api` est de nouveau propriétaire de `game` : la
-  0.2.0 migre au démarrage comme avant. Les tables de référence de la 0.5.0
-  et leur ligne de migration sont retirées, pour qu'un nouvel aller les
-  recrée.
-- La ligne `pulsars_migrate` de `pg_hba.conf` peut rester : le rôle
-  n'existe plus.
-- En dernier recours : `pg_restore` de `~/pulsars-avant-phase-1.dump`.
+`import-content` copie les tables dans l'ordre (cours, chapitres, leçons,
+exercices, examens, parties, ressources, actualités, fichiers, traductions,
+téléchargements) en une seule transaction, et donne tous les contenus au
+compte nommé. Il refuse une base qui a déjà des cours. Essayé sur la copie
+du 18/10 : 272 cours, 1 084 leçons, 1 120 exercices, 32 examens, 27 PDF et
+6 260 traductions, en 4 secondes.

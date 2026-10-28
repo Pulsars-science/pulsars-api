@@ -28,10 +28,11 @@ One PostgreSQL database, `pulsars`, three schemas and two login roles.
 database pulsars
 ├── schema site       owner pulsars_site   all Laravel tables (today's tables, unchanged)
 ├── schema api_read   owner pulsars_site   views only, created by a Laravel migration from views.sql
-└── schema game       owner pulsars_api    tables created by pulsars-api migrations
+├── schema game       owner pulsars_api    tables created by pulsars-api migrations
+└── schema langues    owner pulsars_api    languages section, same (docs/languages.md)
 ```
 
-| Role | `site` | `api_read` | `game` |
+| Role | `site` | `api_read` | `game`, `langues` |
 |---|---|---|---|
 | `pulsars_site` (Laravel) | owner, all rights | owner (creates the views) | **none** |
 | `pulsars_api` (Rust API) | **none** | `USAGE` + `SELECT` | owner, all rights |

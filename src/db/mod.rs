@@ -1,10 +1,8 @@
 //! PostgreSQL access.
 //!
-//! The API's role (`pulsars_api`) reads `contenu` and the `api_read.member*`
-//! views, reads and writes the rows of `game` and `langues`, and of `site`
-//! only the login columns of `users` and `auth_sessions` (`accounts`,
-//! `sessions`); it creates, alters or drops nothing (`deploy/sql/phase-1.sql`,
-//! `docs/contract/database.md` §2.1). Queries name their schema.
+//! The API's role (`pulsars_api`) reads and writes the rows of `site`,
+//! `contenu`, `game` and `langues`; it creates, alters or drops nothing
+//! (`deploy/sql/roles.sql`, `migrations/`). Queries name their schema.
 //!
 //! Content is read through the macros of `sources`, never from a `contenu`
 //! table directly: they keep the published rows and the allowed columns.
@@ -18,6 +16,8 @@ pub mod email_tokens;
 pub mod exams;
 pub mod exercises;
 pub mod files;
+pub mod language_stats;
+pub mod languages;
 pub mod members;
 pub mod news;
 pub mod resources;

@@ -1,5 +1,5 @@
-//! Member profiles, from `api_read.members`, `api_read.member_roles`,
-//! `api_read.member_xp` and `api_read.member_brains`
+//! Member profiles, from `site.members`, `site.member_roles`,
+//! `site.member_xp` and `site.member_brains`
 //! (`docs/contract/database.md` §4, `docs/contract/brains.md` §4).
 //!
 //! Only ever read by id: the API has no member directory.
@@ -36,9 +36,9 @@ pub async fn find(pool: &PgPool, id: i64) -> Result<Option<Member>, sqlx::Error>
         "SELECT m.id, m.pseudo, m.avatar_path, m.bio, m.member_since,
                 x.total AS xp_total, x.level AS xp_level,
                 coalesce(b.balance, 0) AS brains
-           FROM api_read.members m
-           JOIN api_read.member_xp x ON x.user_id = m.id
-           LEFT JOIN api_read.member_brains b ON b.user_id = m.id
+           FROM site.members m
+           JOIN site.member_xp x ON x.user_id = m.id
+           LEFT JOIN site.member_brains b ON b.user_id = m.id
           WHERE m.id = $1",
     )
     .bind(id)
@@ -51,7 +51,7 @@ pub async fn find(pool: &PgPool, id: i64) -> Result<Option<Member>, sqlx::Error>
 pub async fn roles(pool: &PgPool, id: i64) -> Result<Vec<MemberRole>, sqlx::Error> {
     sqlx::query_as(
         "SELECT slug, name, category, color
-           FROM api_read.member_roles
+           FROM site.member_roles
           WHERE user_id = $1
           ORDER BY permission_level DESC, display_order, slug",
     )
@@ -64,7 +64,7 @@ pub async fn roles(pool: &PgPool, id: i64) -> Result<Vec<MemberRole>, sqlx::Erro
 /// without movements, or one that no longer exists.
 pub async fn brains(pool: &PgPool, user_id: i64) -> Result<i32, sqlx::Error> {
     let balance: Option<i32> =
-        sqlx::query_scalar("SELECT balance FROM api_read.member_brains WHERE user_id = $1")
+        sqlx::query_scalar("SELECT balance FROM site.member_brains WHERE user_id = $1")
             .bind(user_id)
             .fetch_optional(pool)
             .await?;

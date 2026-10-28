@@ -1,20 +1,15 @@
 //! What the API may read of `contenu`: one macro per resource, each a
 //! parenthesized subquery to put after `FROM` or `JOIN`.
 //!
-//! This is the security boundary that the `api_read` views used to be
-//! (`docs/contract/database.md` §2.1). Each macro keeps PUBLISHED rows only
-//! and selects ALLOWED columns only, with the names and types of the view it
-//! replaces, so the queries of `db::*` read the same rows as before. Never
-//! selected, here or anywhere else in the API:
+//! This is the security boundary of the public content: each macro keeps
+//! PUBLISHED rows only and selects ALLOWED columns only. Never selected
+//! by these, whatever route uses them:
 //!
 //! - `exercises.solution_md`, `exercises.donnees` (its `correctes` and
 //!   `acceptees`), and the `solution_md` key of translations;
 //! - `exam_parties.corrige_md` and its translation, `exams.fichier_corrige`;
 //! - storage paths, original file names, AI prompts and errors, counters,
 //!   author account ids.
-//!
-//! The author's pseudo still comes from `api_read.members`: the API has no
-//! right on `site` until phase 2.
 //!
 //! Laravel stores timestamps as `timestamp(0) without time zone` in UTC;
 //! `AT TIME ZONE 'UTC'` makes them `timestamptz`.
@@ -74,7 +69,7 @@ macro_rules! published_courses {
                 c.published_at AT TIME ZONE 'UTC' AS published_at,
                 c.updated_at AT TIME ZONE 'UTC' AS updated_at
            FROM contenu.courses c
-           LEFT JOIN api_read.members u ON u.id = c.auteur_id
+           LEFT JOIN site.members u ON u.id = c.auteur_id
           WHERE ",
             course_is_published!(),
             ")"
@@ -254,7 +249,7 @@ macro_rules! published_news {
                 a.published_at AT TIME ZONE 'UTC' AS published_at,
                 a.updated_at AT TIME ZONE 'UTC' AS updated_at
            FROM contenu.actualites a
-           LEFT JOIN api_read.members u ON u.id = a.auteur_id
+           LEFT JOIN site.members u ON u.id = a.auteur_id
           WHERE a.published_at IS NOT NULL
             AND a.published_at <= (now() AT TIME ZONE 'UTC'))"
     };
@@ -407,8 +402,8 @@ macro_rules! licenses {
     };
 }
 
-/// Each source with the `api_read` view it replaces, same columns in the
-/// same order.
+/// Every source, by the name of the resource it reads: the tests dump them
+/// all to prove that no answer, correction or private column gets through.
 pub const SOURCES: &[(&str, &str)] = &[
     ("courses", published_courses!()),
     ("course_translations", course_translations!()),
@@ -426,49 +421,3 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("subject_names", subject_names!()),
     ("licenses", licenses!()),
 ];
-
-/// How one source compares with its `api_read` view.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Comparison {
-    pub view: &'static str,
-    /// Rows of the view.
-    pub rows: i64,
-    /// Rows of the view that the source does not return.
-    pub missing: i64,
-    /// Rows the source returns that the view does not.
-    pub extra: i64,
-}
-
-impl Comparison {
-    pub fn is_same(&self) -> bool {
-        self.missing == 0 && self.extra == 0
-    }
-}
-
-/// Compares every source with the view it replaces, row for row (`EXCEPT
-/// ALL` both ways). As long as the views exist (until phase 5), this proves
-/// on real data that the API reads what it read before:
-/// `pulsars-api check-content`.
-pub async fn compare_with_views(pool: &sqlx::PgPool) -> Result<Vec<Comparison>, sqlx::Error> {
-    let mut comparisons = Vec::with_capacity(SOURCES.len());
-    for &(view, source) in SOURCES {
-        let sql = format!(
-            "SELECT (SELECT count(*) FROM api_read.{view}),
-                    (SELECT count(*) FROM (SELECT * FROM api_read.{view}
-                                           EXCEPT ALL SELECT * FROM {source} s) missing),
-                    (SELECT count(*) FROM (SELECT * FROM {source} s
-                                           EXCEPT ALL SELECT * FROM api_read.{view}) extra)"
-        );
-        // Only the constants above are formatted in: no outside input.
-        let (rows, missing, extra) = sqlx::query_as(sqlx::AssertSqlSafe(sql))
-            .fetch_one(pool)
-            .await?;
-        comparisons.push(Comparison {
-            view,
-            rows,
-            missing,
-            extra,
-        });
-    }
-    Ok(comparisons)
-}
