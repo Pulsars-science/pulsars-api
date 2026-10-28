@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `GET /v1/exams/{slug}/pdf` and `GET /v1/resources/{slug}/file`: the
+  statement PDF of a published exam and the hosted file of a published
+  resource, read from `contenu.fichiers`. One `Range`, `If-Range`,
+  `If-None-Match`, `disposition=inline|attachment`; 416
+  `range-not-satisfiable` past the end. Never a correction, a draft's file
+  or a storage path: files are found by the published content's slug only.
+  PDF responses are not compressed (that would drop `Accept-Ranges`).
 - `GET /v1/news` and `GET /v1/news/{slug}`: the team's published
   announcements (`contenu.actualites`), newest first, with `q`, `lang` and
   cursor pagination; the detail adds the Markdown content. Drafts (no date)

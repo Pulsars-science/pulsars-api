@@ -100,6 +100,7 @@ Every error response has the media type `application/problem+json`:
 | `not-acceptable` | 406 | `Accept` excludes `application/json`. |
 | `payload-too-large` | 413 | The body is over the size limit. |
 | `unsupported-media-type` | 415 | A body whose `Content-Type` is not `application/json`. |
+| `range-not-satisfiable` | 416 | A file route's `Range` starts past the end of the file; `Content-Range: bytes */{size}`. |
 | `rate-limited` | 429 | See rate limits below. Sets `Retry-After`. |
 | `internal` | 500 | Never includes a stack trace, SQL or a file path. Adds `"trace_id"` so a report can be matched to logs. |
 | `unavailable` | 503 | A required dependency (PostgreSQL) is down. |

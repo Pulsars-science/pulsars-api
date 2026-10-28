@@ -83,6 +83,9 @@ pub enum ApiError {
     NotAcceptable,
     #[error("payload too large")]
     PayloadTooLarge,
+    /// A `Range` that starts past the end of a file of `size` bytes.
+    #[error("range not satisfiable")]
+    RangeNotSatisfiable { size: u64 },
     /// A body whose `Content-Type` is not `application/json`.
     #[error("unsupported media type")]
     UnsupportedMediaType,
@@ -131,6 +134,7 @@ impl ApiError {
             Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             Self::NotAcceptable => StatusCode::NOT_ACCEPTABLE,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::RangeNotSatisfiable { .. } => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Timeout => StatusCode::SERVICE_UNAVAILABLE,
@@ -152,6 +156,7 @@ impl ApiError {
             Self::MethodNotAllowed => ("method-not-allowed", "Method not allowed"),
             Self::NotAcceptable => ("not-acceptable", "Not acceptable"),
             Self::PayloadTooLarge => ("payload-too-large", "Payload too large"),
+            Self::RangeNotSatisfiable { .. } => ("range-not-satisfiable", "Range not satisfiable"),
             Self::UnsupportedMediaType => ("unsupported-media-type", "Unsupported media type"),
             Self::RateLimited { .. } => ("rate-limited", "Too many requests"),
             Self::Timeout => ("unavailable", "Request timed out"),
@@ -186,6 +191,9 @@ impl ApiError {
                 Some("This endpoint only accepts WebSocket upgrades.".to_owned())
             }
             Self::Timeout => Some("The request took too long to process.".to_owned()),
+            Self::RangeNotSatisfiable { size } => Some(format!(
+                "The file has {size} bytes; the range starts past its end."
+            )),
             _ => None,
         };
         Problem {
@@ -248,6 +256,11 @@ impl IntoResponse for ApiError {
         }
         if let Self::RateLimited { retry_after, .. } = &self {
             headers.insert(header::RETRY_AFTER, HeaderValue::from(*retry_after));
+        }
+        if let Self::RangeNotSatisfiable { size } = &self
+            && let Ok(value) = HeaderValue::from_str(&format!("bytes */{size}"))
+        {
+            headers.insert(header::CONTENT_RANGE, value);
         }
         if let Self::UpgradeRequired = &self {
             headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));

@@ -4,6 +4,7 @@ pub mod courses;
 pub mod cursor;
 pub mod exams;
 pub mod exercises;
+pub mod files;
 pub mod game;
 pub mod health;
 pub mod me;
@@ -23,6 +24,7 @@ use tower::ServiceBuilder;
 use tower_http::LatencyUnit;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -68,6 +70,19 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());
 
+    // Stored files: public like content, but not JSON (no `Accept` check).
+    let files = Router::new()
+        .route(
+            "/v1/exams/{slug}/pdf",
+            get(files::exam_pdf).options(preflight),
+        )
+        .route(
+            "/v1/resources/{slug}/file",
+            get(files::resource_file).options(preflight),
+        )
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
+        .layer(mw::cors_public());
+
     // The leaderboard is public, like content.
     let game_public = Router::new()
         .route(
@@ -99,6 +114,7 @@ pub fn router(state: AppState) -> Router {
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
         .merge(content)
+        .merge(files)
         .merge(game_public)
         .merge(game_ws)
         .merge(authenticated)
@@ -140,7 +156,11 @@ pub fn router(state: AppState) -> Router {
                 .layer(PropagateRequestIdLayer::new(X_REQUEST_ID))
                 .layer(SetResponseHeaderLayer::overriding(nosniff_name, nosniff))
                 .layer(SetResponseHeaderLayer::overriding(robots_name, robots))
-                .layer(CompressionLayer::new())
+                // PDF are compressed already, and a compressed response
+                // loses `Accept-Ranges`.
+                .layer(CompressionLayer::new().compress_when(
+                    DefaultPredicate::new().and(NotForContentType::const_new("application/pdf")),
+                ))
                 .layer(HandleErrorLayer::new(mw::handle_timeout))
                 .timeout(config.request_timeout)
                 .layer(from_fn(mw::problem_for_bare_errors))

@@ -196,6 +196,35 @@ macro_rules! published_exam_parts {
     };
 }
 
+/// The statement PDF of published exams, from `contenu.fichiers`: never the
+/// correction (`fichier_corrige`), never a draft's file, never the path.
+macro_rules! exam_statement_files {
+    () => {
+        concat!(
+            "(SELECT x.slug, f.id AS file_id, octet_length(f.contenu)::bigint AS size,
+                f.type_mime::text AS mime,
+                coalesce(f.updated_at, f.created_at) AT TIME ZONE 'UTC' AS updated_at
+           FROM contenu.exams x
+           JOIN contenu.fichiers f ON f.disque = 'local' AND f.chemin = x.fichier_pdf
+          WHERE ",
+            exam_is_published!(),
+            ")"
+        )
+    };
+}
+
+/// The hosted file of published resources, from `contenu.fichiers`.
+macro_rules! resource_files {
+    () => {
+        "(SELECT r.slug, f.id AS file_id, octet_length(f.contenu)::bigint AS size,
+                f.type_mime::text AS mime,
+                coalesce(f.updated_at, f.created_at) AT TIME ZONE 'UTC' AS updated_at
+           FROM contenu.ressources r
+           JOIN contenu.fichiers f ON f.disque = 'local' AND f.chemin = r.fichier
+          WHERE r.statut = 'publie')"
+    };
+}
+
 /// Published resources, as `Ressource::scopePubliees()`. One that is neither
 /// hosted nor linked has nothing to offer and is left out; a link only when
 /// nothing is hosted here (`Ressource::estLien()`).
