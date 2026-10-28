@@ -35,7 +35,6 @@ use tower_http::LatencyUnit;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
-use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
@@ -248,7 +247,8 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
     // The administration (`admin`): called by the site from its server, like
-    // `/v1/auth/*`. Its two uploads have their own body limits, Laravel's.
+    // `/v1/auth/*`. Its two uploads have their own body limits, Laravel's
+    // (`mw::body_limit`).
     let admin_json = Router::new()
         .route("/v1/admin/stats", get(admin::dashboard::dashboard))
         .route("/v1/admin/pending", get(admin::dashboard::pending))
@@ -333,13 +333,11 @@ pub fn router(state: AppState) -> Router {
     let admin_upload = Router::new()
         .route("/v1/admin/exams", post(admin::exams::create))
         .layer(from_fn(public::require_json))
-        .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(admin::exams::UPLOAD_BODY_LIMIT));
+        .layer(DefaultBodyLimit::disable());
     let admin_import = Router::new()
         .route("/v1/admin/exams/{slug}/import", post(admin::exams::import))
         .layer(from_fn(public::require_json))
-        .layer(DefaultBodyLimit::max(admin::exams::IMPORT_BODY_LIMIT))
-        .layer(RequestBodyLimitLayer::new(admin::exams::IMPORT_BODY_LIMIT));
+        .layer(DefaultBodyLimit::max(admin::exams::IMPORT_BODY_LIMIT));
     let admin_uploads = admin_upload
         .merge(admin_import)
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
@@ -361,8 +359,6 @@ pub fn router(state: AppState) -> Router {
         .merge(languages_events)
         .merge(authenticated)
         .merge(social::router(&state))
-        // Every other route keeps the default limit (`BODY_LIMIT_BYTES`).
-        .layer(RequestBodyLimitLayer::new(config.body_limit_bytes))
         .merge(admin_uploads)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
@@ -409,7 +405,8 @@ pub fn router(state: AppState) -> Router {
                 ))
                 .layer(HandleErrorLayer::new(mw::handle_timeout))
                 .timeout(config.request_timeout)
-                .layer(from_fn(mw::problem_for_bare_errors)),
+                .layer(from_fn(mw::problem_for_bare_errors))
+                .layer(from_fn_with_state(state.clone(), mw::body_limit)),
         )
         .with_state(state)
 }

@@ -11,6 +11,8 @@ publish = false
 # Private messages at rest (`src/crypto.rs`). Pinned: a change of the format
 # would leave stored messages unreadable.
 aes-gcm = { version = "=0.11.1", default-features = false, features = ["aes", "alloc", "zeroize"] }
+# Body limits per route (already used by axum and hyper).
+http-body-util = "0.1.5"
 axum = { version = "0.8", features = ["ws", "multipart"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -50,7 +52,6 @@ lettre = { version = "0.11.23", default-features = false, features = ["smtp-tran
 test-util = []
 
 [dev-dependencies]
-http-body-util = "0.1.5"
 # Paused clock in match tests (`tokio::time::pause`).
 tokio = { version = "1.53.2", features = ["full", "test-util"] }
 # WebSocket client of the game tests; the version axum's `ws` feature uses.

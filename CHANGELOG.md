@@ -25,6 +25,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The administration, `/v1/admin/*` for an admin's session (Laravel's
+  `admin/*`): the dashboard statistics (`/v1/admin/stats`, with Umami
+  when `UMAMI_*` is set) and the pending badge, the donation goal, news,
+  courses, exams (PDF upload in `multipart/form-data` and import of the AI's
+  JSON answer), resource requests (accept, reject, file), roles, reports
+  and suggestions, and the game and languages statistics for a session.
+  The two uploads have their own body limits (21 MiB and 16 MiB).
+- `pulsars-api content check`, `content fix <file.json>` and
+  `content translate` (`contenu:verifier`, `contenu:corriger`,
+  `contenu:traduire`), the last with DeepL (`DEEPL_API_KEY`,
+  `DEEPL_API_URL`).
 - The languages section: `GET /v1/languages`, `/v1/languages/{code}`,
   `/v1/languages/{code}/levels/{level}`, `POST /v1/languages/events` and
   `GET /v1/languages/admin/stats` (`docs/languages.md`).
