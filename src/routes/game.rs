@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::params::Params;
-use crate::auth::{self, AuthUser};
+use crate::auth::{self, Admin, AuthUser};
 use crate::db::members;
 use crate::error::ApiError;
 use crate::game::glicko::PROVISIONAL_RD;
@@ -213,28 +213,14 @@ pub async fn me(
     Ok(response)
 }
 
-/// Roles of the game token that may read the admin statistics.
-const ADMIN_ROLES: &[&str] = &["admin", "super-admin"];
-
 /// `GET /v1/game/admin/stats?days=30`: live counters and the activity of
 /// the last `days` UTC days. Called by the Laravel admin dashboard, server
 /// to server.
 pub async fn admin_stats(
     State(state): State<AppState>,
-    AuthUser(claims): AuthUser,
-    OriginalUri(uri): OriginalUri,
+    _admin: Admin,
     RawQuery(query): RawQuery,
 ) -> Result<Response, ApiError> {
-    if !claims
-        .roles
-        .iter()
-        .any(|role| ADMIN_ROLES.contains(&role.as_str()))
-    {
-        return Err(ApiError::InsufficientScope {
-            detail: "The game statistics need the admin or super-admin role.".to_owned(),
-            instance: Some(uri.path().to_owned()),
-        });
-    }
     let mut params = Params::parse(query.as_deref());
     let days = params.integer("days", 1, stats::MAX_DAYS, stats::DEFAULT_DAYS);
     params.finish()?;

@@ -142,10 +142,12 @@ INSERT INTO exercise_attempts (user_id, exercise_id, reponse, correct) VALUES
     (2, 2, '{"texte":"3/4"}', true),
     (2, 3, '{"options":["a"]}', false);
 INSERT INTO enrollments (user_id, course_id, completed_at) VALUES (2, 1, now());
-INSERT INTO questions (id, user_id, titre, slug, corps, accepted_answer_id, created_at) VALUES
-    (1, 3, 'Pourquoi 5^0 = 1 ?', 'pourquoi-5-puissance-0', 'Je ne comprends pas.', 1, now());
+INSERT INTO forum_themes (id, nom, slug) VALUES (1, 'Mathématiques', 'mathematiques');
+INSERT INTO questions (id, forum_theme_id, user_id, titre, slug, corps, created_at) VALUES
+    (1, 1, 3, 'Pourquoi 5^0 = 1 ?', 'pourquoi-5-puissance-0', 'Je ne comprends pas.', now());
 INSERT INTO answers (id, question_id, user_id, corps, created_at) VALUES
     (1, 1, 2, 'Parce que 5^1 / 5^1 = 5^(1-1).', now());
+UPDATE questions SET accepted_answer_id = 1 WHERE id = 1;
 
 -- Brains: 5 per completed lesson for ada (15); emmy hides her balance.
 INSERT INTO cerveaux_mouvements (user_id, montant, raison, cle, details, created_at) VALUES
@@ -164,6 +166,7 @@ SELECT setval('site.exercises_id_seq', (SELECT max(id) FROM exercises));
 SELECT setval('site.exams_id_seq', (SELECT max(id) FROM exams));
 SELECT setval('site.exam_parties_id_seq', (SELECT max(id) FROM exam_parties));
 SELECT setval('site.ressources_id_seq', (SELECT max(id) FROM ressources));
+SELECT setval('site.forum_themes_id_seq', (SELECT max(id) FROM forum_themes));
 SELECT setval('site.questions_id_seq', (SELECT max(id) FROM questions));
 SELECT setval('site.answers_id_seq', (SELECT max(id) FROM answers));
 

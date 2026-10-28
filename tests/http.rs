@@ -289,11 +289,17 @@ async fn wrong_methods_answer_405_with_allow() {
     let (status, headers, body) = send(&app, request).await;
 
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-    assert!(headers.contains_key(header::ALLOW));
+    // The methods of this route, not a list shared by every route.
+    assert_eq!(headers[header::ALLOW], "GET,HEAD");
     assert_eq!(
         body["type"],
         "https://api.pulsars.science/problems/method-not-allowed"
     );
+
+    let request = Request::post("/v1/courses").body(Body::empty()).unwrap();
+    let (status, headers, _) = send(&app, request).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(headers[header::ALLOW], "GET,HEAD,OPTIONS");
 }
 
 #[tokio::test]
