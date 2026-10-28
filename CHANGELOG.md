@@ -32,6 +32,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `pulsars-api import-content <old database url> <author>`.
 - Member extractors for the site's routes (`src/auth/member.rs`): the
   session of `Pulsars-Session`, with the permission level of its roles.
+- The forum (`/v1/forum/*`): themes, question lists (pinned first, by
+  `recent`, `popular` or `unanswered`), threads with their answer tree,
+  views, asking, answering and replying (refused while muted or locked),
+  accepted answers, votes, reports, and DeepL translations of posts cached
+  in `site.forum_translations` (`DEEPL_API_KEY`, `DEEPL_API_URL`,
+  `DEEPL_LANGUAGES`; 503 `not_configured` without a key).
+- Forum moderation (`/v1/moderation/forum/*`): hide, lock, pin, delete and
+  restore questions; hide, delete and restore answers. Muting members
+  (`PUT` and `DELETE /v1/moderation/members/{id}/mute`), only those of a
+  lower permission level.
 
 ### Removed
 

@@ -7,6 +7,8 @@ pub mod cursor;
 pub mod exams;
 pub mod exercises;
 pub mod files;
+pub mod forum;
+pub mod forum_moderation;
 pub mod game;
 pub mod health;
 pub mod languages;
@@ -162,6 +164,74 @@ pub fn router(state: AppState) -> Router {
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // The forum and its moderation: called by the site (pulsars-web), from
+    // its server or through its `/api` relay, never by a browser directly.
+    let forum = Router::new()
+        .route("/v1/forum/themes", get(forum::themes))
+        .route("/v1/forum/themes/{slug}", get(forum::theme))
+        .route(
+            "/v1/forum/questions",
+            get(forum::questions).post(forum::ask),
+        )
+        .route("/v1/forum/questions/{slug}", get(forum::question))
+        .route("/v1/forum/questions/{slug}/answers", post(forum::answer))
+        .route(
+            "/v1/forum/questions/{slug}/answers/{answer}/accept",
+            post(forum::accept),
+        )
+        .route(
+            "/v1/forum/questions/{slug}/vote",
+            post(forum::vote_question),
+        )
+        .route(
+            "/v1/forum/questions/{slug}/translations",
+            post(forum::translate_question),
+        )
+        .route("/v1/forum/answers/{id}/vote", post(forum::vote_answer))
+        .route(
+            "/v1/forum/answers/{id}/translations",
+            post(forum::translate_answer),
+        )
+        .route("/v1/forum/reports", post(forum::report))
+        .route(
+            "/v1/moderation/forum/questions/{id}",
+            delete(forum_moderation::delete_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/hide",
+            post(forum_moderation::hide_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/lock",
+            post(forum_moderation::lock_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/pin",
+            post(forum_moderation::pin_question),
+        )
+        .route(
+            "/v1/moderation/forum/questions/{id}/restore",
+            post(forum_moderation::restore_question),
+        )
+        .route(
+            "/v1/moderation/forum/answers/{id}",
+            delete(forum_moderation::delete_answer),
+        )
+        .route(
+            "/v1/moderation/forum/answers/{id}/hide",
+            post(forum_moderation::hide_answer),
+        )
+        .route(
+            "/v1/moderation/forum/answers/{id}/restore",
+            post(forum_moderation::restore_answer),
+        )
+        .route(
+            "/v1/moderation/members/{id}/mute",
+            put(forum_moderation::mute).delete(forum_moderation::unmute),
+        )
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     // The game token, asked by the game front end with the session cookie:
     // its own origin check and credentialed CORS (`token::browser_guard`).
     let game_token = Router::new()
@@ -177,6 +247,7 @@ pub fn router(state: AppState) -> Router {
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
         .merge(auth)
+        .merge(forum)
         .merge(game_token)
         .merge(jwks)
         .merge(content)
