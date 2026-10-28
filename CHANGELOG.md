@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-28
+
+### Upgrading
+
+- From 0.2.0, as 0.3.0 was never installed: follow `deploy/sql/README.md`
+  (the phase 1 script before `deploy-api`, as for 0.3.0), with the new
+  step for `SERVICE_KEY`.
+- From 0.3.0: a plain `deploy-api`. No migration.
+- `SERVICE_KEY` is optional; the site needs it before it reads content
+  through the API.
+
 ### Added
 
 - `lang=ru`: Russian translations, falling back to French per object and
@@ -263,7 +274,8 @@ archive's `sql/`), `pg_hba.conf` and `/etc/pulsars-api/migrate.env`, then
 - `GET /healthz` answers 503 (`down`) until Laravel's JWKS has been loaded
   once.
 
-[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Pulsars-science/pulsars-api/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Pulsars-science/pulsars-api/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Pulsars-science/pulsars-api/releases/tag/v0.1.0
