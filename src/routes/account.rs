@@ -10,6 +10,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde::Deserialize;
+use serde_json::json;
 
 use super::auth::{
     self, AccountUser, Caller, Data, check_password, current, digest, empty, limit, new_token,
@@ -21,6 +22,7 @@ use crate::db::email_tokens::{self, Kind};
 use crate::db::sessions;
 use crate::error::{ApiError, ParameterError};
 use crate::extract::Json;
+use crate::journal::{self, Security};
 use crate::links;
 use crate::mail::{self, Lang, Mail};
 use crate::state::AppState;
@@ -96,6 +98,7 @@ pub async fn send_again(
 /// `POST /v1/auth/email/verify`: the token of a verification link.
 pub async fn verify(
     State(state): State<AppState>,
+    caller: Caller,
     Json(body): Json<TokenBody>,
 ) -> Result<Response, ApiError> {
     if !auth::is_token(&body.token) {
@@ -107,6 +110,14 @@ pub async fn verify(
     let account = accounts::find(&state.db, user_id)
         .await?
         .ok_or(ApiError::InvalidToken)?;
+    journal::security(
+        &state.db,
+        Some(user_id),
+        Security::EmailVerified,
+        &caller,
+        json!({}),
+    )
+    .await;
     Ok(no_store(
         StatusCode::OK,
         &Data {
@@ -124,7 +135,7 @@ pub async fn forgot(
     caller: Caller,
     Json(body): Json<ForgotBody>,
 ) -> Result<Response, ApiError> {
-    let ip = caller.ip.unwrap_or_else(|| "unknown".to_owned());
+    let ip = caller.ip.clone().unwrap_or_else(|| "unknown".to_owned());
     limit(
         &state,
         "forgot",
@@ -144,7 +155,17 @@ pub async fn forgot(
     let Some(account) = accounts::find_by_email(&state.db, email).await? else {
         return Ok(empty());
     };
-    if email_tokens::sent_within(&state.db, account.id, Kind::Reset, RESET_THROTTLE_SECS).await? {
+    let throttled =
+        email_tokens::sent_within(&state.db, account.id, Kind::Reset, RESET_THROTTLE_SECS).await?;
+    journal::security(
+        &state.db,
+        Some(account.id),
+        Security::PasswordResetRequested,
+        &caller,
+        json!({"mail_sent": !throttled}),
+    )
+    .await;
+    if throttled {
         return Ok(empty());
     }
     let token = new_token()?;
@@ -175,6 +196,7 @@ pub async fn forgot(
 /// Every session of the account is revoked.
 pub async fn reset_with_token(
     State(state): State<AppState>,
+    caller: Caller,
     Json(body): Json<ResetWithTokenBody>,
 ) -> Result<Response, ApiError> {
     let mut errors = Vec::new();
@@ -190,7 +212,15 @@ pub async fn reset_with_token(
         .ok_or(ApiError::InvalidToken)?;
     let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
     accounts::set_password(&state.db, user_id, &hash).await?;
-    sessions::revoke_others(&state.db, user_id, None).await?;
+    let revoked = sessions::revoke_others(&state.db, user_id, None).await?;
+    journal::security(
+        &state.db,
+        Some(user_id),
+        Security::PasswordReset,
+        &caller,
+        json!({"via": "link", "sessions_revoked": revoked}),
+    )
+    .await;
     Ok(empty())
 }
 
