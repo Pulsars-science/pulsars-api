@@ -315,6 +315,7 @@ pub fn router(state: AppState) -> Router {
     let admin_json = Router::new()
         .route("/v1/admin/stats", get(admin::dashboard::dashboard))
         .route("/v1/admin/pending", get(admin::dashboard::pending))
+        .route("/v1/admin/containers", get(admin::containers::containers))
         .route(
             "/v1/admin/settings/donation-goal",
             get(admin::dashboard::donation_goal).put(admin::dashboard::set_donation_goal),

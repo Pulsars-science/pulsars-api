@@ -20,6 +20,7 @@ pub mod http_daily;
 pub mod links;
 pub mod mail;
 pub mod middleware;
+pub mod podman;
 pub mod rate_limit;
 pub mod redis;
 pub mod routes;

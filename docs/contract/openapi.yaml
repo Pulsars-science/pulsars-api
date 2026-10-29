@@ -3199,6 +3199,44 @@ paths:
                 data: { resource_requests: 1, reports: 2, suggestions: 0, total: 3 }
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/containers:
+    get:
+      tags: [admin]
+      operationId: getAdminContainers
+      summary: The health of the server's containers
+      description: |
+        Read from the snapshot that `pulsars-podman-releve` writes every
+        minute (`deploy/podman/README.md`), at `PODMAN_SNAPSHOT_PATH`: the
+        API never talks to Podman. Always 200: `available` is false with
+        `reason` `not_configured` (no path), `missing` (no file) or
+        `unreadable` (not JSON, over 2 MB, no `taken_at`, or `podman ps`
+        failed). `stale` when the snapshot is more than 3 minutes old.
+        Containers not running or unhealthy come first, then by name;
+        `cpu_percent` and the memory are null for a container that is not
+        running. Podman 4 and 5 outputs are both read.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The containers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AdminContainers' }
+              example:
+                data:
+                  available: true
+                  reason: null
+                  taken_at: '2026-10-29T12:00:00Z'
+                  stale: false
+                  containers:
+                    - { name: pulsars-web, image: 'ghcr.io/pulsars-science/pulsars-web:0.1.0', state: running, health: unhealthy, started_at: '2026-10-29T09:15:50Z', restarts: 1, cpu_percent: 12.5, memory_bytes: 157286400, memory_limit_bytes: 536870912 }
+                    - { name: pulsars-db, image: 'docker.io/library/postgres:17-alpine', state: running, health: healthy, started_at: '2026-10-29T09:15:00Z', restarts: 0, cpu_percent: 2.1, memory_bytes: 61200000, memory_limit_bytes: 2100000000 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
   /v1/admin/settings/donation-goal:
     get:
       tags: [admin]
@@ -6673,6 +6711,29 @@ components:
               subject_name: { type: [string, 'null'] }
               views: { type: integer }
               previous: { type: integer, description: Views over the N days before. }
+    AdminContainers:
+      type: object
+      required: [available, reason, taken_at, stale, containers]
+      properties:
+        available: { type: boolean }
+        reason: { type: [string, 'null'], enum: [not_configured, missing, unreadable, null] }
+        taken_at: { type: [string, 'null'], format: date-time }
+        stale: { type: boolean, description: The snapshot is more than 3 minutes old. }
+        containers:
+          type: array
+          items:
+            type: object
+            required: [name, image, state, health, started_at, restarts, cpu_percent, memory_bytes, memory_limit_bytes]
+            properties:
+              name: { type: string }
+              image: { type: string }
+              state: { type: string, description: 'Podman''s state, lowercased: running, exited, created, paused, restarting…' }
+              health: { type: [string, 'null'], enum: [healthy, unhealthy, starting, null], description: Null without a health check. }
+              started_at: { type: [string, 'null'], format: date-time }
+              restarts: { type: integer }
+              cpu_percent: { type: [number, 'null'] }
+              memory_bytes: { type: [integer, 'null'] }
+              memory_limit_bytes: { type: [integer, 'null'], description: Null without a limit. }
     AdminListing:
       type: object
       required: [data, page, per_page, total, counters]

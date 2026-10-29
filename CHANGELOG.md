@@ -15,6 +15,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and exams (`top_content`, from `site.content_views`).
 - `POST /v1/courses/{slug}/view`: the course page counts its views
   (`contenu.courses.vues` was never incremented).
+- `GET /v1/admin/containers`: the containers' state, health, restarts, CPU
+  and memory, read from the snapshot a root timer writes every minute
+  (`deploy/podman/`, `PODMAN_SNAPSHOT_PATH`); the API never gets the
+  Podman socket.
 
 ## [0.6.0] - 2026-10-29
 

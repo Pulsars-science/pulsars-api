@@ -111,6 +111,7 @@ async fn the_administration_is_for_admins_only() {
     let paths = [
         "/v1/admin/stats",
         "/v1/admin/pending",
+        "/v1/admin/containers",
         "/v1/admin/news",
         "/v1/admin/courses",
         "/v1/admin/exams",
@@ -1917,4 +1918,85 @@ async fn http_traffic_is_kept_by_day_with_its_p95() {
             .unwrap();
     assert_eq!(buckets.len(), 16);
     assert_eq!(buckets.iter().sum::<i64>(), 4);
+}
+
+// --- Containers -------------------------------------------------------------
+
+#[tokio::test]
+async fn the_containers_come_from_the_podman_snapshot() {
+    let Some(env) = Env::new().await else { return };
+    let admin = admin(&env).await;
+    let (status, body) = Call::get("/v1/admin/containers")
+        .member(&admin)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"],
+        json!({"available": false, "reason": "not_configured", "taken_at": null,
+               "stale": false, "containers": []})
+    );
+
+    let dir = std::env::temp_dir().join(format!("pulsars-podman-{}", unique()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("releve.json");
+    let Some(env) = Env::with(&[("PODMAN_SNAPSHOT_PATH", path.to_str().unwrap())]).await else {
+        return;
+    };
+    let admin = self::admin(&env).await;
+    let get = || async {
+        let (status, body) = Call::get("/v1/admin/containers")
+            .member(&admin)
+            .send(&env.app)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body["data"].clone()
+    };
+    assert_eq!(get().await["reason"], "missing");
+
+    std::fs::write(&path, b"{\"taken_at\": ").unwrap();
+    assert_eq!(get().await["reason"], "unreadable");
+
+    // A fresh podman 5 snapshot.
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut snapshot: Value =
+        serde_json::from_str(include_str!("fixtures/podman/podman5.json")).unwrap();
+    snapshot["taken_at"] = Value::from(now.clone());
+    std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    let data = get().await;
+    assert_eq!(data["available"], true);
+    assert_eq!(data["reason"], Value::Null);
+    assert_eq!(data["taken_at"], now);
+    assert_eq!(data["stale"], false);
+    let names: Vec<&str> = data["containers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "pulsars-migrate",
+            "pulsars-web",
+            "pulsars-api",
+            "pulsars-db",
+            "umami"
+        ]
+    );
+    assert_eq!(
+        data["containers"][1],
+        json!({
+            "name": "pulsars-web",
+            "image": "ghcr.io/pulsars-science/pulsars-web:0.1.0",
+            "state": "running",
+            "health": "unhealthy",
+            "started_at": "2026-10-29T09:15:50Z",
+            "restarts": 1,
+            "cpu_percent": 12.5,
+            "memory_bytes": 157286400,
+            "memory_limit_bytes": 536870912,
+        })
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
 }
