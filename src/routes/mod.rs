@@ -29,6 +29,7 @@ pub mod site;
 pub mod social;
 pub mod token;
 pub mod upload;
+pub mod views;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
@@ -279,6 +280,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/exams/{slug}/corrections",
             get(corrections::corrections),
         )
+        .route("/v1/courses/{slug}/view", post(views::course))
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 

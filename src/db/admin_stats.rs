@@ -780,6 +780,41 @@ pub async fn pending(pool: &PgPool) -> Result<Pending, sqlx::Error> {
     })
 }
 
+/// What a page view is of, in `site.content_views`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewKind {
+    Course,
+    Exam,
+}
+
+impl ViewKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Course => "course",
+            Self::Exam => "exam",
+        }
+    }
+}
+
+/// One more view today (UTC) of a course or an exam, in the transaction
+/// that increments its `vues`.
+pub async fn record_view(
+    conn: &mut sqlx::PgConnection,
+    kind: ViewKind,
+    content_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO site.content_views AS v (kind, content_id, day, views)
+         VALUES ($1, $2, (now() AT TIME ZONE 'UTC')::date, 1)
+         ON CONFLICT (kind, content_id, day) DO UPDATE SET views = v.views + 1",
+    )
+    .bind(kind.as_str())
+    .bind(content_id)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// The `objectif_dons` setting of `site.reglages`.
 pub const DONATION_GOAL_KEY: &str = "objectif_dons";
 
