@@ -791,7 +791,10 @@ async fn an_exam_goes_from_its_pdf_to_a_published_paper() {
 async fn an_upload_needs_a_pdf_a_subject_and_a_known_country() {
     let Some(env) = Env::new().await else { return };
     let admin = admin(&env).await;
-    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM contenu.exams")
+    // This admin's exams: other tests make theirs in parallel.
+    let mine = "SELECT count(*) FROM contenu.exams WHERE auteur_id = $1";
+    let before: i64 = sqlx::query_scalar(mine)
+        .bind(admin.id)
         .fetch_one(&env.db)
         .await
         .unwrap();
@@ -862,11 +865,12 @@ async fn an_upload_needs_a_pdf_a_subject_and_a_known_country() {
     .await;
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM contenu.exams")
+    let after: i64 = sqlx::query_scalar(mine)
+        .bind(admin.id)
         .fetch_one(&env.db)
         .await
         .unwrap();
-    assert!(after <= before + 1, "a refused upload created an exam");
+    assert_eq!(after, before, "a refused upload created an exam");
 }
 
 // --- Resource requests ----------------------------------------------------
@@ -1421,4 +1425,496 @@ async fn the_audience_comes_from_umami_when_configured() {
         data["popular_pages"],
         json!([{"path": "/cours", "views": 9}, {"path": "/", "views": 4}])
     );
+}
+
+// --- Dashboard: games, downloads, HTTP, catalog, views --------------------
+
+/// Held by the tests that add downloads: the series counts every one.
+static DOWNLOADS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `GET /v1/admin/stats?days=7` as `admin`, its `data`.
+async fn stats7(env: &Env, admin: &TestMember) -> Value {
+    let (status, body) = Call::get("/v1/admin/stats?days=7")
+        .member(admin)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["data"].clone()
+}
+
+/// A published course of `theme`, with `exercises` exercises; its id and slug.
+async fn published_course(env: &Env, author: i64, theme: &str, exercises: i32) -> (i64, String) {
+    let slug = format!("cours-{}", unique());
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO contenu.courses (titre, slug, description, theme, auteur_id, statut, published_at)
+         VALUES ($1, $1, 'Description', $2, $3, 'publie', now() AT TIME ZONE 'UTC' - interval '1 hour')
+         RETURNING id",
+    )
+    .bind(&slug)
+    .bind(theme)
+    .bind(author)
+    .fetch_one(&env.owner)
+    .await
+    .unwrap();
+    let chapter: i64 = sqlx::query_scalar(
+        "INSERT INTO contenu.chapters (course_id, titre, ordre) VALUES ($1, 'Chapitre', 1) RETURNING id",
+    )
+    .bind(id)
+    .fetch_one(&env.owner)
+    .await
+    .unwrap();
+    for n in 0..exercises {
+        sqlx::query(
+            "INSERT INTO contenu.exercises (chapter_id, type, titre, question_md, donnees, ordre)
+             VALUES ($1, 'libre', 'Exercice', 'Pourquoi ?', '{}', $2)",
+        )
+        .bind(chapter)
+        .bind(n + 1)
+        .execute(&env.owner)
+        .await
+        .unwrap();
+    }
+    (id, slug)
+}
+
+/// An exam of `subject`, published or a draft, with a statement PDF or not;
+/// its id and slug.
+async fn exam(env: &Env, author: i64, subject: &str, published: bool, pdf: bool) -> (i64, String) {
+    let slug = format!("examen-{}", unique());
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO contenu.exams (titre, slug, type, matiere, niveau, statut, fichier_pdf,
+                                    auteur_id, published_at, created_at, updated_at)
+         VALUES ($1, $1, 'bac', $2, 'terminale', $3, $4, $5,
+                 now() AT TIME ZONE 'UTC' - interval '1 hour',
+                 now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')
+         RETURNING id",
+    )
+    .bind(&slug)
+    .bind(subject)
+    .bind(if published { "publie" } else { "brouillon" })
+    .bind(pdf.then(|| format!("examens/{slug}.pdf")))
+    .bind(author)
+    .fetch_one(&env.owner)
+    .await
+    .unwrap();
+    (id, slug)
+}
+
+/// Removes what `author` planted, with its downloads and views: the
+/// content tests of `http.rs` read the demo content only.
+async fn remove_content(env: &Env, author: i64) {
+    for statement in [
+        "DELETE FROM contenu.telechargements WHERE telechargeable_type = 'exam' AND telechargeable_id IN
+            (SELECT id FROM contenu.exams WHERE auteur_id = $1)",
+        "DELETE FROM site.content_views v WHERE
+            (kind = 'exam' AND content_id IN (SELECT id FROM contenu.exams WHERE auteur_id = $1))
+            OR (kind = 'course' AND content_id IN (SELECT id FROM contenu.courses WHERE auteur_id = $1))",
+        "DELETE FROM contenu.exams WHERE auteur_id = $1",
+        "DELETE FROM contenu.courses WHERE auteur_id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(author)
+            .execute(&env.owner)
+            .await
+            .unwrap();
+    }
+}
+
+/// A download of exam `id`, `days_ago` days ago.
+async fn download(env: &Env, kind: &str, id: i64, days_ago: i32) {
+    sqlx::query(
+        "INSERT INTO contenu.telechargements (telechargeable_type, telechargeable_id, visiteur_hash, created_at)
+         VALUES ($1, $2, $3, now() AT TIME ZONE 'UTC' - make_interval(days => $4))",
+    )
+    .bind(kind)
+    .bind(id)
+    .bind(unique())
+    .bind(days_ago)
+    .execute(&env.owner)
+    .await
+    .unwrap();
+}
+
+/// A duel (or `mode`) started `days_ago` days ago, ended with `end_reason`
+/// (none: still running). No seat: guests' matches count too.
+async fn game(env: &Env, mode: &str, end_reason: Option<&str>, days_ago: i64) {
+    let started = chrono::Utc::now() - chrono::Duration::days(days_ago);
+    sqlx::query(
+        "INSERT INTO game.matches
+                (id, mode, ranked, subject, rules, seed, created_at, started_at, ended_at, end_reason)
+         VALUES ($1, $2, false, 'physics', '{\"duration\": 60, \"target\": null, \"penalty\": false}',
+                 1, $3, $3, CASE WHEN $4::text IS NULL THEN NULL ELSE $3 + interval '1 minute' END, $4)",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(mode)
+    .bind(started)
+    .bind(end_reason)
+    .execute(&env.owner)
+    .await
+    .unwrap();
+}
+
+fn series_of(data: &Value, name: &str) -> (i64, i64, i64) {
+    let series = &data["series"][name];
+    (
+        series["values"][6].as_i64().unwrap(),
+        series["total"].as_i64().unwrap(),
+        series["previous"].as_i64().unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn duels_and_pdf_downloads_are_counted_by_day() {
+    let Some(env) = Env::new().await else { return };
+    let admin = admin(&env).await;
+    let _downloads = DOWNLOADS.lock().await;
+    let before = stats7(&env, &admin).await;
+
+    // Two duels played to the end today, guests' included; one void, one
+    // still running and a room match do not count; one in the week before.
+    game(&env, "duel", Some("completed"), 0).await;
+    game(&env, "duel", Some("forfeit"), 0).await;
+    game(&env, "duel", Some("void"), 0).await;
+    game(&env, "duel", None, 0).await;
+    game(&env, "room", Some("completed"), 0).await;
+    game(&env, "duel", Some("timeout"), 8).await;
+    // Three exam downloads today, one the week before; a resource's not.
+    let (id, _) = exam(&env, admin.id, "Mathématiques", true, true).await;
+    for _ in 0..3 {
+        download(&env, "exam", id, 0).await;
+    }
+    download(&env, "exam", id, 8).await;
+    download(&env, "ressource", -id, 0).await;
+
+    let after = stats7(&env, &admin).await;
+    for (name, today, previous) in [("duels", 2, 1), ("pdf_downloads", 3, 1)] {
+        let (b_today, b_total, b_previous) = series_of(&before, name);
+        let (a_today, a_total, a_previous) = series_of(&after, name);
+        assert_eq!(a_today - b_today, today, "{name}");
+        assert_eq!(a_total - b_total, today, "{name}");
+        assert_eq!(a_previous - b_previous, previous, "{name}");
+        assert_eq!(after["series"][name]["values"].as_array().unwrap().len(), 7);
+    }
+    remove_content(&env, admin.id).await;
+}
+
+#[tokio::test]
+async fn the_catalog_counts_published_content_by_subject() {
+    let Some(env) = Env::new().await else { return };
+    let admin = admin(&env).await;
+    let _downloads = DOWNLOADS.lock().await;
+    let u = unique();
+    let zeta = format!("Zeta {u}");
+    // Two published courses of the subject (three exercises), a draft not.
+    published_course(&env, admin.id, &format!("{zeta} – Analyse"), 2).await;
+    published_course(&env, admin.id, &format!("{zeta} – Algèbre"), 1).await;
+    sqlx::query(
+        "INSERT INTO contenu.courses (titre, slug, description, theme, auteur_id)
+         VALUES ($1, $1, 'Brouillon', $2, $3)",
+    )
+    .bind(format!("brouillon-{u}"))
+    .bind(format!("{zeta} – Brouillon"))
+    .bind(admin.id)
+    .execute(&env.owner)
+    .await
+    .unwrap();
+    // Exams of the same subject, spelt differently: two PDF, one without,
+    // a draft with one (not counted).
+    let (with_pdf, _) = exam(&env, admin.id, &format!("zétà {u}"), true, true).await;
+    exam(&env, admin.id, &format!("ZETA-{u}"), true, true).await;
+    exam(&env, admin.id, &zeta, true, false).await;
+    let (draft, _) = exam(&env, admin.id, &zeta, false, true).await;
+    for _ in 0..3 {
+        download(&env, "exam", with_pdf, 0).await;
+    }
+    // Before the period, or of a draft: not counted.
+    download(&env, "exam", with_pdf, 8).await;
+    download(&env, "exam", draft, 0).await;
+    // A subject of exams only, named after them.
+    exam(&env, admin.id, &format!("Omega {u}"), true, true).await;
+    // A subject with nothing published: absent.
+    exam(&env, admin.id, &format!("Nada {u}"), false, true).await;
+
+    let data = stats7(&env, &admin).await;
+    let catalog = data["catalog"].as_array().unwrap();
+    let find = |slug: &str| catalog.iter().position(|row| row["subject_slug"] == slug);
+    let zeta_slug = format!("zeta-{u}");
+    let zeta_at = find(&zeta_slug).unwrap_or_else(|| panic!("{zeta_slug} in {catalog:?}"));
+    // The courses' name, though the exams spell it otherwise.
+    assert_eq!(
+        catalog[zeta_at],
+        json!({
+            "subject_slug": zeta_slug,
+            "subject_name": zeta,
+            "courses": 2,
+            "exercises": 3,
+            "pdfs": 2,
+            "downloads": 3,
+        })
+    );
+    let omega_at = find(&format!("omega-{u}")).unwrap();
+    assert_eq!(
+        catalog[omega_at],
+        json!({
+            "subject_slug": format!("omega-{u}"),
+            "subject_name": format!("Omega {u}"),
+            "courses": 0,
+            "exercises": 0,
+            "pdfs": 1,
+            "downloads": 0,
+        })
+    );
+    assert!(find(&format!("nada-{u}")).is_none());
+    // Most downloaded first.
+    assert!(zeta_at < omega_at);
+    let downloads: Vec<i64> = catalog
+        .iter()
+        .map(|row| row["downloads"].as_i64().unwrap())
+        .collect();
+    assert!(downloads.windows(2).all(|w| w[0] >= w[1]), "{downloads:?}");
+    remove_content(&env, admin.id).await;
+}
+
+#[tokio::test]
+async fn the_most_viewed_content_is_compared_with_the_period_before() {
+    let Some(env) = Env::new().await else { return };
+    let admin = admin(&env).await;
+    // Leftovers of an interrupted run would outrank this one's.
+    sqlx::query("DELETE FROM site.content_views WHERE views >= 1000000")
+        .execute(&env.owner)
+        .await
+        .unwrap();
+    let u = unique();
+    let (first, first_slug) = published_course(&env, admin.id, &format!("Top{u} – Un"), 0).await;
+    let (third, _) = published_course(&env, admin.id, &format!("Top{u} – Deux"), 0).await;
+    let (second, second_slug) = exam(&env, admin.id, &format!("Top {u}"), true, false).await;
+    let (draft, _) = exam(&env, admin.id, &format!("Top {u}"), false, false).await;
+    let views = |kind: &'static str, id: i64, days_ago: i32, views: i32| {
+        let owner = env.owner.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO site.content_views (kind, content_id, day, views)
+                 VALUES ($1, $2, (now() AT TIME ZONE 'UTC')::date - $3, $4)",
+            )
+            .bind(kind)
+            .bind(id)
+            .bind(days_ago)
+            .bind(views)
+            .execute(&owner)
+            .await
+            .unwrap();
+        }
+    };
+    views("course", first, 0, 1_000_000).await;
+    views("course", first, 3, 2).await;
+    views("course", first, 8, 5).await;
+    views("exam", second, 0, 1_000_001).await;
+    views("course", third, 1, 1_000_000).await;
+    // No longer published: left out, whatever its views.
+    views("exam", draft, 0, 2_000_000).await;
+
+    let data = stats7(&env, &admin).await;
+    let top = data["top_content"].as_array().unwrap();
+    assert!(top.len() <= 10);
+    assert_eq!(
+        top[0],
+        json!({
+            "kind": "course",
+            "slug": first_slug,
+            "title": first_slug,
+            "subject_name": format!("Top{u}"),
+            "views": 1_000_002,
+            "previous": 5,
+        })
+    );
+    assert_eq!(top[1]["kind"], "exam");
+    assert_eq!(top[1]["slug"], second_slug);
+    assert_eq!(top[1]["subject_name"], format!("Top {u}"));
+    assert_eq!(top[1]["previous"], 0);
+    assert_eq!(top[2]["views"], 1_000_000);
+    let views: Vec<i64> = top.iter().map(|r| r["views"].as_i64().unwrap()).collect();
+    assert!(views.windows(2).all(|w| w[0] >= w[1]), "{views:?}");
+    remove_content(&env, admin.id).await;
+}
+
+#[tokio::test]
+async fn a_course_view_is_counted_once_in_a_while() {
+    let Some(env) = Env::new().await else { return };
+    let admin = admin(&env).await;
+    let reader = env.member().verified().create().await;
+    let (id, slug) = published_course(&env, admin.id, "Vues – Cours", 0).await;
+    let counts = || async {
+        let vues: i64 = sqlx::query_scalar("SELECT vues FROM contenu.courses WHERE id = $1")
+            .bind(id)
+            .fetch_one(&env.db)
+            .await
+            .unwrap();
+        let today: Option<i32> = sqlx::query_scalar(
+            "SELECT views FROM site.content_views
+              WHERE kind = 'course' AND content_id = $1 AND day = (now() AT TIME ZONE 'UTC')::date",
+        )
+        .bind(id)
+        .fetch_optional(&env.db)
+        .await
+        .unwrap();
+        (vues, today.unwrap_or(0))
+    };
+    let path = format!("/v1/courses/{slug}/view");
+    let ip = fresh_ip();
+
+    let (status, headers, body) = Call::post(&path).ip(&ip).send_full(&env.app).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(counts().await, (1, 1));
+    // The same visitor again: a reload.
+    let (status, _) = Call::post(&path).ip(&ip).send(&env.app).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(counts().await, (1, 1));
+    // A member is someone else, and is counted once too.
+    for _ in 0..2 {
+        let (status, _) = Call::post(&path).member(&reader).send(&env.app).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    assert_eq!(counts().await, (2, 2));
+    // A robot is not counted.
+    let (status, _) = Call::post(&path)
+        .user_agent("Mozilla/5.0 (compatible; Googlebot/2.1)")
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(counts().await, (2, 2));
+
+    // Only published courses.
+    let (status, body) = Call::post(format!("/v1/courses/nope-{}/view", unique()))
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    sqlx::query("UPDATE contenu.courses SET statut = 'brouillon' WHERE id = $1")
+        .bind(id)
+        .execute(&env.owner)
+        .await
+        .unwrap();
+    let (status, _) = Call::post(&path).send(&env.app).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An exam's view, counted by its corrections, is in the same table.
+    let (exam_id, exam_slug) = exam(&env, admin.id, "Vues", true, false).await;
+    let (status, body) = Call::get(format!("/v1/exams/{exam_slug}/corrections"))
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["views"], 1);
+    let views: i32 = sqlx::query_scalar(
+        "SELECT views FROM site.content_views WHERE kind = 'exam' AND content_id = $1",
+    )
+    .bind(exam_id)
+    .fetch_one(&env.db)
+    .await
+    .unwrap();
+    assert_eq!(views, 1);
+    remove_content(&env, admin.id).await;
+}
+
+#[tokio::test]
+async fn http_traffic_is_kept_by_day_with_its_p95() {
+    let Some(env) = Env::new().await else { return };
+    let admin = admin(&env).await;
+    // The only test that writes this table: it starts from nothing.
+    sqlx::query("DELETE FROM site.http_daily")
+        .execute(&env.owner)
+        .await
+        .unwrap();
+    let data = stats7(&env, &admin).await;
+    assert_eq!(data["http"]["available"], false);
+    assert_eq!(data["http"]["since"], Value::Null);
+    assert_eq!(data["http"]["p95_ms"]["total"], Value::Null);
+    assert_eq!(
+        data["http"]["p95_ms"]["values"],
+        json!([null, null, null, null, null, null, null])
+    );
+
+    let daily = &env.state.http_daily;
+    // Requests answered since the env started: the dashboard above.
+    let today = chrono::Utc::now().date_naive();
+    let counted = |daily: &pulsars_api::http_daily::HttpDaily| {
+        daily.pending().get(&today).map_or(0, |d| d.requests)
+    };
+    assert_eq!(counted(daily), 1);
+    let (status, _) = Call::get("/v1/admin/pending")
+        .member(&admin)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = Call::get("/nowhere").send(&env.app).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Probes are not traffic.
+    Call::get("/healthz").send(&env.app).await;
+    assert_eq!(counted(daily), 3);
+
+    // A database that does not answer: the counts wait for the next flush.
+    let down = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(1))
+        .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
+        .unwrap();
+    assert!(daily.flush(&down).await.is_err());
+    assert_eq!(counted(daily), 3);
+    daily.flush(&env.db).await.unwrap();
+    assert!(daily.pending().is_empty());
+    // Nothing new: nothing to write.
+    daily.flush(&env.db).await.unwrap();
+
+    // Another instance flushes today too, and wrote earlier days.
+    let other = pulsars_api::http_daily::HttpDaily::default();
+    other.record(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        std::time::Duration::from_millis(2),
+    );
+    other.flush(&env.db).await.unwrap();
+    let mut slow = vec![0i64; 16];
+    slow[6] = 100; // 100 requests between 100 and 150 ms
+    let mut fast = vec![0i64; 16];
+    fast[0] = 20;
+    sqlx::query(
+        "INSERT INTO site.http_daily (day, requests, errors_5xx, buckets)
+         VALUES ((now() AT TIME ZONE 'UTC')::date - 1, 100, 3, $1),
+                ((now() AT TIME ZONE 'UTC')::date - 10, 20, 0, $2)",
+    )
+    .bind(&slow)
+    .bind(&fast)
+    .execute(&env.owner)
+    .await
+    .unwrap();
+
+    let data = stats7(&env, &admin).await;
+    let http = &data["http"];
+    assert_eq!(http["available"], true);
+    let ten_days_ago = (today - chrono::Days::new(10))
+        .format("%Y-%m-%d")
+        .to_string();
+    assert_eq!(http["since"], ten_days_ago);
+    // Today: the three requests of this env and the other's one.
+    assert_eq!(http["requests"]["values"][6], 4);
+    assert_eq!(http["requests"]["values"][5], 100);
+    assert_eq!(http["requests"]["total"], 104);
+    assert_eq!(http["requests"]["previous"], 20);
+    assert_eq!(http["errors_5xx"]["values"][6], 1);
+    assert_eq!(http["errors_5xx"]["values"][5], 3);
+    assert_eq!(http["errors_5xx"]["total"], 4);
+    let p95 = &http["p95_ms"];
+    // 95 of 100 between 100 and 150 ms: 147.5, rounded.
+    assert_eq!(p95["values"][5], 148);
+    assert!(p95["values"][6].is_i64());
+    assert_eq!(p95["values"][0], Value::Null);
+    // Over the week, from the summed buckets.
+    let total = p95["total"].as_i64().unwrap();
+    assert!((100..=150).contains(&total), "{total}");
+    assert_eq!(p95["previous"], 5);
+    let buckets: Vec<i64> =
+        sqlx::query_scalar("SELECT buckets FROM site.http_daily WHERE day = $1")
+            .bind(today)
+            .fetch_one(&env.db)
+            .await
+            .unwrap();
+    assert_eq!(buckets.len(), 16);
+    assert_eq!(buckets.iter().sum::<i64>(), 4);
 }

@@ -91,6 +91,12 @@ pub struct Dashboard {
     pub pending: stats::Pending,
     /// The raw amounts, to fill the form.
     pub donation_goal: DonationGoal,
+    /// The API's requests, 5xx and p95 latency, kept by day.
+    pub http: stats::Http,
+    /// Published content by subject, with the period's downloads.
+    pub catalog: Vec<stats::CatalogSubject>,
+    /// The most viewed courses and exams of the period.
+    pub top_content: Vec<stats::TopContent>,
 }
 
 fn days_param(query: Option<&str>) -> u32 {
@@ -167,6 +173,9 @@ pub async fn dashboard(
         to_process: stats::to_do(db).await?,
         pending: stats::pending(db).await?,
         donation_goal: stats::donation_goal(db).await?,
+        http: stats::http(db, &bounds).await?,
+        catalog: stats::catalog(db, &bounds).await?,
+        top_content: stats::top_content(db, &bounds).await?,
     }))
 }
 

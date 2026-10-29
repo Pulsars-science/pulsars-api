@@ -298,6 +298,12 @@ pub struct AllSeries {
     pub brains: Series,
     /// Finished matches with at least one member.
     pub games: Series,
+    /// Duels played to the end (not void), guests' included, by the day
+    /// they started.
+    pub duels: Series,
+    /// First downloads of an exam's PDF by a visitor
+    /// (`contenu.telechargements`).
+    pub pdf_downloads: Series,
 }
 
 pub async fn all_series(
@@ -382,6 +388,24 @@ pub async fn all_series(
             "ended_at",
             "count(DISTINCT match_id)",
             "",
+        )
+        .await?,
+        duels: series(
+            pool,
+            bounds,
+            "game.matches",
+            "(started_at AT TIME ZONE 'UTC')",
+            "count(*)",
+            "AND mode = 'duel' AND end_reason IS NOT NULL AND end_reason <> 'void'",
+        )
+        .await?,
+        pdf_downloads: series(
+            pool,
+            bounds,
+            "contenu.telechargements",
+            "created_at",
+            "count(*)",
+            "AND telechargeable_type = 'exam'",
         )
         .await?,
     })
@@ -780,6 +804,80 @@ pub async fn pending(pool: &PgPool) -> Result<Pending, sqlx::Error> {
     })
 }
 
+/// A p95 latency by day and over the periods, in milliseconds; null
+/// without any request.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct Percentile {
+    pub values: Vec<Option<i64>>,
+    pub total: Option<i64>,
+    pub previous: Option<i64>,
+}
+
+/// The API's HTTP traffic, from `site.http_daily` (`crate::http_daily`).
+#[derive(Debug, Serialize)]
+pub struct Http {
+    /// False when nothing was recorded over the period nor the one before.
+    pub available: bool,
+    /// The first day recorded, `YYYY-MM-DD`.
+    pub since: Option<String>,
+    pub requests: Series,
+    pub errors_5xx: Series,
+    /// Read from the summed latency buckets of the days (`http_daily::p95`).
+    pub p95_ms: Percentile,
+}
+
+pub async fn http(pool: &PgPool, bounds: &Bounds) -> Result<Http, sqlx::Error> {
+    let rows: Vec<(NaiveDate, i64, i64, Vec<i64>)> = sqlx::query_as(
+        "SELECT day, requests, errors_5xx, buckets FROM site.http_daily
+          WHERE day >= $1 AND day <= $2",
+    )
+    .bind(bounds.previous)
+    .bind(bounds.today)
+    .fetch_all(pool)
+    .await?;
+    let since: Option<NaiveDate> = sqlx::query_scalar("SELECT min(day) FROM site.http_daily")
+        .fetch_one(pool)
+        .await?;
+    let requests = rows.iter().map(|r| (r.0, r.1)).collect();
+    let errors = rows.iter().map(|r| (r.0, r.2)).collect();
+    let buckets: HashMap<NaiveDate, &[i64]> = rows.iter().map(|r| (r.0, r.3.as_slice())).collect();
+    // Element by element, whatever the length of each row.
+    let summed = |days: &mut dyn Iterator<Item = NaiveDate>| {
+        let mut sum: Vec<i64> = Vec::new();
+        for day in days {
+            for (i, n) in buckets
+                .get(&day)
+                .copied()
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+            {
+                if sum.len() <= i {
+                    sum.resize(i + 1, 0);
+                }
+                sum[i] += n;
+            }
+        }
+        crate::http_daily::p95(&sum)
+    };
+    let dates = bounds.dates();
+    let p95_ms = Percentile {
+        values: dates
+            .iter()
+            .map(|d| summed(&mut std::iter::once(*d)))
+            .collect(),
+        total: summed(&mut dates.iter().copied()),
+        previous: summed(&mut (0..bounds.days).map(|i| bounds.previous + Days::new(u64::from(i)))),
+    };
+    Ok(Http {
+        available: !rows.is_empty(),
+        since: since.map(|d| d.format("%Y-%m-%d").to_string()),
+        requests: bounds.series(&requests),
+        errors_5xx: bounds.series(&errors),
+        p95_ms,
+    })
+}
+
 /// What a page view is of, in `site.content_views`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
@@ -813,6 +911,107 @@ pub async fn record_view(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Published content of a subject.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CatalogSubject {
+    pub subject_slug: String,
+    pub subject_name: String,
+    pub courses: i64,
+    pub exercises: i64,
+    /// Published exams with a statement PDF.
+    pub pdfs: i64,
+    /// Downloads of those exams' PDF over the period.
+    pub downloads: i64,
+}
+
+/// Published content by subject: a course's subject is the first part of
+/// its theme, an exam's its `matiere`, both slugified so they meet. The
+/// name is the courses' when a course has the subject, the exam's
+/// otherwise. Subjects with nothing are left out.
+pub async fn catalog(pool: &PgPool, bounds: &Bounds) -> Result<Vec<CatalogSubject>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "WITH courses AS (SELECT c.id, c.subject_slug, c.subject_name FROM ",
+        published_courses!(),
+        " c),
+         exams AS (SELECT x.id, contenu.slugify(x.subject) AS subject_slug, x.subject, x.has_pdf FROM ",
+        published_exams!(),
+        " x),
+         by_course AS (SELECT subject_slug, min(subject_name) AS subject_name, count(*) AS courses
+                         FROM courses GROUP BY 1),
+         by_exercise AS (SELECT c.subject_slug, count(*) AS exercises FROM ",
+        published_exercises!(),
+        " e JOIN courses c ON c.id = e.course_id GROUP BY 1),
+         by_exam AS (SELECT subject_slug, min(subject) AS subject_name,
+                            count(*) FILTER (WHERE has_pdf) AS pdfs
+                       FROM exams GROUP BY 1),
+         by_download AS (SELECT x.subject_slug, count(*) AS downloads
+                           FROM contenu.telechargements t JOIN exams x ON x.id = t.telechargeable_id
+                          WHERE t.telechargeable_type = 'exam' AND t.created_at >= $1
+                          GROUP BY 1)
+         SELECT s.subject_slug,
+                coalesce(c.subject_name, x.subject_name, s.subject_slug) AS subject_name,
+                coalesce(c.courses, 0)::bigint AS courses,
+                coalesce(e.exercises, 0)::bigint AS exercises,
+                coalesce(x.pdfs, 0)::bigint AS pdfs,
+                coalesce(d.downloads, 0)::bigint AS downloads
+           FROM (SELECT subject_slug FROM by_course UNION SELECT subject_slug FROM by_exam) s
+           LEFT JOIN by_course c USING (subject_slug)
+           LEFT JOIN by_exercise e USING (subject_slug)
+           LEFT JOIN by_exam x USING (subject_slug)
+           LEFT JOIN by_download d USING (subject_slug)
+          WHERE coalesce(c.courses, 0) + coalesce(e.exercises, 0)
+                + coalesce(x.pdfs, 0) + coalesce(d.downloads, 0) > 0
+          ORDER BY downloads DESC, subject_name, s.subject_slug"
+    ))
+    .bind(midnight(bounds.start))
+    .fetch_all(pool)
+    .await
+}
+
+/// A most viewed course or exam.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct TopContent {
+    /// `course` or `exam`.
+    pub kind: String,
+    pub slug: String,
+    pub title: String,
+    pub subject_name: Option<String>,
+    pub views: i64,
+    /// Its views over the period before.
+    pub previous: i64,
+}
+
+/// The ten courses and exams most viewed over the period
+/// (`site.content_views`), still published.
+pub async fn top_content(pool: &PgPool, bounds: &Bounds) -> Result<Vec<TopContent>, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "WITH v AS (
+             SELECT kind, content_id,
+                    coalesce(sum(views) FILTER (WHERE day >= $1), 0)::bigint AS views,
+                    coalesce(sum(views) FILTER (WHERE day < $1), 0)::bigint AS previous
+               FROM site.content_views WHERE day >= $2 AND day <= $3 GROUP BY 1, 2),
+         named AS (
+             SELECT 'course' AS kind, c.id, c.slug, c.title, c.subject_name FROM ",
+        published_courses!(),
+        " c
+             UNION ALL
+             SELECT 'exam', x.id, x.slug, x.title, x.subject FROM ",
+        published_exams!(),
+        " x)
+         SELECT v.kind, n.slug::text AS slug, n.title::text AS title,
+                n.subject_name::text AS subject_name, v.views, v.previous
+           FROM v JOIN named n ON n.kind = v.kind AND n.id = v.content_id
+          WHERE v.views > 0
+          ORDER BY v.views DESC, v.kind, n.slug
+          LIMIT 10"
+    ))
+    .bind(bounds.start)
+    .bind(bounds.previous)
+    .bind(bounds.today)
+    .fetch_all(pool)
+    .await
 }
 
 /// The `objectif_dons` setting of `site.reglages`.
