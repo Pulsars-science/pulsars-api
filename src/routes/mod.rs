@@ -27,6 +27,7 @@ pub mod public;
 pub mod resources;
 pub mod site;
 pub mod social;
+pub mod telemetry;
 pub mod token;
 pub mod upload;
 pub mod views;
@@ -281,6 +282,8 @@ pub fn router(state: AppState) -> Router {
             get(corrections::corrections),
         )
         .route("/v1/courses/{slug}/view", post(views::course))
+        .route("/v1/telemetry/page-view", post(telemetry::page_view))
+        .route("/v1/consent", post(telemetry::consent))
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
