@@ -22,6 +22,7 @@ pub mod courses;
 pub mod dashboard;
 pub mod exams;
 pub mod news;
+pub mod people;
 pub mod queues;
 pub mod requests;
 pub mod roles;

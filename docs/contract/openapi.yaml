@@ -3237,6 +3237,218 @@ paths:
                     - { name: pulsars-db, image: 'docker.io/library/postgres:17-alpine', state: running, health: healthy, started_at: '2026-10-29T09:15:00Z', restarts: 0, cpu_percent: 2.1, memory_bytes: 61200000, memory_limit_bytes: 2100000000 }
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/people:
+    get:
+      tags: [admin]
+      operationId: searchAdminPeople
+      summary: Find a member or a visitor
+      description: |
+        `q` (2 to 100 characters) is matched case-insensitively in the
+        e-mail and the pseudo (those that start with it first), 20 members
+        at most; an exact visitor id (UUID) finds that visitor. A member's
+        `last_seen_at` is the latest of their page views and of their
+        sessions' use. See `docs/privacy.md`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, maxLength: 100 } }
+      responses:
+        '200':
+          description: The people found
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [members, visitors]
+                    properties:
+                      members:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: integer }
+                            pseudo: { type: string }
+                            email: { type: string }
+                            created_at: { type: [string, 'null'], format: date-time }
+                            last_seen_at: { type: [string, 'null'], format: date-time }
+                            verified: { type: boolean }
+                            roles: { type: array, items: { type: string } }
+                      visitors:
+                        type: array
+                        items: { $ref: '#/components/schemas/JournalVisitor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/people/members/{id}:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonMember
+      summary: A member's summary
+      description: |
+        The account, its XP and brains, the visitor ids linked to it (the
+        latest first, 20 at most), counts of what it did ever (`logins`
+        counts `login` and `oauth_login` events), and its latest consent
+        answer (null without one). 404 for an unknown member.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: The summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      member:
+                        type: object
+                        properties:
+                          id: { type: integer }
+                          pseudo: { type: string }
+                          email: { type: string }
+                          created_at: { type: [string, 'null'], format: date-time }
+                          verified: { type: boolean }
+                          onboarded: { type: boolean }
+                          roles: { type: array, items: { type: string } }
+                          xp: { type: integer }
+                          brains: { type: integer }
+                          last_seen_at: { type: [string, 'null'], format: date-time }
+                          visitor_ids: { type: array, items: { type: string, format: uuid } }
+                      counts:
+                        type: object
+                        properties:
+                          page_views: { type: integer }
+                          lessons_completed: { type: integer }
+                          exercise_attempts: { type: integer }
+                          games: { type: integer }
+                          forum_posts: { type: integer }
+                          room_messages: { type: integer }
+                          downloads: { type: integer }
+                          logins: { type: integer }
+                      consent: { oneOf: [{ $ref: '#/components/schemas/JournalConsent' }, { type: 'null' }] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/people/members/{id}/events:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonMemberEvents
+      summary: A member's timeline
+      description: |
+        Everything the member did, newest first, from every kind of
+        `JournalItem` (their visitor's page views once linked included).
+        404 for an unknown member.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - name: kinds
+          in: query
+          description: Comma-separated kinds to keep; an unknown one is a 400 on `kinds`.
+          schema: { type: string, example: 'page_view,security' }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: A page of the timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JournalPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/people/visitors/{id}:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonVisitor
+      summary: A visitor's summary
+      description: |
+        A visitor id seen in page views or consents: when, how many page
+        views, the member it was linked to (null while anonymous), its
+        latest consent answer. 404 when never seen.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      visitor:
+                        type: object
+                        properties:
+                          visitor_id: { type: string, format: uuid }
+                          first_seen_at: { type: string, format: date-time }
+                          last_seen_at: { type: string, format: date-time }
+                          member_id: { type: [integer, 'null'] }
+                      counts: { type: object, properties: { page_views: { type: integer } } }
+                      consent: { oneOf: [{ $ref: '#/components/schemas/JournalConsent' }, { type: 'null' }] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/people/visitors/{id}/events:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonVisitorEvents
+      summary: A visitor's timeline
+      description: Its page views and consent answers, newest first.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - name: kinds
+          in: query
+          description: Comma-separated kinds to keep; an unknown one is a 400 on `kinds`.
+          schema: { type: string, example: 'page_view,security' }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: A page of the timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JournalPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/activity:
+    get:
+      tags: [admin]
+      operationId: getAdminActivity
+      summary: Everybody's timeline
+      description: |
+        Every `JournalItem` of every member and visitor, newest first, each
+        with `who`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - name: kinds
+          in: query
+          description: Comma-separated kinds to keep; an unknown one is a 400 on `kinds`.
+          schema: { type: string, example: 'page_view,security' }
+      responses:
+        '200':
+          description: A page of the timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JournalPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
   /v1/admin/settings/donation-goal:
     get:
       tags: [admin]
@@ -4879,6 +5091,69 @@ paths:
                   downloaders: 31
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /v1/telemetry/page-view:
+    post:
+      tags: [feedback]
+      operationId: postPageView
+      summary: Record a page view, after consent
+      description: |
+        Sent by the site's pages only when the visitor accepted the
+        "mesure" cookies (`docs/privacy.md`). Recorded for the member of
+        the session and/or the visitor id of `Pulsars-Visitor`; with
+        neither, nothing is written (still 204). `path` must be a path of
+        the site (starting with one `/`, at most 512 characters once its
+        query and fragment are dropped: 422 `invalid` or `too_long`);
+        `referrer` keeps only the origin of an external address, null for
+        the site itself. Robots are ignored. Kept 13 months. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/VisitorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [path]
+              properties:
+                path: { type: string, example: '/cours/les-bases-du-calcul?onglet=2' }
+                referrer: { type: [string, 'null'], example: 'https://www.qwant.com/?q=pulsars' }
+      responses:
+        '204': { description: Received (recorded or not). }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/consent:
+    post:
+      tags: [feedback]
+      operationId: postConsent
+      summary: Keep the proof of a consent banner answer
+      description: |
+        `measure`: whether the visitor accepted the "mesure" cookies;
+        `version`: the banner's version (1 to 1 000 000, else 422
+        `invalid`). Kept 25 months with the member and/or the visitor id
+        (both may be null, for a refusal) and the visitor fingerprint,
+        never the address. Robots are ignored. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/VisitorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [measure, version]
+              properties:
+                measure: { type: boolean }
+                version: { type: integer, minimum: 1, maximum: 1000000 }
+      responses:
+        '204': { description: Recorded. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /v1/courses/{slug}/view:
     post:
       tags: [courses]
@@ -4970,6 +5245,17 @@ components:
       required: true
       description: A session token from `/v1/auth/login`, `/register` or `/sessions`.
       schema: { type: string, minLength: 43, maxLength: 43 }
+    VisitorId:
+      name: Pulsars-Visitor
+      in: header
+      required: false
+      description: |
+        The anonymous visitor id the site keeps in its `pulsars_vid`
+        cookie once the visitor accepted the "mesure" cookies, relayed on
+        every request (`docs/privacy.md`). A UUID v4; anything else is
+        ignored. When a session opens with it, the visitor's page views
+        become the member's.
+      schema: { type: string, format: uuid }
     ServiceKey:
       name: Pulsars-Service-Key
       in: header
@@ -6768,6 +7054,69 @@ components:
               cpu_percent: { type: [number, 'null'] }
               memory_bytes: { type: [integer, 'null'] }
               memory_limit_bytes: { type: [integer, 'null'], description: Null without a limit. }
+    JournalConsent:
+      type: object
+      required: [measure, at]
+      properties:
+        measure: { type: boolean }
+        at: { type: string, format: date-time }
+    JournalVisitor:
+      type: object
+      properties:
+        visitor_id: { type: string, format: uuid }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        page_views: { type: integer }
+        member_id: { type: [integer, 'null'] }
+    JournalItem:
+      type: object
+      required: [id, at, kind, data, link]
+      description: |
+        `data` by `kind`:
+        `page_view` {path, referrer} (link: the path);
+        `security` {event, ip, user_agent, detail}, `event` one of `signup`,
+        `login`, `login_failed`, `logout`, `password_changed`,
+        `password_reset_requested`, `password_reset`, `email_verified`,
+        `oauth_login`, `oauth_linked`, `oauth_unlinked`;
+        `consent` {measure, version};
+        `signup` {};
+        `lesson_completed` {course_title, lesson_title} (link
+        `/cours/{course}/lecon/{lesson}`);
+        `exercise_attempt` {course_title, exercise_title, correct} (link
+        `/cours/{course}/exercice/{id}`);
+        `course_enrolled` {course_title} (link `/cours/{course}`);
+        `game` {mode, subject, outcome, ranked};
+        `forum_question` {title}, `forum_answer` {question_title} (link
+        `/forum/q/{slug}`);
+        `room_message` {room_name} (link `/salons/{slug}`; never the
+        message);
+        `brains` {amount, reason};
+        `download` {exam_title} (link `/examens/{slug}`).
+      properties:
+        id: { type: string, example: 'page_view:1234', description: '`<kind>:<row id>`.' }
+        at: { type: string, format: date-time }
+        kind:
+          type: string
+          enum: [page_view, security, consent, signup, lesson_completed, exercise_attempt,
+                 course_enrolled, game, forum_question, forum_answer, room_message, brains, download]
+        who:
+          description: |
+            On `/v1/admin/activity` only: `{member_id, pseudo}`, `{visitor_id}`,
+            or null (a failed login on an unknown account).
+          oneOf:
+            - type: object
+              properties: { member_id: { type: integer }, pseudo: { type: [string, 'null'] } }
+            - type: object
+              properties: { visitor_id: { type: string, format: uuid } }
+            - type: 'null'
+        data: { type: object }
+        link: { type: [string, 'null'], description: A path of the site. }
+    JournalPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/JournalItem' } }
+        next_cursor: { type: [string, 'null'] }
     AdminListing:
       type: object
       required: [data, page, per_page, total, counters]

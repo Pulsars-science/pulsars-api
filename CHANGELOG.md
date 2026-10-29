@@ -21,6 +21,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Podman socket.
 - `GET /v1/admin/game/leaderboard`: the game leaderboard for an admin's
   session (the site's relay refuses `/v1/game*`).
+- The admin journal (`docs/privacy.md`): `POST /v1/telemetry/page-view`
+  (only after consent, with a member or the `Pulsars-Visitor` id) and
+  `POST /v1/consent` (proofs); security events written by the auth routes;
+  a visitor's page views linked to the member when a session opens;
+  `GET /v1/admin/people`, `/v1/admin/people/members/{id}`,
+  `/v1/admin/people/visitors/{id}`, their `/events` timelines and
+  `GET /v1/admin/activity`. New tables `site.page_views`,
+  `site.security_events` and `site.consents`, purged daily past 13, 12 and
+  25 months.
 
 ## [0.6.0] - 2026-10-29
 
