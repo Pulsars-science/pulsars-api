@@ -16,6 +16,7 @@ pub mod extract;
 pub mod flash;
 pub mod game;
 pub mod http_client;
+pub mod http_daily;
 pub mod links;
 pub mod mail;
 pub mod middleware;

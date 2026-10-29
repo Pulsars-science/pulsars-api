@@ -426,7 +426,10 @@ pub fn router(state: AppState) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.
-        .layer(from_fn(mw::record_metrics));
+        .layer(from_fn_with_state(
+            state.http_daily.clone(),
+            mw::record_metrics,
+        ));
 
     routes
         .layer(
