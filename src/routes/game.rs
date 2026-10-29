@@ -83,7 +83,22 @@ pub async fn leaderboard(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
 ) -> Result<Response, ApiError> {
-    let mut params = Params::parse(query.as_deref());
+    let body = leaderboard_body(&state, query.as_deref()).await?;
+    let mut response = Json(body).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(CACHE_LEADERBOARD),
+    );
+    Ok(response)
+}
+
+/// The leaderboard of `?subject=&limit=`, for the public route and the
+/// admin's (`GET /v1/admin/game/leaderboard`).
+pub(crate) async fn leaderboard_body(
+    state: &AppState,
+    query: Option<&str>,
+) -> Result<Leaderboard, ApiError> {
+    let mut params = Params::parse(query);
     let subject = params.one_of("subject", SUBJECT_KEYS);
     let limit = params.limit_or(LEADERBOARD_DEFAULT_LIMIT);
     params.finish()?;
@@ -93,7 +108,7 @@ pub async fn leaderboard(
 
     let rows = store::leaderboard(&state.db, subject, i64::from(limit)).await?;
     let storage = &state.config.public_storage_url;
-    let body = Leaderboard {
+    Ok(Leaderboard {
         subject,
         data: rows
             .into_iter()
@@ -110,13 +125,7 @@ pub async fn leaderboard(
                 draws: row.draws,
             })
             .collect(),
-    };
-    let mut response = Json(body).into_response();
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static(CACHE_LEADERBOARD),
-    );
-    Ok(response)
+    })
 }
 
 fn avatar_url(path: Option<String>, storage: &str) -> Option<String> {

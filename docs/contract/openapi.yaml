@@ -3285,6 +3285,40 @@ paths:
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/AdminOnly' }
         '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/game/leaderboard:
+    get:
+      tags: [admin]
+      operationId: getAdminGameLeaderboard
+      summary: The game leaderboard, for an admin's session
+      description: |
+        The same parameters and body as `GET /v1/game/leaderboard`, for an
+        admin's session through the site's relay (which refuses every
+        `/v1/game*` path). `Cache-Control: no-store`, not the public cache.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - name: subject
+          in: query
+          schema: { $ref: '#/components/schemas/GameSubject' }
+          description: Absent → `all`.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: The leaderboard
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject, data]
+                properties:
+                  subject: { $ref: '#/components/schemas/GameSubject' }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/GameLeader' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
   /v1/admin/game/stats:
     get:
       tags: [admin]

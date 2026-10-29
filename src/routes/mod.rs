@@ -322,6 +322,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/admin/game/stats", get(admin::dashboard::game_stats))
         .route(
+            "/v1/admin/game/leaderboard",
+            get(admin::dashboard::game_leaderboard),
+        )
+        .route(
             "/v1/admin/languages/stats",
             get(admin::dashboard::language_stats),
         )

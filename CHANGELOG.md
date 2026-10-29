@@ -19,6 +19,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and memory, read from the snapshot a root timer writes every minute
   (`deploy/podman/`, `PODMAN_SNAPSHOT_PATH`); the API never gets the
   Podman socket.
+- `GET /v1/admin/game/leaderboard`: the game leaderboard for an admin's
+  session (the site's relay refuses `/v1/game*`).
 
 ## [0.6.0] - 2026-10-29
 

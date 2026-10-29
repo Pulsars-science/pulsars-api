@@ -375,6 +375,21 @@ pub async fn game_stats(
     }))
 }
 
+/// `GET /v1/admin/game/leaderboard?subject=&limit=`: the body of
+/// `GET /v1/game/leaderboard`, for an admin's session (the site's relay
+/// refuses `/v1/game*`). `no-store`, not the public cache.
+pub async fn game_leaderboard(
+    State(state): State<AppState>,
+    _admin: AdminMember,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let body = crate::routes::game::leaderboard_body(&state, query.as_deref()).await?;
+    Ok(crate::routes::auth::no_store(
+        axum::http::StatusCode::OK,
+        &body,
+    ))
+}
+
 /// `GET /v1/admin/languages/stats?days=7|30|90`: what
 /// `GET /v1/languages/admin/stats` gives a game token with the admin role.
 pub async fn language_stats(

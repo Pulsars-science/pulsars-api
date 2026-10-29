@@ -120,6 +120,7 @@ async fn the_administration_is_for_admins_only() {
         "/v1/admin/reports",
         "/v1/admin/suggestions",
         "/v1/admin/game/stats",
+        "/v1/admin/game/leaderboard",
         "/v1/admin/languages/stats",
     ];
     for path in paths {
@@ -1999,4 +2000,29 @@ async fn the_containers_come_from_the_podman_snapshot() {
         })
     );
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_game_leaderboard_takes_an_admin_session() {
+    let Some(env) = Env::new().await else { return };
+    let admin = admin(&env).await;
+    let (status, headers, body) = Call::get("/v1/admin/game/leaderboard?subject=maths&limit=5")
+        .member(&admin)
+        .send_full(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(body["subject"], "maths");
+    let leaders = body["data"].as_array().unwrap();
+    assert!(leaders.len() <= 5);
+    // The same body as the public route.
+    let (_, public) = Call::get("/v1/game/leaderboard?subject=maths&limit=5")
+        .send(&env.app)
+        .await;
+    assert_eq!(body, public);
+    let (status, body) = Call::get("/v1/admin/game/leaderboard?subject=biology")
+        .member(&admin)
+        .send(&env.app)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
