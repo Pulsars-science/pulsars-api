@@ -122,7 +122,17 @@ async fn server_with(
             .get_or_insert_with(testing::signer)
             .clone(),
     };
-    let db = db::connect_lazy(&config).unwrap();
+    // The real pool waits up to 2 s for a connection: against the dead
+    // database, every lookup and each try to record a match end would wait
+    // that long. Tests without services give up after 200 ms instead.
+    let db = if database_url == DEAD_POSTGRES {
+        sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy(DEAD_POSTGRES)
+            .unwrap()
+    } else {
+        db::connect_lazy(&config).unwrap()
+    };
     let state = AppState {
         mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), settings),
@@ -225,10 +235,16 @@ impl Client {
 
     /// The next JSON frame.
     async fn recv(&mut self) -> Value {
+        self.recv_waiting_for("any").await
+    }
+
+    /// The next JSON frame; `kind` names what the test waits for, in the
+    /// panic message of a timeout.
+    async fn recv_waiting_for(&mut self, kind: &str) -> Value {
         loop {
             let message = tokio::time::timeout(Duration::from_secs(15), self.ws.next())
                 .await
-                .expect("a frame within 15 s")
+                .unwrap_or_else(|_| panic!("no `{kind}` frame within 15 s"))
                 .expect("the socket is open")
                 .expect("a valid frame");
             match message {
@@ -239,10 +255,11 @@ impl Client {
         }
     }
 
-    /// Skips frames until one of type `kind`.
+    /// Skips frames until one of type `kind`. The skipped frames are lost:
+    /// a frame the test needs later must be awaited before.
     async fn until(&mut self, kind: &str) -> Value {
         loop {
-            let frame = self.recv().await;
+            let frame = self.recv_waiting_for(kind).await;
             if frame["type"] == kind {
                 return frame;
             }
@@ -612,6 +629,9 @@ async fn guests_play_casual_duels_to_the_end() {
         300_000
     );
     let correct = answers(&server, &start_a).await;
+    // The first question comes 100 ms after the start, whatever `b` does:
+    // waited for here, before `until` below could skip it.
+    let mut question = a.until("question").await;
 
     // `b` drops and comes back with its resume token.
     let resume = ok_b["resume"].as_str().unwrap().to_owned();
@@ -630,7 +650,6 @@ async fn guests_play_casual_duels_to_the_end() {
 
     // `a` answers one wrong (−1), then eleven right: reaching the target
     // ends the match.
-    let mut question = a.until("question").await;
     answer(&mut a, &question, &correct, false).await;
     for k in 0..11 {
         question = a.until("question").await;
