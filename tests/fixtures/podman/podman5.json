@@ -1,0 +1,652 @@
+{
+ "taken_at": "2026-10-29T12:00:00Z",
+ "ps": [
+  {
+   "AutoRemove": false,
+   "Command": null,
+   "CreatedAt": "2 hours ago",
+   "Exited": false,
+   "ExitedAt": -62135596800,
+   "ExitCode": 0,
+   "Id": "9d9f7b27686df5541566b6cc20775ec6d41e2ccb8ca4a27b048b8df6616aee63",
+   "Image": "ghcr.io/pulsars-science/pulsars-api:0.6.0",
+   "ImageID": "42346d3c4f20c2b900ce634cd9fbd72a7935a1a7f8907cdb2399e3dbe58b6b47",
+   "IsInfra": false,
+   "Labels": {
+    "PODMAN_SYSTEMD_UNIT": "pulsars-api.service"
+   },
+   "Mounts": [],
+   "Names": [
+    "pulsars-api"
+   ],
+   "Namespaces": {},
+   "Networks": [
+    "pulsars"
+   ],
+   "Pid": 4242,
+   "Pod": "",
+   "PodName": "",
+   "Ports": null,
+   "Restarts": 0,
+   "Size": null,
+   "StartedAt": 1761729342,
+   "State": "running",
+   "Status": "Up 3 hours (healthy)",
+   "Created": 1761721200,
+   "CIDFile": "",
+   "ExposedPorts": null
+  },
+  {
+   "AutoRemove": false,
+   "Command": null,
+   "CreatedAt": "2 hours ago",
+   "Exited": false,
+   "ExitedAt": -62135596800,
+   "ExitCode": 0,
+   "Id": "68087177346d8360e284f2ef867f00ef3700a1d3b7bd525783f3270d5a6df7c4",
+   "Image": "ghcr.io/pulsars-science/pulsars-web:0.1.0",
+   "ImageID": "3d1aeb790db58d7df3317a1ee06e47bff6c6ec2f5afde54539b67f5685729ccd",
+   "IsInfra": false,
+   "Labels": {
+    "PODMAN_SYSTEMD_UNIT": "pulsars-web.service"
+   },
+   "Mounts": [],
+   "Names": [
+    "pulsars-web"
+   ],
+   "Namespaces": {},
+   "Networks": [
+    "pulsars"
+   ],
+   "Pid": 4242,
+   "Pod": "",
+   "PodName": "",
+   "Ports": null,
+   "Restarts": 1,
+   "Size": null,
+   "StartedAt": 1761729350,
+   "State": "running",
+   "Status": "Up 3 hours (unhealthy)",
+   "Created": 1761721200,
+   "CIDFile": "",
+   "ExposedPorts": null
+  },
+  {
+   "AutoRemove": false,
+   "Command": null,
+   "CreatedAt": "2 hours ago",
+   "Exited": false,
+   "ExitedAt": -62135596800,
+   "ExitCode": 0,
+   "Id": "b0f65a890e2af1f7233e0e49860d6ac392400fbf2e966d87ee9ff30de2b39373",
+   "Image": "docker.io/library/postgres:17-alpine",
+   "ImageID": "0ce82e7a6e8c79a99e175b860471f8185ae56964d43b647e932d8d3a58a6e25a",
+   "IsInfra": false,
+   "Labels": {
+    "PODMAN_SYSTEMD_UNIT": "pulsars-db.service"
+   },
+   "Mounts": [],
+   "Names": [
+    "pulsars-db"
+   ],
+   "Namespaces": {},
+   "Networks": [
+    "pulsars"
+   ],
+   "Pid": 4242,
+   "Pod": "",
+   "PodName": "",
+   "Ports": null,
+   "Restarts": 0,
+   "Size": null,
+   "StartedAt": 1761729300,
+   "State": "running",
+   "Status": "Up 3 hours (healthy)",
+   "Created": 1761721200,
+   "CIDFile": "",
+   "ExposedPorts": null
+  },
+  {
+   "AutoRemove": false,
+   "Command": null,
+   "CreatedAt": "2 hours ago",
+   "Exited": false,
+   "ExitedAt": -62135596800,
+   "ExitCode": 0,
+   "Id": "25a9dba42e0fac74c3d2729a953f1aa36f9da55f6fa61b443d016e7bbfb5ab77",
+   "Image": "ghcr.io/umami-software/umami:postgresql-v2.11.3",
+   "ImageID": "5fb1d6561d752f494eb0866ae2125444d046411cf7fc191d3dba6e247cfe7963",
+   "IsInfra": false,
+   "Labels": {
+    "PODMAN_SYSTEMD_UNIT": "umami.service"
+   },
+   "Mounts": [],
+   "Names": [
+    "umami"
+   ],
+   "Namespaces": {},
+   "Networks": [
+    "pulsars"
+   ],
+   "Pid": 4242,
+   "Pod": "",
+   "PodName": "",
+   "Ports": null,
+   "Restarts": 0,
+   "Size": null,
+   "StartedAt": 1761729310,
+   "State": "running",
+   "Status": "Up 3 hours",
+   "Created": 1761721200,
+   "CIDFile": "",
+   "ExposedPorts": null
+  },
+  {
+   "AutoRemove": false,
+   "Command": null,
+   "CreatedAt": "2 hours ago",
+   "Exited": false,
+   "ExitedAt": -62135596800,
+   "ExitCode": 0,
+   "Id": "ab55b53b8461e09db70daf4d9f86824268181085c8b7b2a7e33335a86cc869fc",
+   "Image": "ghcr.io/pulsars-science/pulsars-api:0.6.0",
+   "ImageID": "42346d3c4f20c2b900ce634cd9fbd72a7935a1a7f8907cdb2399e3dbe58b6b47",
+   "IsInfra": false,
+   "Labels": {
+    "PODMAN_SYSTEMD_UNIT": "pulsars-migrate.service"
+   },
+   "Mounts": [],
+   "Names": [
+    "pulsars-migrate"
+   ],
+   "Namespaces": {},
+   "Networks": [
+    "pulsars"
+   ],
+   "Pid": 4242,
+   "Pod": "",
+   "PodName": "",
+   "Ports": null,
+   "Restarts": 0,
+   "Size": null,
+   "StartedAt": 0,
+   "State": "created",
+   "Status": "Created",
+   "Created": 1761721200,
+   "CIDFile": "",
+   "ExposedPorts": null
+  }
+ ],
+ "inspect": [
+  {
+   "Id": "9d9f7b27686df5541566b6cc20775ec6d41e2ccb8ca4a27b048b8df6616aee63",
+   "Created": "2026-10-29T09:00:00.000000000Z",
+   "Path": "docker-entrypoint.sh",
+   "Args": [],
+   "State": {
+    "OciVersion": "1.1.0",
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 4242,
+    "ConmonPid": 4240,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-10-29T09:15:42.481276539Z",
+    "FinishedAt": "0001-01-01T00:00:00Z",
+    "CgroupPath": "/system.slice/pulsars-api.service/libpod-payload-9d9f7b27686df5541566b6cc20775ec6d41e2ccb8ca4a27b048b8df6616aee63",
+    "CheckpointedAt": "0001-01-01T00:00:00Z",
+    "RestoredAt": "0001-01-01T00:00:00Z",
+    "Health": {
+     "Status": "healthy",
+     "FailingStreak": 0,
+     "Log": [
+      {
+       "Start": "2026-10-29T11:59:30.1Z",
+       "End": "2026-10-29T11:59:30.2Z",
+       "ExitCode": 0,
+       "Output": ""
+      }
+     ]
+    },
+    "StoppedByUser": false
+   },
+   "Image": "42346d3c4f20c2b900ce634cd9fbd72a7935a1a7f8907cdb2399e3dbe58b6b47",
+   "ImageDigest": "sha256:74977cc1a2f92a610889b1d95b3e0f22fdeb14d9f5dddd2a1d29e5efb4f2c666",
+   "ImageName": "ghcr.io/pulsars-science/pulsars-api:0.6.0",
+   "Rootfs": "",
+   "Pod": "",
+   "ResolvConfPath": "",
+   "HostnamePath": "",
+   "HostsPath": "",
+   "StaticDir": "",
+   "OCIRuntime": "crun",
+   "ConmonPidFile": "",
+   "PidFile": "",
+   "Name": "pulsars-api",
+   "RestartCount": 0,
+   "Driver": "overlay",
+   "MountLabel": "",
+   "ProcessLabel": "",
+   "AppArmorProfile": "",
+   "EffectiveCaps": [],
+   "BoundingCaps": [],
+   "ExecIDs": [],
+   "GraphDriver": {
+    "Name": "overlay",
+    "Data": {}
+   },
+   "Mounts": [],
+   "Dependencies": [],
+   "NetworkSettings": {},
+   "Namespace": "",
+   "IsInfra": false,
+   "IsService": false,
+   "Config": {
+    "Hostname": "9d9f7b27686d",
+    "Image": "ghcr.io/pulsars-science/pulsars-api:0.6.0",
+    "Labels": {
+     "PODMAN_SYSTEMD_UNIT": "pulsars-api.service"
+    }
+   },
+   "HostConfig": {
+    "RestartPolicy": {
+     "Name": "",
+     "MaximumRetryCount": 0
+    }
+   },
+   "HealthcheckOnFailureAction": "none"
+  },
+  {
+   "Id": "68087177346d8360e284f2ef867f00ef3700a1d3b7bd525783f3270d5a6df7c4",
+   "Created": "2026-10-29T09:00:00.000000000Z",
+   "Path": "docker-entrypoint.sh",
+   "Args": [],
+   "State": {
+    "OciVersion": "1.1.0",
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 4242,
+    "ConmonPid": 4240,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-10-29T09:15:50.1Z",
+    "FinishedAt": "0001-01-01T00:00:00Z",
+    "CgroupPath": "/system.slice/pulsars-web.service/libpod-payload-68087177346d8360e284f2ef867f00ef3700a1d3b7bd525783f3270d5a6df7c4",
+    "CheckpointedAt": "0001-01-01T00:00:00Z",
+    "RestoredAt": "0001-01-01T00:00:00Z",
+    "Health": {
+     "Status": "unhealthy",
+     "FailingStreak": 0,
+     "Log": [
+      {
+       "Start": "2026-10-29T11:59:30.1Z",
+       "End": "2026-10-29T11:59:30.2Z",
+       "ExitCode": 1,
+       "Output": ""
+      }
+     ]
+    },
+    "StoppedByUser": false
+   },
+   "Image": "3d1aeb790db58d7df3317a1ee06e47bff6c6ec2f5afde54539b67f5685729ccd",
+   "ImageDigest": "sha256:580b775e6e9959c4de201c446d9d74146fbab00bd4ead4b62dd325b60a9ff2db",
+   "ImageName": "ghcr.io/pulsars-science/pulsars-web:0.1.0",
+   "Rootfs": "",
+   "Pod": "",
+   "ResolvConfPath": "",
+   "HostnamePath": "",
+   "HostsPath": "",
+   "StaticDir": "",
+   "OCIRuntime": "crun",
+   "ConmonPidFile": "",
+   "PidFile": "",
+   "Name": "pulsars-web",
+   "RestartCount": 1,
+   "Driver": "overlay",
+   "MountLabel": "",
+   "ProcessLabel": "",
+   "AppArmorProfile": "",
+   "EffectiveCaps": [],
+   "BoundingCaps": [],
+   "ExecIDs": [],
+   "GraphDriver": {
+    "Name": "overlay",
+    "Data": {}
+   },
+   "Mounts": [],
+   "Dependencies": [],
+   "NetworkSettings": {},
+   "Namespace": "",
+   "IsInfra": false,
+   "IsService": false,
+   "Config": {
+    "Hostname": "68087177346d",
+    "Image": "ghcr.io/pulsars-science/pulsars-web:0.1.0",
+    "Labels": {
+     "PODMAN_SYSTEMD_UNIT": "pulsars-web.service"
+    }
+   },
+   "HostConfig": {
+    "RestartPolicy": {
+     "Name": "",
+     "MaximumRetryCount": 0
+    }
+   },
+   "HealthcheckOnFailureAction": "none"
+  },
+  {
+   "Id": "b0f65a890e2af1f7233e0e49860d6ac392400fbf2e966d87ee9ff30de2b39373",
+   "Created": "2026-10-29T09:00:00.000000000Z",
+   "Path": "docker-entrypoint.sh",
+   "Args": [],
+   "State": {
+    "OciVersion": "1.1.0",
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 4242,
+    "ConmonPid": 4240,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-10-29T09:15:00Z",
+    "FinishedAt": "0001-01-01T00:00:00Z",
+    "CgroupPath": "/system.slice/pulsars-db.service/libpod-payload-b0f65a890e2af1f7233e0e49860d6ac392400fbf2e966d87ee9ff30de2b39373",
+    "CheckpointedAt": "0001-01-01T00:00:00Z",
+    "RestoredAt": "0001-01-01T00:00:00Z",
+    "Health": {
+     "Status": "healthy",
+     "FailingStreak": 0,
+     "Log": [
+      {
+       "Start": "2026-10-29T11:59:30.1Z",
+       "End": "2026-10-29T11:59:30.2Z",
+       "ExitCode": 0,
+       "Output": ""
+      }
+     ]
+    },
+    "StoppedByUser": false
+   },
+   "Image": "0ce82e7a6e8c79a99e175b860471f8185ae56964d43b647e932d8d3a58a6e25a",
+   "ImageDigest": "sha256:e4739da91366662ae39f629082484b79ed946d9944297231bc27e12c0296c6d6",
+   "ImageName": "docker.io/library/postgres:17-alpine",
+   "Rootfs": "",
+   "Pod": "",
+   "ResolvConfPath": "",
+   "HostnamePath": "",
+   "HostsPath": "",
+   "StaticDir": "",
+   "OCIRuntime": "crun",
+   "ConmonPidFile": "",
+   "PidFile": "",
+   "Name": "pulsars-db",
+   "RestartCount": 0,
+   "Driver": "overlay",
+   "MountLabel": "",
+   "ProcessLabel": "",
+   "AppArmorProfile": "",
+   "EffectiveCaps": [],
+   "BoundingCaps": [],
+   "ExecIDs": [],
+   "GraphDriver": {
+    "Name": "overlay",
+    "Data": {}
+   },
+   "Mounts": [],
+   "Dependencies": [],
+   "NetworkSettings": {},
+   "Namespace": "",
+   "IsInfra": false,
+   "IsService": false,
+   "Config": {
+    "Hostname": "b0f65a890e2a",
+    "Image": "docker.io/library/postgres:17-alpine",
+    "Labels": {
+     "PODMAN_SYSTEMD_UNIT": "pulsars-db.service"
+    }
+   },
+   "HostConfig": {
+    "RestartPolicy": {
+     "Name": "",
+     "MaximumRetryCount": 0
+    }
+   },
+   "HealthcheckOnFailureAction": "none"
+  },
+  {
+   "Id": "25a9dba42e0fac74c3d2729a953f1aa36f9da55f6fa61b443d016e7bbfb5ab77",
+   "Created": "2026-10-29T09:00:00.000000000Z",
+   "Path": "docker-entrypoint.sh",
+   "Args": [],
+   "State": {
+    "OciVersion": "1.1.0",
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 4242,
+    "ConmonPid": 4240,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-10-29T09:15:10Z",
+    "FinishedAt": "0001-01-01T00:00:00Z",
+    "CgroupPath": "/system.slice/umami.service/libpod-payload-25a9dba42e0fac74c3d2729a953f1aa36f9da55f6fa61b443d016e7bbfb5ab77",
+    "CheckpointedAt": "0001-01-01T00:00:00Z",
+    "RestoredAt": "0001-01-01T00:00:00Z",
+    "StoppedByUser": false
+   },
+   "Image": "5fb1d6561d752f494eb0866ae2125444d046411cf7fc191d3dba6e247cfe7963",
+   "ImageDigest": "sha256:7c23f4a7c77a9f8c8dcf33959124e06b7e1f46b15b2589709b21a2a625ac2cd0",
+   "ImageName": "ghcr.io/umami-software/umami:postgresql-v2.11.3",
+   "Rootfs": "",
+   "Pod": "",
+   "ResolvConfPath": "",
+   "HostnamePath": "",
+   "HostsPath": "",
+   "StaticDir": "",
+   "OCIRuntime": "crun",
+   "ConmonPidFile": "",
+   "PidFile": "",
+   "Name": "umami",
+   "RestartCount": 0,
+   "Driver": "overlay",
+   "MountLabel": "",
+   "ProcessLabel": "",
+   "AppArmorProfile": "",
+   "EffectiveCaps": [],
+   "BoundingCaps": [],
+   "ExecIDs": [],
+   "GraphDriver": {
+    "Name": "overlay",
+    "Data": {}
+   },
+   "Mounts": [],
+   "Dependencies": [],
+   "NetworkSettings": {},
+   "Namespace": "",
+   "IsInfra": false,
+   "IsService": false,
+   "Config": {
+    "Hostname": "25a9dba42e0f",
+    "Image": "ghcr.io/umami-software/umami:postgresql-v2.11.3",
+    "Labels": {
+     "PODMAN_SYSTEMD_UNIT": "umami.service"
+    }
+   },
+   "HostConfig": {
+    "RestartPolicy": {
+     "Name": "",
+     "MaximumRetryCount": 0
+    }
+   },
+   "HealthcheckOnFailureAction": "none"
+  },
+  {
+   "Id": "ab55b53b8461e09db70daf4d9f86824268181085c8b7b2a7e33335a86cc869fc",
+   "Created": "2026-10-29T09:00:00.000000000Z",
+   "Path": "docker-entrypoint.sh",
+   "Args": [],
+   "State": {
+    "OciVersion": "1.1.0",
+    "Status": "created",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 4242,
+    "ConmonPid": 4240,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "0001-01-01T00:00:00Z",
+    "FinishedAt": "0001-01-01T00:00:00Z",
+    "CgroupPath": "/system.slice/pulsars-migrate.service/libpod-payload-ab55b53b8461e09db70daf4d9f86824268181085c8b7b2a7e33335a86cc869fc",
+    "CheckpointedAt": "0001-01-01T00:00:00Z",
+    "RestoredAt": "0001-01-01T00:00:00Z",
+    "StoppedByUser": false
+   },
+   "Image": "42346d3c4f20c2b900ce634cd9fbd72a7935a1a7f8907cdb2399e3dbe58b6b47",
+   "ImageDigest": "sha256:74977cc1a2f92a610889b1d95b3e0f22fdeb14d9f5dddd2a1d29e5efb4f2c666",
+   "ImageName": "ghcr.io/pulsars-science/pulsars-api:0.6.0",
+   "Rootfs": "",
+   "Pod": "",
+   "ResolvConfPath": "",
+   "HostnamePath": "",
+   "HostsPath": "",
+   "StaticDir": "",
+   "OCIRuntime": "crun",
+   "ConmonPidFile": "",
+   "PidFile": "",
+   "Name": "pulsars-migrate",
+   "RestartCount": 0,
+   "Driver": "overlay",
+   "MountLabel": "",
+   "ProcessLabel": "",
+   "AppArmorProfile": "",
+   "EffectiveCaps": [],
+   "BoundingCaps": [],
+   "ExecIDs": [],
+   "GraphDriver": {
+    "Name": "overlay",
+    "Data": {}
+   },
+   "Mounts": [],
+   "Dependencies": [],
+   "NetworkSettings": {},
+   "Namespace": "",
+   "IsInfra": false,
+   "IsService": false,
+   "Config": {
+    "Hostname": "ab55b53b8461",
+    "Image": "ghcr.io/pulsars-science/pulsars-api:0.6.0",
+    "Labels": {
+     "PODMAN_SYSTEMD_UNIT": "pulsars-migrate.service"
+    }
+   },
+   "HostConfig": {
+    "RestartPolicy": {
+     "Name": "",
+     "MaximumRetryCount": 0
+    }
+   },
+   "HealthcheckOnFailureAction": "none"
+  }
+ ],
+ "stats": [
+  {
+   "ContainerID": "9d9f7b27686df5541566b6cc20775ec6d41e2ccb8ca4a27b048b8df6616aee63",
+   "Name": "pulsars-api",
+   "PerCPU": null,
+   "CPUNano": 123456789,
+   "CPUSystemNano": 2345678,
+   "SystemNano": 1761739200000000000,
+   "MemPerc": 2.34,
+   "NetInput": 1048576,
+   "NetOutput": 2097152,
+   "BlockInput": 0,
+   "BlockOutput": 0,
+   "PIDs": 9,
+   "UpTime": 10000000000,
+   "Duration": 10000000000,
+   "CPU": 0.3712,
+   "MemUsage": 25165824,
+   "MemLimit": 1073741824
+  },
+  {
+   "ContainerID": "68087177346d8360e284f2ef867f00ef3700a1d3b7bd525783f3270d5a6df7c4",
+   "Name": "pulsars-web",
+   "PerCPU": null,
+   "CPUNano": 123456789,
+   "CPUSystemNano": 2345678,
+   "SystemNano": 1761739200000000000,
+   "MemPerc": 2.34,
+   "NetInput": 1048576,
+   "NetOutput": 2097152,
+   "BlockInput": 0,
+   "BlockOutput": 0,
+   "PIDs": 9,
+   "UpTime": 10000000000,
+   "Duration": 10000000000,
+   "CPUPerc": "12.50%",
+   "MemUsage": 157286400,
+   "MemLimit": 536870912
+  },
+  {
+   "id": "b0f65a890e2a",
+   "name": "pulsars-db",
+   "cpu_percent": "2.10%",
+   "mem_usage": "61.2MB / 2.1GB"
+  },
+  {
+   "ContainerID": "25a9dba42e0fac74c3d2729a953f1aa36f9da55f6fa61b443d016e7bbfb5ab77",
+   "Name": "umami",
+   "PerCPU": null,
+   "CPUNano": 123456789,
+   "CPUSystemNano": 2345678,
+   "SystemNano": 1761739200000000000,
+   "MemPerc": 2.34,
+   "NetInput": 1048576,
+   "NetOutput": 2097152,
+   "BlockInput": 0,
+   "BlockOutput": 0,
+   "PIDs": 9,
+   "UpTime": 10000000000,
+   "Duration": 10000000000,
+   "CPU": 0.05,
+   "MemUsage": 200000000,
+   "MemLimit": 0
+  },
+  {
+   "ContainerID": "ab55b53b8461e09db70daf4d9f86824268181085c8b7b2a7e33335a86cc869fc",
+   "Name": "pulsars-migrate",
+   "PerCPU": null,
+   "CPUNano": 123456789,
+   "CPUSystemNano": 2345678,
+   "SystemNano": 1761739200000000000,
+   "MemPerc": 2.34,
+   "NetInput": 1048576,
+   "NetOutput": 2097152,
+   "BlockInput": 0,
+   "BlockOutput": 0,
+   "PIDs": 9,
+   "UpTime": 10000000000,
+   "Duration": 10000000000,
+   "CPU": 0.0,
+   "MemUsage": 0,
+   "MemLimit": 0
+  }
+ ]
+}

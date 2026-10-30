@@ -9,7 +9,8 @@
 # Produces dist/pulsars-api-v<version>-<target>.tar.gz and its .sha256. The
 # archive holds one directory: the binary, deploy-api, the systemd unit, the
 # nginx vhost, the example environment file, deploy/sql/ at the same path
-# as in the repository (roles.sql and its README), the licence and a
+# as in the repository (roles.sql and its README), deploy/podman/ (the
+# containers' snapshot for the dashboard), the licence and a
 # VERSION file.
 
 set -euo pipefail
@@ -37,6 +38,10 @@ install -m 0644 deploy/pulsars-api.service deploy/api.pulsars.science.conf \
     deploy/pulsars-api.env.example LICENSE README.md "$dir/"
 mkdir -p "$dir/deploy/sql"
 install -m 0644 deploy/sql/roles.sql deploy/sql/README.md "$dir/deploy/sql/"
+mkdir -p "$dir/deploy/podman"
+install -m 0755 deploy/podman/pulsars-podman-releve "$dir/deploy/podman/"
+install -m 0644 deploy/podman/pulsars-podman-releve.service \
+    deploy/podman/pulsars-podman-releve.timer deploy/podman/README.md "$dir/deploy/podman/"
 printf '%s\n' "$version" >"$dir/VERSION"
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
     git rev-parse HEAD >"$dir/COMMIT"

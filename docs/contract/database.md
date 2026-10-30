@@ -12,7 +12,8 @@ copied over as is (`pulsars-api import-content`, `deploy/sql/README.md`).
 database pulsars
 ├── schema site      accounts, sessions, mail links, roles, progress, exercise attempts,
 │                    brains, forum, moderation, follows, friends, rooms, private messages,
-│                    reports, suggestions, resource requests, settings
+│                    reports, suggestions, resource requests, settings, the
+│                    dashboard's daily HTTP counts and content views
 ├── schema contenu   courses, chapters, lessons, exercises, exams, exam parts, resources,
 │                    news, translations, stored files, downloads, reference tables
 ├── schema game      matches, players' seats, ratings, seasons, the migrations' history
@@ -21,7 +22,7 @@ database pulsars
 
 | Schema | Tables |
 |---|---|
-| `site` | `users`, `auth_sessions`, `email_tokens`, `comptes_sociaux`, `roles`, `role_user`, `enrollments`, `lesson_progress`, `exercise_attempts`, `cerveaux_mouvements`, `game_results`, `forum_themes`, `questions`, `answers`, `forum_votes`, `forum_translations`, `abonnements`, `friendships`, `rooms`, `room_members`, `room_invites`, `room_messages`, `direct_conversations`, `direct_messages`, `signalements`, `suggestions`, `demandes_ressources`, `reglages` |
+| `site` | `users`, `auth_sessions`, `email_tokens`, `comptes_sociaux`, `roles`, `role_user`, `enrollments`, `lesson_progress`, `exercise_attempts`, `cerveaux_mouvements`, `game_results`, `forum_themes`, `questions`, `answers`, `forum_votes`, `forum_translations`, `abonnements`, `friendships`, `rooms`, `room_members`, `room_invites`, `room_messages`, `direct_conversations`, `direct_messages`, `signalements`, `suggestions`, `demandes_ressources`, `reglages`, `http_daily`, `content_views` |
 | `contenu` | `courses`, `chapters`, `lessons`, `exercises`, `exams`, `exam_parties`, `ressources`, `actualites`, `contenu_translations`, `fichiers`, `telechargements`, `licences`, `matieres`, `sources_officielles` |
 | `game` | `matches`, `match_players`, `ratings`, `seasons`, `_sqlx_migrations` |
 | `langues` | `languages`, `levels`, `words`, `events` |

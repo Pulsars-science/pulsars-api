@@ -76,6 +76,7 @@ async fn env_with(extra: &[(&str, &str)]) -> Option<Env> {
             .expect("redis connects");
     }
     let state = AppState {
+        http_daily: Default::default(),
         mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), GameSettings::default()),
         db,

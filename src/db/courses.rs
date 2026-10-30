@@ -188,6 +188,31 @@ pub async fn find(
         .await
 }
 
+/// The id of the published course `slug`.
+pub async fn published_id(pool: &PgPool, slug: &str) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar(concat!(
+        "SELECT c.id FROM ",
+        published_courses!(),
+        " c WHERE c.slug = $1"
+    ))
+    .bind(slug)
+    .fetch_optional(pool)
+    .await
+}
+
+/// One more view of course `course_id` (the caller dedups), and in today's
+/// views of the dashboard.
+pub async fn add_view(pool: &PgPool, course_id: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE contenu.courses SET vues = vues + 1 WHERE id = $1")
+        .bind(course_id)
+        .execute(&mut *tx)
+        .await?;
+    super::admin_stats::record_view(&mut tx, super::admin_stats::ViewKind::Course, course_id)
+        .await?;
+    tx.commit().await
+}
+
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ChapterRow {
     pub id: i64,

@@ -3144,6 +3144,19 @@ paths:
         (lesson completed, exercise attempt, match, forum question or
         answer), `accounts.active_7d` is its `wau` and
         `audience.connected_24h` its `dau`.
+
+        `http` is the API's own traffic, kept by UTC day in
+        `site.http_daily` by every instance (flushed every minute and at
+        shutdown; WebSocket upgrades, `/healthz` and `/metrics` excluded):
+        `p95_ms` is read from summed latency buckets (5, 10, 25, 50, 75,
+        100, 150, 200, 300, 500, 750, 1000, 2000, 5000, 10000 ms and over),
+        interpolated inside the bucket that crosses 95 %, null without a
+        request. `catalog` is the published content by subject (a course's
+        theme subject, an exam's `matiere`, slugified so they meet), with
+        the period's PDF downloads. `top_content` is the ten courses and
+        exams most viewed over the period (`site.content_views`: exam views
+        from `GET /v1/exams/{slug}/corrections`, course views from
+        `POST /v1/courses/{slug}/view`), still published.
       parameters:
         - $ref: '#/components/parameters/SessionToken'
         - name: days
@@ -3184,6 +3197,44 @@ paths:
                   data: { $ref: '#/components/schemas/AdminPending' }
               example:
                 data: { resource_requests: 1, reports: 2, suggestions: 0, total: 3 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/containers:
+    get:
+      tags: [admin]
+      operationId: getAdminContainers
+      summary: The health of the server's containers
+      description: |
+        Read from the snapshot that `pulsars-podman-releve` writes every
+        minute (`deploy/podman/README.md`), at `PODMAN_SNAPSHOT_PATH`: the
+        API never talks to Podman. Always 200: `available` is false with
+        `reason` `not_configured` (no path), `missing` (no file) or
+        `unreadable` (not JSON, over 2 MB, no `taken_at`, or `podman ps`
+        failed). `stale` when the snapshot is more than 3 minutes old.
+        Containers not running or unhealthy come first, then by name;
+        `cpu_percent` and the memory are null for a container that is not
+        running. Podman 4 and 5 outputs are both read.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The containers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AdminContainers' }
+              example:
+                data:
+                  available: true
+                  reason: null
+                  taken_at: '2026-10-29T12:00:00Z'
+                  stale: false
+                  containers:
+                    - { name: pulsars-web, image: 'ghcr.io/pulsars-science/pulsars-web:0.1.0', state: running, health: unhealthy, started_at: '2026-10-29T09:15:50Z', restarts: 1, cpu_percent: 12.5, memory_bytes: 157286400, memory_limit_bytes: 536870912 }
+                    - { name: pulsars-db, image: 'docker.io/library/postgres:17-alpine', state: running, health: healthy, started_at: '2026-10-29T09:15:00Z', restarts: 0, cpu_percent: 2.1, memory_bytes: 61200000, memory_limit_bytes: 2100000000 }
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/AdminOnly' }
   /v1/admin/settings/donation-goal:
@@ -3234,6 +3285,40 @@ paths:
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/AdminOnly' }
         '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/game/leaderboard:
+    get:
+      tags: [admin]
+      operationId: getAdminGameLeaderboard
+      summary: The game leaderboard, for an admin's session
+      description: |
+        The same parameters and body as `GET /v1/game/leaderboard`, for an
+        admin's session through the site's relay (which refuses every
+        `/v1/game*` path). `Cache-Control: no-store`, not the public cache.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - name: subject
+          in: query
+          schema: { $ref: '#/components/schemas/GameSubject' }
+          description: Absent → `all`.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: The leaderboard
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject, data]
+                properties:
+                  subject: { $ref: '#/components/schemas/GameSubject' }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/GameLeader' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
   /v1/admin/game/stats:
     get:
       tags: [admin]
@@ -4793,6 +4878,28 @@ paths:
                   downloads: 45
                   downloaders: 31
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/courses/{slug}/view:
+    post:
+      tags: [courses]
+      operationId: postCourseView
+      summary: Count a view of a course page
+      description: |
+        Called once from the browser by the course page, through the site's
+        relay (`GET /v1/courses/{slug}` counts nothing: lesson and exercise
+        pages read it too). No body. Counted in `contenu.courses.vues` and
+        in the dashboard's views by day (`top_content` of
+        `GET /v1/admin/stats`), not again for the same member or visitor
+        fingerprint within 20 seconds (as an exam's corrections), and never
+        for a robot (`User-Agent`). Always 204 for a published course,
+        counted or not; `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Received. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/exams/{slug}/correction-pdf:
     get:
@@ -6525,7 +6632,10 @@ components:
             `signups, visitors (null without Umami), lessons, attempts,
             attempts_solved, attempts_graded, course_enrollments,
             courses_completed, questions, answers, room_messages, brains,
-            games`.
+            games, duels, pdf_downloads`. `duels`: duels played to the end
+            (not void), guests' included, by the day they started;
+            `pdf_downloads`: first downloads of an exam PDF by a visitor
+            (`contenu.telechargements`).
           additionalProperties:
             oneOf: [{ $ref: '#/components/schemas/Series' }, { type: 'null' }]
         active_members:
@@ -6594,6 +6704,70 @@ components:
             unverified_accounts: { type: integer }
         pending: { $ref: '#/components/schemas/AdminPending' }
         donation_goal: { $ref: '#/components/schemas/DonationGoal' }
+        http:
+          type: object
+          required: [available, since, requests, errors_5xx, p95_ms]
+          properties:
+            available: { type: boolean, description: False when nothing was recorded over the period nor the one before. }
+            since: { type: [string, 'null'], format: date, description: The first day recorded. }
+            requests: { $ref: '#/components/schemas/Series' }
+            errors_5xx: { $ref: '#/components/schemas/Series' }
+            p95_ms:
+              type: object
+              required: [values, total, previous]
+              properties:
+                values: { type: array, items: { type: [integer, 'null'] }, description: One per day of the period, oldest first. }
+                total: { type: [integer, 'null'], description: Over the whole period. }
+                previous: { type: [integer, 'null'], description: Over the N days before. }
+        catalog:
+          type: array
+          description: By downloads (most first), then name; subjects with nothing are left out.
+          items:
+            type: object
+            required: [subject_slug, subject_name, courses, exercises, pdfs, downloads]
+            properties:
+              subject_slug: { type: string }
+              subject_name: { type: string, description: The courses' name of the subject, else the exams'. }
+              courses: { type: integer }
+              exercises: { type: integer, description: Of those courses. }
+              pdfs: { type: integer, description: Published exams with a statement PDF. }
+              downloads: { type: integer, description: Downloads of those exams over the period. }
+        top_content:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            required: [kind, slug, title, subject_name, views, previous]
+            properties:
+              kind: { type: string, enum: [course, exam] }
+              slug: { type: string }
+              title: { type: string }
+              subject_name: { type: [string, 'null'] }
+              views: { type: integer }
+              previous: { type: integer, description: Views over the N days before. }
+    AdminContainers:
+      type: object
+      required: [available, reason, taken_at, stale, containers]
+      properties:
+        available: { type: boolean }
+        reason: { type: [string, 'null'], enum: [not_configured, missing, unreadable, null] }
+        taken_at: { type: [string, 'null'], format: date-time }
+        stale: { type: boolean, description: The snapshot is more than 3 minutes old. }
+        containers:
+          type: array
+          items:
+            type: object
+            required: [name, image, state, health, started_at, restarts, cpu_percent, memory_bytes, memory_limit_bytes]
+            properties:
+              name: { type: string }
+              image: { type: string }
+              state: { type: string, description: 'Podman''s state, lowercased: running, exited, created, paused, restarting…' }
+              health: { type: [string, 'null'], enum: [healthy, unhealthy, starting, null], description: Null without a health check. }
+              started_at: { type: [string, 'null'], format: date-time }
+              restarts: { type: integer }
+              cpu_percent: { type: [number, 'null'] }
+              memory_bytes: { type: [integer, 'null'] }
+              memory_limit_bytes: { type: [integer, 'null'], description: Null without a limit. }
     AdminListing:
       type: object
       required: [data, page, per_page, total, counters]

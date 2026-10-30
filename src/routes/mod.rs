@@ -29,6 +29,7 @@ pub mod site;
 pub mod social;
 pub mod token;
 pub mod upload;
+pub mod views;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
@@ -279,6 +280,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/exams/{slug}/corrections",
             get(corrections::corrections),
         )
+        .route("/v1/courses/{slug}/view", post(views::course))
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
@@ -313,11 +315,16 @@ pub fn router(state: AppState) -> Router {
     let admin_json = Router::new()
         .route("/v1/admin/stats", get(admin::dashboard::dashboard))
         .route("/v1/admin/pending", get(admin::dashboard::pending))
+        .route("/v1/admin/containers", get(admin::containers::containers))
         .route(
             "/v1/admin/settings/donation-goal",
             get(admin::dashboard::donation_goal).put(admin::dashboard::set_donation_goal),
         )
         .route("/v1/admin/game/stats", get(admin::dashboard::game_stats))
+        .route(
+            "/v1/admin/game/leaderboard",
+            get(admin::dashboard::game_leaderboard),
+        )
         .route(
             "/v1/admin/languages/stats",
             get(admin::dashboard::language_stats),
@@ -426,7 +433,10 @@ pub fn router(state: AppState) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.
-        .layer(from_fn(mw::record_metrics));
+        .layer(from_fn_with_state(
+            state.http_daily.clone(),
+            mw::record_metrics,
+        ));
 
     routes
         .layer(

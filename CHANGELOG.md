@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The admin dashboard (`GET /v1/admin/stats`) also gives `series.duels`,
+  `series.pdf_downloads`, the API's own traffic by day (`http`: requests,
+  5xx and p95 latency, kept in `site.http_daily` by every instance),
+  the published content by subject (`catalog`) and the most viewed courses
+  and exams (`top_content`, from `site.content_views`).
+- `POST /v1/courses/{slug}/view`: the course page counts its views
+  (`contenu.courses.vues` was never incremented).
+- `GET /v1/admin/containers`: the containers' state, health, restarts, CPU
+  and memory, read from the snapshot a root timer writes every minute
+  (`deploy/podman/`, `PODMAN_SNAPSHOT_PATH`); the API never gets the
+  Podman socket.
+- `GET /v1/admin/game/leaderboard`: the game leaderboard for an admin's
+  session (the site's relay refuses `/v1/game*`).
+
 ## [0.6.0] - 2026-10-29
 
 The API owns the database and every feature of the site: the Laravel site

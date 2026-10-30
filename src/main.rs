@@ -437,7 +437,11 @@ async fn run(config: Config) -> Result<(), String> {
 
     let grace = config.shutdown_grace;
     let mailer = Mailer::from_config(config.mail.as_ref())?;
+    let http_daily = pulsars_api::http_daily::HttpDaily::default();
+    // The dashboard's day by day HTTP counts, written every minute.
+    let flusher = tokio::spawn(http_daily.clone().run_flusher(db.clone()));
     let state = AppState {
+        http_daily: http_daily.clone(),
         mailer,
         config: Arc::new(config),
         db: db.clone(),
@@ -488,6 +492,11 @@ async fn run(config: Config) -> Result<(), String> {
 
     upkeep.abort();
     migrations.abort();
+    flusher.abort();
+    // What was counted since the last minute, once the requests are drained.
+    if let Err(error) = http_daily.flush(&db).await {
+        tracing::warn!(error = %error, "cannot write the daily HTTP counts, dropped");
+    }
     if redis.is_connected()
         && let Err(error) = redis.quit().await
     {

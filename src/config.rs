@@ -113,6 +113,10 @@ pub struct Config {
     /// The Umami instance that measures the site's audience, read by the
     /// admin dashboard. `None`: the dashboard says it is not configured.
     pub umami: Option<UmamiConfig>,
+    /// The containers' snapshot written by `pulsars-podman-releve`
+    /// (`deploy/podman/`), read by the admin dashboard
+    /// (`PODMAN_SNAPSHOT_PATH`). `None`: not configured.
+    pub podman_snapshot_path: Option<std::path::PathBuf>,
 }
 
 /// `UMAMI_URL`, `UMAMI_WEBSITE_ID`, `UMAMI_USERNAME` and `UMAMI_PASSWORD`,
@@ -328,6 +332,10 @@ impl Config {
             ],
             &mut reader.problems,
         );
+        let podman_snapshot_path = reader
+            .optional_raw("PODMAN_SNAPSHOT_PATH")
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from);
         let signer_file = reader.optional_raw("JWT_SIGNING_KEY_FILE");
         let signer_kid = reader.optional_raw("JWT_SIGNING_KID");
         let token_ttl = reader.optional("JWT_TOKEN_TTL_SECS", "300", |v| parse_range(v, 60, 3600));
@@ -532,6 +540,7 @@ impl Config {
                 mail,
                 umami,
                 deepl,
+                podman_snapshot_path,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
