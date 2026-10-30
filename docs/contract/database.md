@@ -13,7 +13,8 @@ database pulsars
 ├── schema site      accounts, sessions, mail links, roles, progress, exercise attempts,
 │                    brains, forum, moderation, follows, friends, rooms, private messages,
 │                    reports, suggestions, resource requests, settings, the
-│                    dashboard's daily HTTP counts and content views
+│                    dashboard's daily HTTP counts and content views, the
+│                    journal (page views, security events, consents)
 ├── schema contenu   courses, chapters, lessons, exercises, exams, exam parts, resources,
 │                    news, translations, stored files, downloads, reference tables
 ├── schema game      matches, players' seats, ratings, seasons, the migrations' history
@@ -22,7 +23,7 @@ database pulsars
 
 | Schema | Tables |
 |---|---|
-| `site` | `users`, `auth_sessions`, `email_tokens`, `comptes_sociaux`, `roles`, `role_user`, `enrollments`, `lesson_progress`, `exercise_attempts`, `cerveaux_mouvements`, `game_results`, `forum_themes`, `questions`, `answers`, `forum_votes`, `forum_translations`, `abonnements`, `friendships`, `rooms`, `room_members`, `room_invites`, `room_messages`, `direct_conversations`, `direct_messages`, `signalements`, `suggestions`, `demandes_ressources`, `reglages`, `http_daily`, `content_views` |
+| `site` | `users`, `auth_sessions`, `email_tokens`, `comptes_sociaux`, `roles`, `role_user`, `enrollments`, `lesson_progress`, `exercise_attempts`, `cerveaux_mouvements`, `game_results`, `forum_themes`, `questions`, `answers`, `forum_votes`, `forum_translations`, `abonnements`, `friendships`, `rooms`, `room_members`, `room_invites`, `room_messages`, `direct_conversations`, `direct_messages`, `signalements`, `suggestions`, `demandes_ressources`, `reglages`, `http_daily`, `content_views`, `page_views`, `security_events`, `consents` |
 | `contenu` | `courses`, `chapters`, `lessons`, `exercises`, `exams`, `exam_parties`, `ressources`, `actualites`, `contenu_translations`, `fichiers`, `telechargements`, `licences`, `matieres`, `sources_officielles` |
 | `game` | `matches`, `match_players`, `ratings`, `seasons`, `_sqlx_migrations` |
 | `langues` | `languages`, `levels`, `words`, `events` |
@@ -31,6 +32,10 @@ The whole structure is in `migrations/` (`20261101000000_schema.sql` and the
 ones after it); `20261101000001_reference.sql` adds the reference data every
 server needs: roles, forum themes, licences, subject names, official exam
 sources and the first language taught.
+
+The journal's tables are purged daily by the API past their retention:
+`page_views` 13 months, `security_events` 12 months, `consents` 25 months
+(`docs/privacy.md`, `src/journal.rs`).
 
 Files are rows too: `contenu.fichiers` holds every stored file as `bytea`,
 on one of two "disks" (`disque`): `local` (statement and correction PDFs,

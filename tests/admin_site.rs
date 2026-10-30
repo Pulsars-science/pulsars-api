@@ -112,6 +112,8 @@ async fn the_administration_is_for_admins_only() {
         "/v1/admin/stats",
         "/v1/admin/pending",
         "/v1/admin/containers",
+        "/v1/admin/people?q=ab",
+        "/v1/admin/activity",
         "/v1/admin/news",
         "/v1/admin/courses",
         "/v1/admin/exams",

@@ -84,16 +84,16 @@ pub async fn use_token(
     Ok(Some(row))
 }
 
-/// Revokes the session of `token_hash`, if it is still live.
-pub async fn revoke(pool: &PgPool, token_hash: &[u8]) -> Result<(), sqlx::Error> {
-    sqlx::query(
+/// Revokes the session of `token_hash`, if it is still live: its account.
+pub async fn revoke(pool: &PgPool, token_hash: &[u8]) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar(
         "UPDATE site.auth_sessions SET revoked_at = now()
-          WHERE token_hash = $1 AND revoked_at IS NULL",
+          WHERE token_hash = $1 AND revoked_at IS NULL
+          RETURNING user_id",
     )
     .bind(token_hash)
-    .execute(pool)
-    .await?;
-    Ok(())
+    .fetch_optional(pool)
+    .await
 }
 
 /// Revokes every live session of `user_id` but `keep`.

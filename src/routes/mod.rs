@@ -27,6 +27,7 @@ pub mod public;
 pub mod resources;
 pub mod site;
 pub mod social;
+pub mod telemetry;
 pub mod token;
 pub mod upload;
 pub mod views;
@@ -281,6 +282,8 @@ pub fn router(state: AppState) -> Router {
             get(corrections::corrections),
         )
         .route("/v1/courses/{slug}/view", post(views::course))
+        .route("/v1/telemetry/page-view", post(telemetry::page_view))
+        .route("/v1/consent", post(telemetry::consent))
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
@@ -316,6 +319,21 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/admin/stats", get(admin::dashboard::dashboard))
         .route("/v1/admin/pending", get(admin::dashboard::pending))
         .route("/v1/admin/containers", get(admin::containers::containers))
+        .route("/v1/admin/people", get(admin::people::search))
+        .route("/v1/admin/people/members/{id}", get(admin::people::member))
+        .route(
+            "/v1/admin/people/members/{id}/events",
+            get(admin::people::member_events),
+        )
+        .route(
+            "/v1/admin/people/visitors/{id}",
+            get(admin::people::visitor),
+        )
+        .route(
+            "/v1/admin/people/visitors/{id}/events",
+            get(admin::people::visitor_events),
+        )
+        .route("/v1/admin/activity", get(admin::people::activity))
         .route(
             "/v1/admin/settings/donation-goal",
             get(admin::dashboard::donation_goal).put(admin::dashboard::set_donation_goal),

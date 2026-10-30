@@ -266,6 +266,7 @@ pub struct Call {
     service: bool,
     origin: Option<String>,
     ip: Option<String>,
+    visitor: Option<String>,
 }
 
 impl Call {
@@ -280,6 +281,7 @@ impl Call {
             service: false,
             origin: None,
             ip: None,
+            visitor: None,
         }
     }
     pub fn get(path: impl Into<String>) -> Self {
@@ -329,6 +331,11 @@ impl Call {
         self.origin = Some(origin.to_owned());
         self
     }
+    /// The site's anonymous visitor id (`Pulsars-Visitor`).
+    pub fn visitor(mut self, id: &str) -> Self {
+        self.visitor = Some(id.to_owned());
+        self
+    }
     pub fn ip(mut self, ip: &str) -> Self {
         self.ip = Some(ip.to_owned());
         self
@@ -353,6 +360,9 @@ impl Call {
         }
         if self.service {
             request = request.header("pulsars-service-key", SERVICE_KEY);
+        }
+        if let Some(visitor) = &self.visitor {
+            request = request.header("pulsars-visitor", visitor);
         }
         if let Some(origin) = &self.origin {
             request = request.header(header::ORIGIN, origin);
