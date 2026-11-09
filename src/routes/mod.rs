@@ -171,9 +171,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/register", post(auth::register))
         .route("/v1/auth/session", get(auth::session))
         .route("/v1/auth/logout", post(auth::logout))
-        .route("/v1/auth/sessions", post(auth::open_for))
         .route("/v1/auth/password", put(auth::change_password))
-        .route("/v1/auth/password/reset", post(auth::reset_password))
         .route("/v1/auth/password/forgot", post(account::forgot))
         .route(
             "/v1/auth/password/reset-with-token",

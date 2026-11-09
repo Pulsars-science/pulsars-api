@@ -42,12 +42,12 @@ security of accounts), with the address and browser of the request:
 | Event | When |
 |---|---|
 | `signup` | an account is created (form or Google, `detail.provider`) |
-| `login` | a password login, or a session opened by the site (`detail.via = "site"`) |
+| `login` | a password login |
 | `login_failed` | a wrong password; on an unknown account, without member and with the identifier typed (`detail.identifier`) |
 | `logout` | a session closed |
 | `password_changed` | by the member (`detail.sessions_revoked`) |
 | `password_reset_requested` | a reset link asked for an existing account (`detail.mail_sent`) |
-| `password_reset` | through a reset link (`detail.via`: `link` or `site`) |
+| `password_reset` | through a reset link (`detail.via = "link"`) |
 | `email_verified` | the address confirmed |
 | `oauth_login`, `oauth_linked`, `oauth_unlinked` | Google or Discord (`detail.provider`) |
 

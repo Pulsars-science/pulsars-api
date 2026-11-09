@@ -499,40 +499,6 @@ async fn sessions_slide_and_expire() {
 }
 
 #[tokio::test]
-async fn only_the_site_opens_sessions_for_an_account() {
-    let Some(env) = env().await else { return };
-    let (status, _, body) = Call::new("POST", "/v1/auth/sessions")
-        .body(json!({"user_id": "2", "remember": true}))
-        .send(&env.app)
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-
-    let (status, _, body) = Call::new("POST", "/v1/auth/sessions")
-        .body(json!({"user_id": "2", "remember": true}))
-        .service()
-        .send(&env.app)
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["data"]["user"]["pseudo"], "ada");
-    assert_eq!(body["data"]["session"]["remember"], true);
-    assert_eq!(session(&env.app, &token(&body)).await.0, StatusCode::OK);
-
-    let (status, _, _) = Call::new("POST", "/v1/auth/sessions")
-        .body(json!({"user_id": "999999"}))
-        .service()
-        .send(&env.app)
-        .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _, body) = Call::new("POST", "/v1/auth/sessions")
-        .body(json!({"user_id": "ada"}))
-        .service()
-        .send(&env.app)
-        .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(codes(&body), [("user_id".to_owned(), "invalid".to_owned())]);
-}
-
-#[tokio::test]
 async fn changing_the_password_keeps_this_session_and_ends_the_others() {
     let Some(env) = env().await else { return };
     let (pseudo, _, password, first) = sign_up(&env.app).await;
@@ -592,12 +558,22 @@ async fn an_account_made_through_google_sets_a_password_without_a_current_one() 
     let Some(env) = env().await else { return };
     let pseudo = plant_social_account(&env).await;
     let id = id_of(&env, &pseudo).await;
-    let (_, _, body) = Call::new("POST", "/v1/auth/sessions")
-        .body(json!({"user_id": id.to_string()}))
-        .service()
-        .send(&env.app)
-        .await;
-    let token = token(&body);
+    // A session as Google sign-in leaves it (`oauth/resolve`): 43 characters.
+    let token = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        &uuid::Uuid::new_v4().simple().to_string()[..11]
+    );
+    sqlx::query(
+        "INSERT INTO site.auth_sessions (id, user_id, token_hash, remember, expires_at)
+         VALUES ($1, $2, $3, false, now() + interval '2 hours')",
+    )
+    .bind(uuid::Uuid::now_v7())
+    .bind(id)
+    .bind(sha(&token))
+    .execute(&owner_pool(&env).await)
+    .await
+    .unwrap();
 
     let (status, _, body) = Call::new("PUT", "/v1/auth/password")
         .body(json!({"password": "first-password", "password_confirmation": "first-password"}))
@@ -607,32 +583,6 @@ async fn an_account_made_through_google_sets_a_password_without_a_current_one() 
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     assert_eq!(
         login(&env.app, &pseudo, "first-password").await.0,
-        StatusCode::OK
-    );
-}
-
-#[tokio::test]
-async fn a_reset_by_the_site_ends_every_session() {
-    let Some(env) = env().await else { return };
-    let (pseudo, _, _, token) = sign_up(&env.app).await;
-    let id = id_of(&env, &pseudo).await;
-    let reset = json!({"user_id": id.to_string(), "password": "after-reset",
-                       "password_confirmation": "after-reset"});
-
-    let (status, _, _) = Call::new("POST", "/v1/auth/password/reset")
-        .body(reset.clone())
-        .send(&env.app)
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, _, body) = Call::new("POST", "/v1/auth/password/reset")
-        .body(reset)
-        .service()
-        .send(&env.app)
-        .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
-    assert_eq!(session(&env.app, &token).await.0, StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        login(&env.app, &pseudo, "after-reset").await.0,
         StatusCode::OK
     );
 }
