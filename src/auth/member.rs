@@ -10,7 +10,7 @@
 //! - [`Verified`]: a member whose address is verified and who has finished
 //!   the welcome steps, like Laravel's `verified` and `onboarding`
 //!   middlewares; 403 otherwise.
-//! - [`ModeratorMember`], [`AdminMember`], [`SuperAdminMember`]: a
+//! - [`ModeratorMember`], [`AdminMember`]: a
 //!   verified member with that permission level (`site.roles.niveau`).
 //! - [`EsgiMember`]: a verified member whose address belongs to myskolae.fr,
 //!   a site admin, or a member given the `esgi` role (read access only;
@@ -48,10 +48,6 @@ impl Member {
 
     pub fn is_moderator(&self) -> bool {
         self.level >= LEVEL_MODERATOR
-    }
-
-    pub fn is_admin(&self) -> bool {
-        self.level >= LEVEL_ADMIN
     }
 
     /// Whether a moderator's mute still holds.
@@ -199,19 +195,6 @@ impl FromRequestParts<AppState> for AdminMember {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         with_level(parts, state, LEVEL_ADMIN, "an admin")
-            .await
-            .map(Self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SuperAdminMember(pub Member);
-
-impl FromRequestParts<AppState> for SuperAdminMember {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        with_level(parts, state, LEVEL_SUPER_ADMIN, "a super admin")
             .await
             .map(Self)
     }
