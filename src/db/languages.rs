@@ -1,5 +1,5 @@
 //! The languages section, from the `langues` schema the API owns
-//! (`migrations/20261020000000_langues_schema.sql`, `docs/languages.md`).
+//! (`migrations/20261101000000_schema.sql`, `docs/languages.md`).
 //!
 //! Interface texts are JSON objects keyed by language: every query takes
 //! `tr`, the language to read translations in (`None` for French), and

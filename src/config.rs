@@ -196,8 +196,7 @@ pub struct MailConfig {
     pub from: String,
 }
 
-/// Sender of account mails when `MAIL_FROM` is not set, as in the site's
-/// `docs/EMAIL.md`.
+/// Sender of account mails when `MAIL_FROM` is not set.
 pub const MAIL_FROM: &str = "Pulsars <noreply@blackenium.com>";
 
 /// The AES-256-GCM key of private messages (`src/crypto.rs`): 32 random
