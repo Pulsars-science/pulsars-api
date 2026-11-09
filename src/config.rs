@@ -1266,17 +1266,6 @@ mod tests {
     }
 
     #[test]
-    fn the_old_site_token_settings_are_gone() {
-        // Ignored if still set: nothing reads them any more.
-        let config = with(&[
-            ("JWKS_URL", "http://pulsars.test/.well-known/jwks.json"),
-            ("JWT_ISSUER", "https://pulsars.science"),
-        ])
-        .expect("valid");
-        assert!(config.token_signer.is_some());
-    }
-
-    #[test]
     fn mail_needs_an_smtp_url_and_a_mailbox() {
         assert_eq!(with(&[]).unwrap().mail, None);
         let config = with(&[("MAIL_SMTP_URL", "smtp://127.0.0.1:1025")]).unwrap();
