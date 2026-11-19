@@ -31,6 +31,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `site.security_events` and `site.consents`, purged daily past 13, 12 and
   25 months.
 
+### Security
+
+- lettre 0.11.24: fixes RUSTSEC-2026-0560 (STARTTLS response injection) and
+  the missing dot-stuffing after a bare LF or CR. The chrono "unmaintained"
+  advisory (RUSTSEC-2026-0543, no safe upgrade) is ignored in `deny.toml`
+  until a move to jiff or time.
+
 ## [0.6.0] - 2026-10-29
 
 The API owns the database and every feature of the site: the Laravel site
