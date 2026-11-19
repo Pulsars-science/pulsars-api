@@ -6,6 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-19
+
+The ESGI space, the Pulsars+ subscription through Stripe, Spanish and
+Mandarin Chinese, and the admin journal and dashboard series.
+
+### Upgrading
+
+- Still a **fresh install** for a server coming from the Laravel site
+  (`docs/deployment.md`). From 0.6.0, `deploy-api` runs the new migrations
+  (`esgi`, `esgi_access`, `subscriptions`, `spanish`, `chinese`); they only
+  add tables, rows and roles.
+- Then load the content translations, kept outside the repository:
+  `psql -f contenu-espagnol.sql` and `psql -f contenu-chinois.sql`, as
+  `pulsars_migrate`, after `import-content`.
+- Deploy this release **before** a `pulsars-web` that offers Spanish or
+  Chinese: the site asks for `?lang=es|zh` without a fallback.
+- Optional: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+  `STRIPE_PRICE_MONTHLY` (all three or none), `STRIPE_PRICE_YEARLY`,
+  `STRIPE_RETURN_URL`. Unset, `/v1/billing/*` answers 503 and the site says
+  the subscription is coming soon. The Stripe webhook endpoint is
+  `https://api.pulsars.science/v1/billing/webhook`.
+- `DEEPL_LANGUAGES` now defaults to `fr=FR,en=EN-GB,es=ES,ru=RU,zh=ZH-HANS`.
+
 ### Added
 
 - The subscription, paid through Stripe (`/v1/billing/*`,
