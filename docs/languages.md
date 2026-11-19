@@ -7,14 +7,8 @@ serves its content.
 
 ## Data
 
-Schema `langues`, owned by `pulsars_api` and written by this API only
-(`migrations/20261020000000_langues_schema.sql`). The administrator creates
-the schema once, **before** deploying the release that brings the
-migration:
-
-```sql
-CREATE SCHEMA langues AUTHORIZATION pulsars_api;
-```
+Schema `langues`, written by this API only, created with the others by
+`deploy/sql/roles.sql` and `migrations/20261101000000_schema.sql`.
 
 | Table | Content |
 |---|---|

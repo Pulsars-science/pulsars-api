@@ -151,16 +151,6 @@ empty.
 `Pulsars-Session` header. Revokes the session. Always `204`: logging out
 twice is not an error.
 
-### `POST /v1/auth/sessions` (service key)
-
-Body `{"user_id": "42", "remember": false}`. Opens a session for an account
-the site authenticated another way. Only for a trusted server: the site
-itself logs in through `login`, `register` and `oauth/resolve`.
-
-- No valid service key: `403 forbidden`. `user_id` not an integer string:
-  `422`, code `invalid`. Unknown account: `404`.
-- `201 {"data": {"session", "user"}}`.
-
 ### `PUT /v1/auth/password`
 
 `Pulsars-Session` header. Body
@@ -172,13 +162,6 @@ itself logs in through `login`, `register` and `oauth/resolve`.
 - `password`: the sign-up rules.
 - Saves the hash, **revokes every other session** of the account, keeps the
   request's. `204`.
-
-### `POST /v1/auth/password/reset` (service key)
-
-Body `{"user_id", "password", "password_confirmation"}`, for a trusted
-server that checked who asks itself; members reset theirs with a link
-(`reset-with-token`, §4b). Saves the hash and **revokes every session** of
-the account. `204`.
 
 ## 4b. Mails
 

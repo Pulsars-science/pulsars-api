@@ -117,6 +117,35 @@ pub struct Config {
     /// (`deploy/podman/`), read by the admin dashboard
     /// (`PODMAN_SNAPSHOT_PATH`). `None`: not configured.
     pub podman_snapshot_path: Option<std::path::PathBuf>,
+    /// Stripe, which takes the subscription payments (`STRIPE_*`). `None`:
+    /// the billing routes answer 503 `not_configured`, and the webhook 503.
+    pub stripe: Option<StripeConfig>,
+}
+
+/// The default Stripe API, without trailing slash.
+pub const STRIPE_API_URL: &str = "https://api.stripe.com";
+
+/// Stripe: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and
+/// `STRIPE_PRICE_MONTHLY` together, or none; `STRIPE_PRICE_YEARLY` is
+/// optional. The prices live in Stripe: changing a price is a change of
+/// these ids, not of the code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StripeConfig {
+    /// `sk_test_…` or `sk_live_…` (a restricted `rk_…` key works too). A
+    /// live key is refused in development.
+    pub secret_key: Secret,
+    /// `whsec_…`: checks the signature of the webhook calls.
+    pub webhook_secret: Secret,
+    /// The ids (`price_…`) of the monthly and yearly prices.
+    pub price_monthly: String,
+    pub price_yearly: Option<String>,
+    /// `STRIPE_API_URL`, `https://api.stripe.com` by default; http only in
+    /// development (the tests' fake Stripe).
+    pub api_url: String,
+    /// Where Stripe sends the member back (`STRIPE_RETURN_URL`), the site's
+    /// address: `https://pulsars.science` by default,
+    /// `http://localhost:3000` in development.
+    pub return_url: String,
 }
 
 /// `UMAMI_URL`, `UMAMI_WEBSITE_ID`, `UMAMI_USERNAME` and `UMAMI_PASSWORD`,
@@ -167,8 +196,7 @@ pub struct MailConfig {
     pub from: String,
 }
 
-/// Sender of account mails when `MAIL_FROM` is not set, as in the site's
-/// `docs/EMAIL.md`.
+/// Sender of account mails when `MAIL_FROM` is not set.
 pub const MAIL_FROM: &str = "Pulsars <noreply@blackenium.com>";
 
 /// The AES-256-GCM key of private messages (`src/crypto.rs`): 32 random
@@ -330,6 +358,20 @@ impl Config {
                 reader.optional_raw("UMAMI_USERNAME"),
                 reader.optional_raw("UMAMI_PASSWORD"),
             ],
+            &mut reader.problems,
+        );
+        let stripe = parse_stripe(
+            [
+                reader.optional_raw("STRIPE_SECRET_KEY"),
+                reader.optional_raw("STRIPE_WEBHOOK_SECRET"),
+                reader.optional_raw("STRIPE_PRICE_MONTHLY"),
+            ],
+            [
+                reader.optional_raw("STRIPE_PRICE_YEARLY"),
+                reader.optional_raw("STRIPE_API_URL"),
+                reader.optional_raw("STRIPE_RETURN_URL"),
+            ],
+            environment,
             &mut reader.problems,
         );
         let podman_snapshot_path = reader
@@ -541,6 +583,7 @@ impl Config {
                 umami,
                 deepl,
                 podman_snapshot_path,
+                stripe,
             }),
             _ => Err(ConfigError {
                 problems: vec!["internal: a value was not parsed".to_owned()],
@@ -769,6 +812,88 @@ fn parse_umami(values: [Option<String>; 4], problems: &mut Vec<String>) -> Optio
             None
         }
     }
+}
+
+/// The Stripe variables: the three required ones together, or none.
+fn parse_stripe(
+    [secret_key, webhook_secret, price_monthly]: [Option<String>; 3],
+    [price_yearly, api_url, return_url]: [Option<String>; 3],
+    environment: Option<Environment>,
+    problems: &mut Vec<String>,
+) -> Option<StripeConfig> {
+    // Unknown environment: the strictest rules.
+    let environment = environment.unwrap_or(Environment::Production);
+    let (secret_key, webhook_secret, price_monthly) =
+        match (secret_key, webhook_secret, price_monthly) {
+            (None, None, None) => {
+                if price_yearly.is_some() || api_url.is_some() || return_url.is_some() {
+                    problems.push(
+                        "STRIPE_*: STRIPE_PRICE_YEARLY, STRIPE_API_URL and STRIPE_RETURN_URL \
+                         need STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_MONTHLY"
+                            .to_owned(),
+                    );
+                }
+                return None;
+            }
+            (Some(key), Some(webhook), Some(monthly)) => (key, webhook, monthly),
+            _ => {
+                problems.push(
+                    "STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_MONTHLY: \
+                     set all three or none"
+                        .to_owned(),
+                );
+                return None;
+            }
+        };
+    let before = problems.len();
+    // Never echo a key: only say what is wrong with it.
+    if !["sk_test_", "sk_live_", "rk_test_", "rk_live_"]
+        .iter()
+        .any(|prefix| secret_key.starts_with(prefix))
+    {
+        problems.push("STRIPE_SECRET_KEY: must be a Stripe secret key (sk_… or rk_…)".to_owned());
+    } else if environment == Environment::Development && secret_key.contains("_live_") {
+        problems.push(
+            "STRIPE_SECRET_KEY: a live key is refused in development, use a test key".to_owned(),
+        );
+    }
+    if !webhook_secret.starts_with("whsec_") {
+        problems.push("STRIPE_WEBHOOK_SECRET: must start with whsec_".to_owned());
+    }
+    for (name, price) in [
+        ("STRIPE_PRICE_MONTHLY", Some(&price_monthly)),
+        ("STRIPE_PRICE_YEARLY", price_yearly.as_ref()),
+    ] {
+        if price.is_some_and(|p| !p.starts_with("price_")) {
+            problems.push(format!("{name}: must be a Stripe price id (price_…)"));
+        }
+    }
+    let api_url = match api_url {
+        None => Some(STRIPE_API_URL.to_owned()),
+        Some(url) => parse_http_url(&url, environment)
+            .map(|u| u.trim_end_matches('/').to_owned())
+            .map_err(|message| problems.push(format!("STRIPE_API_URL: {message}")))
+            .ok(),
+    };
+    let default_return = match environment {
+        Environment::Production => SITE_URL,
+        Environment::Development => "http://localhost:3000",
+    };
+    let return_url = parse_http_url(return_url.as_deref().unwrap_or(default_return), environment)
+        .map(|u| u.trim_end_matches('/').to_owned())
+        .map_err(|message| problems.push(format!("STRIPE_RETURN_URL: {message}")))
+        .ok();
+    if problems.len() > before {
+        return None;
+    }
+    Some(StripeConfig {
+        secret_key: Secret::new(secret_key),
+        webhook_secret: Secret::new(webhook_secret),
+        price_monthly,
+        price_yearly,
+        api_url: api_url?,
+        return_url: return_url?,
+    })
 }
 
 fn default_origins(environment: Environment) -> Vec<String> {
@@ -1140,17 +1265,6 @@ mod tests {
     }
 
     #[test]
-    fn the_old_site_token_settings_are_gone() {
-        // Ignored if still set: nothing reads them any more.
-        let config = with(&[
-            ("JWKS_URL", "http://pulsars.test/.well-known/jwks.json"),
-            ("JWT_ISSUER", "https://pulsars.science"),
-        ])
-        .expect("valid");
-        assert!(config.token_signer.is_some());
-    }
-
-    #[test]
     fn mail_needs_an_smtp_url_and_a_mailbox() {
         assert_eq!(with(&[]).unwrap().mail, None);
         let config = with(&[("MAIL_SMTP_URL", "smtp://127.0.0.1:1025")]).unwrap();
@@ -1173,6 +1287,69 @@ mod tests {
             problems[1],
             "MAIL_SMTP_URL: must start with smtp:// or smtps://"
         );
+    }
+
+    #[test]
+    fn stripe_needs_its_three_variables() {
+        assert_eq!(with(&[]).unwrap().stripe, None);
+        let config = with(&[
+            ("STRIPE_SECRET_KEY", "sk_live_abc"),
+            ("STRIPE_WEBHOOK_SECRET", "whsec_abc"),
+            ("STRIPE_PRICE_MONTHLY", "price_month"),
+            ("STRIPE_PRICE_YEARLY", "price_year"),
+        ])
+        .unwrap();
+        let stripe = config.stripe.unwrap();
+        assert_eq!(stripe.api_url, "https://api.stripe.com");
+        assert_eq!(stripe.return_url, "https://pulsars.science");
+        assert_eq!(stripe.price_yearly.as_deref(), Some("price_year"));
+        assert_eq!(stripe.secret_key.expose(), "sk_live_abc");
+
+        let problems = with(&[("STRIPE_SECRET_KEY", "sk_test_abc")])
+            .unwrap_err()
+            .problems;
+        assert!(
+            problems[0].contains("set all three or none"),
+            "{problems:?}"
+        );
+        let problems = with(&[("STRIPE_PRICE_YEARLY", "price_year")])
+            .unwrap_err()
+            .problems;
+        assert!(problems[0].starts_with("STRIPE_*"), "{problems:?}");
+    }
+
+    #[test]
+    fn stripe_values_are_checked_without_being_echoed() {
+        let problems = with(&[
+            ("STRIPE_SECRET_KEY", "pk_test_public"),
+            ("STRIPE_WEBHOOK_SECRET", "nope"),
+            ("STRIPE_PRICE_MONTHLY", "prod_x"),
+            ("STRIPE_API_URL", "http://127.0.0.1:12111"),
+        ])
+        .unwrap_err()
+        .problems;
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        assert!(problems.iter().all(|p| !p.contains("pk_test_public")));
+        assert!(problems[3].contains("https in production"), "{problems:?}");
+    }
+
+    #[test]
+    fn development_refuses_a_live_stripe_key() {
+        let dev = |key: &'static str| {
+            with(&[
+                ("PULSARS_ENV", "development"),
+                ("STRIPE_SECRET_KEY", key),
+                ("STRIPE_WEBHOOK_SECRET", "whsec_abc"),
+                ("STRIPE_PRICE_MONTHLY", "price_month"),
+            ])
+        };
+        let problems = dev("sk_live_abc").unwrap_err().problems;
+        assert!(
+            problems.iter().any(|p| p.contains("live key")),
+            "{problems:?}"
+        );
+        let stripe = dev("sk_test_abc").unwrap().stripe.unwrap();
+        assert_eq!(stripe.return_url, "http://localhost:3000");
     }
 
     #[test]

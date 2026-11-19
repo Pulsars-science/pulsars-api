@@ -10,8 +10,13 @@
 //! - [`Verified`]: a member whose address is verified and who has finished
 //!   the welcome steps, like Laravel's `verified` and `onboarding`
 //!   middlewares; 403 otherwise.
-//! - [`ModeratorMember`], [`AdminMember`], [`SuperAdminMember`]: a
+//! - [`ModeratorMember`], [`AdminMember`]: a
 //!   verified member with that permission level (`site.roles.niveau`).
+//! - [`EsgiMember`]: a verified member whose address belongs to myskolae.fr,
+//!   a site admin, or a member given the `esgi` role (read access only;
+//!   imports stay with `admin_esgi`).
+//! - [`EsgiAdminMember`]: a verified member carrying the isolated
+//!   `admin_esgi` role (or a super admin).
 
 use axum::extract::{FromRequestParts, OriginalUri};
 use axum::http::request::Parts;
@@ -43,10 +48,6 @@ impl Member {
 
     pub fn is_moderator(&self) -> bool {
         self.level >= LEVEL_MODERATOR
-    }
-
-    pub fn is_admin(&self) -> bool {
-        self.level >= LEVEL_ADMIN
     }
 
     /// Whether a moderator's mute still holds.
@@ -199,15 +200,84 @@ impl FromRequestParts<AppState> for AdminMember {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct SuperAdminMember(pub Member);
+/// Whether an address belongs exactly to the ESGI account domain.
+pub fn is_esgi_email(email: &str) -> bool {
+    email.trim().to_ascii_lowercase().ends_with("@myskolae.fr")
+}
 
-impl FromRequestParts<AppState> for SuperAdminMember {
+#[derive(Debug, Clone)]
+pub struct EsgiMember(pub Member);
+
+async fn has_role(member: &Member, slug: &str, state: &AppState) -> Result<bool, ApiError> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (
+            SELECT 1 FROM site.role_user ru
+            JOIN site.roles r ON r.id = ru.role_id
+            WHERE ru.user_id = $1 AND r.slug = $2
+        )",
+    )
+    .bind(member.id())
+    .bind(slug)
+    .fetch_one(&state.db)
+    .await
+    .map_err(ApiError::from)
+}
+
+async fn can_admin_esgi(member: &Member, state: &AppState) -> Result<bool, ApiError> {
+    if member.level >= LEVEL_SUPER_ADMIN {
+        return Ok(true);
+    }
+    has_role(member, "admin_esgi", state).await
+}
+
+impl FromRequestParts<AppState> for EsgiMember {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        with_level(parts, state, LEVEL_SUPER_ADMIN, "a super admin")
-            .await
-            .map(Self)
+        let member = verified(parts, state).await?;
+        // Site admins can read the space too, to see what students see, and
+        // give the `esgi` role to someone without a school address.
+        let allowed = is_esgi_email(&member.account.email)
+            || member.level >= LEVEL_ADMIN
+            || has_role(&member, "esgi", state).await?
+            || can_admin_esgi(&member, state).await?;
+        if !allowed {
+            return Err(forbidden(
+                &instance(parts),
+                "This endpoint is reserved for @myskolae.fr accounts.",
+            ));
+        }
+        Ok(Self(member))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EsgiAdminMember(pub Member);
+
+impl FromRequestParts<AppState> for EsgiAdminMember {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let member = verified(parts, state).await?;
+        let allowed = can_admin_esgi(&member, state).await?;
+        if !allowed {
+            return Err(forbidden(
+                &instance(parts),
+                "This endpoint needs the admin_esgi role.",
+            ));
+        }
+        Ok(Self(member))
+    }
+}
+
+#[cfg(test)]
+mod esgi_tests {
+    use super::is_esgi_email;
+
+    #[test]
+    fn esgi_domain_is_exact_and_case_insensitive() {
+        assert!(is_esgi_email("Ada@MYSKOLAE.FR"));
+        assert!(!is_esgi_email("ada@myskolae.fr.example.org"));
+        assert!(!is_esgi_email("ada@fake-myskolae.fr"));
     }
 }

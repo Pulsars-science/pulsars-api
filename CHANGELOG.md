@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The subscription, paid through Stripe (`/v1/billing/*`,
+  `GET /v1/me/subscription`): Checkout for a verified member who waived the
+  withdrawal period (kept in `site.checkout_sessions`), Stripe's billing
+  portal for cancellation, and a signed webhook that copies each
+  subscription into `site.subscriptions` and gives or takes the new
+  `abonne` role. `STRIPE_*` variables; unset, the routes answer 503.
+- The ESGI space (`/v1/esgi/*`): subjects, courses with quizzes,
+  flashcards and PDF handouts, readable by verified @myskolae.fr accounts,
+  site admins and members given the new `esgi` role (category `acces`, which
+  any admin can grant); imports and deletions need the isolated `admin_esgi`
+  role or a super admin.
 - The admin dashboard (`GET /v1/admin/stats`) also gives `series.duels`,
   `series.pdf_downloads`, the API's own traffic by day (`http`: requests,
   5xx and p95 latency, kept in `site.http_daily` by every instance),
@@ -30,6 +41,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GET /v1/admin/activity`. New tables `site.page_views`,
   `site.security_events` and `site.consents`, purged daily past 13, 12 and
   25 months.
+
+### Removed
+
+- `POST /v1/auth/sessions` and `POST /v1/auth/password/reset` (service
+  key): the Laravel site opened sessions and reset passwords itself;
+  pulsars-web uses `oauth/resolve` and `reset-with-token`, and its relay
+  refuses both.
+
+### Security
+
+- lettre 0.11.24: fixes RUSTSEC-2026-0560 (STARTTLS response injection) and
+  the missing dot-stuffing after a bare LF or CR. The chrono "unmaintained"
+  advisory (RUSTSEC-2026-0543, no safe upgrade) is ignored in `deny.toml`
+  until a move to jiff or time.
 
 ## [0.6.0] - 2026-10-29
 
