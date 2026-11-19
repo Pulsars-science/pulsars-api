@@ -349,7 +349,7 @@ paths:
                   chapter_count: 2
                   lesson_count: 4
                   exercise_count: 5
-                  available_langs: [fr, en, ru]
+                  available_langs: [fr, en, es, ru, zh]
                   published_at: '2026-08-17T09:27:34Z'
                   updated_at: '2026-08-17T09:27:34Z'
                   web_url: https://pulsars.science/cours/les-bases-du-calcul
@@ -1003,7 +1003,7 @@ paths:
                 email: { type: string, maxLength: 255 }
                 password: { type: string, minLength: 8, maxLength: 255 }
                 password_confirmation: { type: string }
-                locale: { type: [string, 'null'], enum: [fr, en, ru, null] }
+                locale: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null] }
       responses:
         '201': { $ref: '#/components/responses/Opened' }
         '400': { $ref: '#/components/responses/InvalidBody' }
@@ -1088,7 +1088,7 @@ paths:
               type: object
               additionalProperties: false
               properties:
-                lang: { type: [string, 'null'], enum: [fr, en, ru, null], description: The mail's language when the account has none. }
+                lang: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null], description: The mail's language when the account has none. }
       responses:
         '204':
           description: Sent, or nothing to send.
@@ -1144,7 +1144,7 @@ paths:
               additionalProperties: false
               properties:
                 email: { type: string }
-                lang: { type: [string, 'null'], enum: [fr, en, ru, null] }
+                lang: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null] }
       responses:
         '204':
           description: Done (sent or not).
@@ -4763,7 +4763,7 @@ paths:
               required: [locale]
               additionalProperties: false
               properties:
-                locale: { type: string, enum: [fr, en, ru] }
+                locale: { type: string, enum: [fr, en, es, ru, zh] }
       responses:
         '204': { description: Saved. }
         '401': { $ref: '#/components/responses/SessionInvalid' }
@@ -4948,7 +4948,7 @@ paths:
         `DemandeRessourceController`, `multipart/form-data`: `title` and
         `author_name` (at most 200), `license` (a key of `/v1/licenses`;
         `autre` needs `license_custom`, at most 200, ignored otherwise),
-        `description` (4000), `category` (120), `lang` (`fr`, `en`, `ru`),
+        `description` (4000), `category` (120), `lang` (`fr`, `en`, `es`, `ru`, `zh`),
         and `file`: a PDF (by content) of at most 20 MiB, stored on the
         private disk (`demandes-ressources/<random>.pdf`) with its original
         name and size. Pending (`en_attente`) until an admin decides. At most
@@ -4970,7 +4970,7 @@ paths:
                 license_custom: { type: string }
                 description: { type: string }
                 category: { type: string }
-                lang: { type: string, enum: [fr, en, ru] }
+                lang: { type: string, enum: [fr, en, es, ru, zh] }
                 file: { type: string, format: binary }
       responses:
         '201':
@@ -5454,7 +5454,7 @@ components:
             type: object
             additionalProperties: false
             properties:
-              lang: { type: string, enum: [en, fr, ru] }
+              lang: { type: string, enum: [en, es, fr, ru, zh] }
     ForumHide:
       required: true
       content:
@@ -5770,7 +5770,7 @@ components:
             chapter_count: 2
             lesson_count: 4
             exercise_count: 5
-            available_langs: [fr, en, ru]
+            available_langs: [fr, en, es, ru, zh]
             published_at: '2026-08-17T09:27:34Z'
             updated_at: '2026-08-17T09:27:34Z'
             web_url: https://pulsars.science/cours/les-bases-du-calcul
@@ -5904,7 +5904,7 @@ components:
   schemas:
     LangCode:
       type: string
-      enum: [fr, en, ru]
+      enum: [fr, en, es, ru, zh]
     Difficulty:
       type: string
       enum: [debutant, intermediaire, avance]
@@ -5951,7 +5951,7 @@ components:
         email: { type: string }
         email_verified: { type: boolean }
         onboarded: { type: boolean }
-        locale: { type: [string, 'null'], enum: [fr, en, ru, null] }
+        locale: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null] }
     Session:
       type: object
       required: [token, expires_at, remember]
@@ -6732,7 +6732,7 @@ components:
         title: { type: [string, 'null'], description: Null for an answer. }
         body_md: { type: string }
         source_lang: { type: [string, 'null'], description: What DeepL detected, lower case., example: en }
-        target_lang: { type: string, enum: [en, fr, ru] }
+        target_lang: { type: string, enum: [en, es, fr, ru, zh] }
         cached: { type: boolean, description: Served from the stored translation of the same text. }
     MemberRole:
       allOf:

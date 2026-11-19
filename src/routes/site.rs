@@ -75,7 +75,7 @@ pub fn not_found(detail: impl Into<String>, path: &str) -> ApiError {
     }
 }
 
-/// `?lang=fr|en|ru` and nothing else that is known.
+/// `?lang=fr|en|es|ru|zh` and nothing else that is known.
 pub fn lang(query: Option<&str>) -> Result<Lang, ApiError> {
     let mut params = Params::parse(query);
     let lang = params.lang();

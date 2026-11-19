@@ -24,14 +24,16 @@ pub const MAX_PAGE: u32 = 1000;
 /// Longest cursor accepted.
 const CURSOR_MAX_BYTES: usize = 512;
 
-/// Content language (`?lang=fr|en|ru`).
+/// Content language (`?lang=fr|en|es|ru|zh`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
     /// The source language.
     #[default]
     Fr,
     En,
+    Es,
     Ru,
+    Zh,
 }
 
 impl Lang {
@@ -39,7 +41,9 @@ impl Lang {
         match self {
             Self::Fr => "fr",
             Self::En => "en",
+            Self::Es => "es",
             Self::Ru => "ru",
+            Self::Zh => "zh",
         }
     }
 
@@ -49,12 +53,14 @@ impl Lang {
         match self {
             Self::Fr => None,
             Self::En => Some("en"),
+            Self::Es => Some("es"),
             Self::Ru => Some("ru"),
+            Self::Zh => Some("zh"),
         }
     }
 }
 
-pub const LANGS: &[&str] = &["fr", "en", "ru"];
+pub const LANGS: &[&str] = &["fr", "en", "es", "ru", "zh"];
 pub const DIFFICULTIES: &[&str] = &["debutant", "intermediaire", "avance"];
 pub const LEVELS: &[&str] = &["college", "lycee", "superieur"];
 pub const EXERCISE_TYPES: &[&str] = &["qcm", "reponse_courte", "reponse_libre"];
@@ -125,7 +131,9 @@ impl Params {
     pub fn lang(&mut self) -> Lang {
         match self.pick("lang", LANGS) {
             Some("en") => Lang::En,
+            Some("es") => Lang::Es,
             Some("ru") => Lang::Ru,
+            Some("zh") => Lang::Zh,
             _ => Lang::Fr,
         }
     }

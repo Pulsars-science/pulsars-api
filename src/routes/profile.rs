@@ -38,7 +38,7 @@ pub const GOALS: &[&str] = &[
 /// `Support\Onboarding::niveaux()`.
 pub const SCHOOL_LEVELS: &[&str] = &["college", "lycee", "superieur", "adulte"];
 /// `config/localisation.php`, `langues`.
-pub const LOCALES: &[&str] = &["fr", "en", "ru"];
+pub const LOCALES: &[&str] = &["fr", "en", "es", "ru", "zh"];
 const CATEGORIES: &[&str] = &["permission", "matiere", "distinction"];
 
 /// An avatar, as a suggestion's image: at most 4 MiB, 6000 px a side.
@@ -411,7 +411,7 @@ pub async fn locale(
         return Err(ApiError::InvalidFields(vec![ParameterError::field(
             "locale",
             code,
-            "must be fr, en or ru",
+            "must be fr, en, es, ru or zh",
         )]));
     }
     sqlx::query(

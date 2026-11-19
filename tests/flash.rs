@@ -4,10 +4,11 @@
 //! (`tests/fixtures/`, produced by the site's `outils/fixtures-flash.php`):
 //! `hasard.json` (raw draws), `generators/<key>.json` (every generator, eight
 //! seeds, both languages) and `defis.json` (the "défi" of `service.json`,
-//! all levels). `duels.json` and `generators-ru.json` come from the
+//! all levels). `duels.json` and `generators-{es,ru,zh}.json` come from the
 //! TypeScript port itself, through `scripts/flash-fixtures.mjs`: the défi
-//! algorithm run on every subject (French, English, Russian), and every
-//! generator's walls in Russian (the site has no Russian to compare with).
+//! algorithm run on every subject (French, English, Spanish, Russian,
+//! Chinese), and every generator's walls in Spanish, Russian and Chinese
+//! (the site has none of them).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -152,29 +153,43 @@ fn every_generator_matches_php_in_both_languages() {
     assert_eq!(checked.len(), 30);
 }
 
-#[test]
-fn every_generator_matches_typescript_in_russian() {
-    let all: Vec<GeneratorFixture> = serde_json::from_str(&fixture("generators-ru.json")).unwrap();
-    let lang = Lang::Ru;
+fn generators_match_typescript(lang: Lang, file: &str) {
+    let code = lang.code();
+    let all: Vec<GeneratorFixture> = serde_json::from_str(&fixture(file)).unwrap();
     let mut checked = HashSet::new();
     for f in all {
         let g = catalogue()
             .iter()
             .find(|g| g.key() == f.cle)
             .unwrap_or_else(|| panic!("no generator {}", f.cle));
-        assert_eq!(g.title(lang), f.titre, "{} ru", f.cle);
-        assert_eq!(g.short_title(lang), f.titre_court, "{} ru", f.cle);
-        assert_eq!(g.description(lang), f.description, "{} ru", f.cle);
-        assert_eq!(g.subject().label(lang), f.matiere, "{} ru", f.cle);
-        assert_eq!(g.level().label(lang), f.niveau, "{} ru", f.cle);
+        assert_eq!(g.title(lang), f.titre, "{} {code}", f.cle);
+        assert_eq!(g.short_title(lang), f.titre_court, "{} {code}", f.cle);
+        assert_eq!(g.description(lang), f.description, "{} {code}", f.cle);
+        assert_eq!(g.subject().label(lang), f.matiere, "{} {code}", f.cle);
+        assert_eq!(g.level().label(lang), f.niveau, "{} {code}", f.cle);
         assert!(f.series.len() >= 8, "{}", f.cle);
         for s in &f.series {
             let got = wall(*g, s.graine, s.cartes.len(), lang);
-            assert_eq!(got, s.cartes, "{} ru seed {}", f.cle, s.graine);
+            assert_eq!(got, s.cartes, "{} {code} seed {}", f.cle, s.graine);
         }
         checked.insert(f.cle);
     }
     assert_eq!(checked.len(), 30);
+}
+
+#[test]
+fn every_generator_matches_typescript_in_russian() {
+    generators_match_typescript(Lang::Ru, "generators-ru.json");
+}
+
+#[test]
+fn every_generator_matches_typescript_in_spanish() {
+    generators_match_typescript(Lang::Es, "generators-es.json");
+}
+
+#[test]
+fn every_generator_matches_typescript_in_chinese() {
+    generators_match_typescript(Lang::Zh, "generators-zh.json");
 }
 
 #[test]
@@ -210,6 +225,10 @@ fn subject_and_lang_keys() {
     assert_eq!(Lang::from_locale(Some("RU_ru")), Lang::Ru);
     assert_eq!(Lang::from_locale(Some("r")), Lang::Fr);
     assert_eq!(Lang::Ru.code(), "ru");
+    assert_eq!(Lang::from_locale(Some("es-MX")), Lang::Es);
+    assert_eq!(Lang::Es.code(), "es");
+    assert_eq!(Lang::from_locale(Some("zh-CN")), Lang::Zh);
+    assert_eq!(Lang::Zh.code(), "zh");
     assert_eq!(Lang::from_locale(Some("de")), Lang::Fr);
     assert_eq!(Lang::from_locale(Some("e")), Lang::Fr);
     assert_eq!(Lang::from_locale(None), Lang::Fr);
@@ -288,7 +307,9 @@ struct Duel {
     graine: u32,
     fr: Vec<DefiQuestion>,
     en: Vec<DefiQuestion>,
+    es: Vec<DefiQuestion>,
     ru: Vec<DefiQuestion>,
+    zh: Vec<DefiQuestion>,
 }
 
 #[test]
@@ -301,7 +322,9 @@ fn duel_matches_typescript_on_every_subject() {
         let mut padded = 0;
         assert_same(&got, &d.fr, Lang::Fr, &what, &mut padded);
         assert_same(&got, &d.en, Lang::En, &what, &mut padded);
+        assert_same(&got, &d.es, Lang::Es, &what, &mut padded);
         assert_same(&got, &d.ru, Lang::Ru, &what, &mut padded);
+        assert_same(&got, &d.zh, Lang::Zh, &what, &mut padded);
     }
 }
 

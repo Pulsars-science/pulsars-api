@@ -184,7 +184,7 @@ impl DeeplConfig {
 pub const DEEPL_URL: &str = "https://api-free.deepl.com";
 
 /// The site's languages and their DeepL target, as in Laravel.
-pub const DEEPL_LANGUAGES: &str = "fr=FR,en=EN-GB,ru=RU";
+pub const DEEPL_LANGUAGES: &str = "fr=FR,en=EN-GB,es=ES,ru=RU,zh=ZH-HANS";
 
 /// The SMTP server of account mails (`docs/contract/auth-sessions.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]

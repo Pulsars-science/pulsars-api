@@ -1,8 +1,7 @@
 //! Translations and number formatting of the flash questions.
 //!
 //! French is the source language: the keys are the French sentences, and
-//! `en.json` and `ru.json` are copies of `pulsars-game/src/i18n/en.json` and
-//! `ru.json` (aligned with the site's `lang/<lang>.json`). Parameters are
+//! `en.json`, `es.json`, `ru.json` and `zh.json` are copies of `pulsars-game/src/i18n/` (aligned with the site's `lang/<lang>.json`). Parameters are
 //! replaced like Laravel's `__()`.
 
 use std::collections::HashMap;
@@ -13,6 +12,12 @@ use super::Lang;
 static EN: LazyLock<HashMap<String, String>> =
     LazyLock::new(|| serde_json::from_str(include_str!("en.json")).unwrap_or_default());
 
+static ES: LazyLock<HashMap<String, String>> =
+    LazyLock::new(|| serde_json::from_str(include_str!("es.json")).unwrap_or_default());
+
+static ZH: LazyLock<HashMap<String, String>> =
+    LazyLock::new(|| serde_json::from_str(include_str!("zh.json")).unwrap_or_default());
+
 static RU: LazyLock<HashMap<String, String>> =
     LazyLock::new(|| serde_json::from_str(include_str!("ru.json")).unwrap_or_default());
 
@@ -21,7 +26,9 @@ pub fn tr(lang: Lang, key: &str) -> &str {
     match lang {
         Lang::Fr => key,
         Lang::En => EN.get(key).map_or(key, String::as_str),
+        Lang::Es => ES.get(key).map_or(key, String::as_str),
         Lang::Ru => RU.get(key).map_or(key, String::as_str),
+        Lang::Zh => ZH.get(key).map_or(key, String::as_str),
     }
 }
 
@@ -86,8 +93,8 @@ fn strtr(text: &str, table: &[(String, String)]) -> String {
 /// maximumFractionDigits, roundingMode: 'halfEven' })` in V8: the shortest
 /// decimal that round-trips the double, rounded half to even to at most
 /// `decimals` digits, trailing zeros dropped, thousands grouped (U+202F in
-/// French, U+00A0 in Russian, `,` in English; from four digits on in all
-/// three), decimal comma in French and Russian. The minus sign is the
+/// French, U+00A0 in Russian, `,` in English and Chinese, from four digits on; `.` in
+/// Spanish, from five digits on), decimal comma in French, Spanish and Russian, point in English and Chinese. The minus sign is the
 /// real one (U+2212), and a negative value rounded to zero keeps it, as
 /// `Intl` does.
 pub fn number(lang: Lang, value: f64, decimals: usize) -> String {
@@ -120,14 +127,18 @@ pub fn number(lang: Lang, value: f64, decimals: usize) -> String {
     let (group, point) = match lang {
         Lang::Fr => ("\u{202f}", ","),
         Lang::En => (",", "."),
+        Lang::Es => (".", ","),
         Lang::Ru => ("\u{a0}", ","),
+        Lang::Zh => (",", "."),
     };
     let mut out = String::with_capacity(int.len() + frac.len() + 8);
     if negative {
         out.push('−');
     }
+    // Spanish groups thousands from five digits on only (`1234`, `12.345`).
+    let grouped = lang != Lang::Es || int.len() >= 5;
     for (i, digit) in int.iter().enumerate() {
-        if i > 0 && (int.len() - i).is_multiple_of(3) {
+        if grouped && i > 0 && (int.len() - i).is_multiple_of(3) {
             out.push_str(group);
         }
         out.push(char::from(*digit));
@@ -268,6 +279,43 @@ mod tests {
         ];
         for (value, decimals, ru) in cases {
             assert_eq!(number(Lang::Ru, value, decimals), ru, "{value}");
+        }
+    }
+
+    #[test]
+    fn formats_like_intl_in_spanish() {
+        // Expected values printed by node 25: `new Intl.NumberFormat('es',
+        // { maximumFractionDigits, roundingMode: 'halfEven' })`, with the
+        // game's real minus.
+        let cases: [(f64, usize, &str); 9] = [
+            (1000.0, 4, "1000"),
+            (9999.5, 4, "9999,5"),
+            (10000.0, 4, "10.000"),
+            (1_234_567.5, 4, "1.234.567,5"),
+            (-0.0, 4, "−0"),
+            (-12345.0, 4, "−12.345"),
+            (0.125, 2, "0,12"),
+            (12345.6789, 2, "12.345,68"),
+            (1e21, 4, "1.000.000.000.000.000.000.000"),
+        ];
+        for (value, decimals, es) in cases {
+            assert_eq!(number(Lang::Es, value, decimals), es, "{value}");
+        }
+    }
+
+    #[test]
+    fn formats_like_intl_in_chinese() {
+        // `new Intl.NumberFormat('zh', …)` in node 25: grouped like English.
+        let cases: [(f64, usize, &str); 6] = [
+            (1000.0, 4, "1,000"),
+            (999.0, 4, "999"),
+            (1_234_567.5, 4, "1,234,567.5"),
+            (-1234.0, 4, "−1,234"),
+            (0.375, 2, "0.38"),
+            (12345.6789, 2, "12,345.68"),
+        ];
+        for (value, decimals, zh) in cases {
+            assert_eq!(number(Lang::Zh, value, decimals), zh, "{value}");
         }
     }
 
