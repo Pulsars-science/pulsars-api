@@ -93,6 +93,11 @@ tags:
     description: The member's dashboard, brains (`brains.md`) and the XP leaderboards.
   - name: profile
     description: The member's settings, welcome steps, language and avatar.
+  - name: billing
+    description: |
+      The subscription, paid through Stripe. Stripe is the source of truth;
+      the `abonne` role is what the rest of the site reads (paid, or given
+      by an admin).
   - name: feedback
     description: Reports (with their captcha), suggestions, proposed resources, the donations goal.
   - name: game
@@ -5059,6 +5064,131 @@ paths:
             application/json:
               example:
                 data: { percent: 24, raised: 120.5, goal: 500.0, currency: EUR }
+
+  /v1/billing/plans:
+    get:
+      tags: [billing]
+      operationId: listBillingPlans
+      summary: The subscription prices on offer
+      description: |
+        Read from Stripe (`STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_YEARLY`),
+        kept an hour in Redis. `amount` is in the currency's smallest unit.
+      responses:
+        '200':
+          description: The plans, monthly first
+          content:
+            application/json:
+              example:
+                data:
+                  - { plan: monthly, amount: 399, currency: eur, interval: month }
+                  - { plan: yearly, amount: 3900, currency: eur, interval: year }
+        '503':
+          description: '`not_configured` (no Stripe) or `upstream_failed`'
+
+  /v1/me/subscription:
+    get:
+      tags: [billing]
+      operationId: getMySubscription
+      summary: The member's subscription
+      description: |
+        `subscriber` is the `abonne` role (paid or offered); `subscription`
+        the most recent Stripe subscription as Stripe last described it;
+        `can_manage` whether the billing portal can open.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The subscription
+          content:
+            application/json:
+              example:
+                data:
+                  subscriber: true
+                  subscription:
+                    status: active
+                    plan: monthly
+                    current_period_end: '2026-12-20T10:00:00Z'
+                    cancel_at_period_end: false
+                  can_manage: true
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/billing/checkout:
+    post:
+      tags: [billing]
+      operationId: createCheckout
+      summary: Opens a Stripe Checkout session
+      description: |
+        For a verified member. `waive_withdrawal` must be `true`: the member
+        asks for immediate access and waives the 14-day withdrawal period
+        (art. L221-28 of the Code de la consommation); the moment is kept in
+        `site.checkout_sessions`. Answers the URL to send the member to.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: { plan: monthly, waive_withdrawal: true }
+      responses:
+        '200':
+          description: Where to send the member
+          content:
+            application/json:
+              example:
+                data: { url: 'https://checkout.stripe.com/c/pay/cs_test_…' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '409':
+          description: '`already_subscribed`: the account has a subscription; manage it from the portal'
+        '422':
+          description: '`plan` invalid or unavailable, `waive_withdrawal` required'
+        '503':
+          description: '`not_configured` or `upstream_failed`'
+
+  /v1/billing/portal:
+    post:
+      tags: [billing]
+      operationId: openBillingPortal
+      summary: Opens Stripe's billing portal
+      description: |
+        Card, invoices and cancellation in a few clicks (French law of
+        16 August 2022). `409 no_customer` for an account that never
+        subscribed.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: Where to send the member
+          content:
+            application/json:
+              example:
+                data: { url: 'https://billing.stripe.com/p/session/…' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '409':
+          description: '`no_customer`'
+
+  /v1/billing/webhook:
+    post:
+      tags: [billing]
+      operationId: stripeWebhook
+      summary: Stripe's calls
+      description: |
+        Authenticated by `Stripe-Signature` (HMAC-SHA256 under
+        `STRIPE_WEBHOOK_SECRET`, five minutes of tolerance). Followed:
+        `checkout.session.completed`, `customer.subscription.*` and
+        `invoice.paid` / `invoice.payment_failed`: each reads the
+        subscription again from Stripe, updates `site.subscriptions` and
+        gives or takes the `abonne` role. Other events are acknowledged.
+        A 503 (Stripe down, unknown subscription) asks Stripe to retry.
+      responses:
+        '200':
+          description: Received
+          content:
+            application/json:
+              example: { received: true }
+        '400':
+          description: Missing or invalid signature
+        '503':
+          description: '`not_configured` or `upstream_failed`'
 
   /v1/exams/{slug}/corrections:
     get:

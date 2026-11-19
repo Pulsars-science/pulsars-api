@@ -3,6 +3,7 @@
 pub mod account;
 pub mod admin;
 pub mod auth;
+pub mod billing;
 pub mod corrections;
 pub mod courses;
 pub mod cursor;
@@ -285,6 +286,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/courses/{slug}/view", post(views::course))
         .route("/v1/telemetry/page-view", post(telemetry::page_view))
         .route("/v1/consent", post(telemetry::consent))
+        .route("/v1/billing/plans", get(billing::plans))
+        .route("/v1/me/subscription", get(billing::mine))
+        .route("/v1/billing/checkout", post(billing::checkout))
+        .route("/v1/billing/portal", post(billing::portal))
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
@@ -442,6 +447,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/esgi/admin/courses/{slug}", delete(esgi::delete_course))
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+    // Stripe's calls: no session, no JSON negotiation, no rate limit (Stripe
+    // retries what fails); the signature authenticates them.
+    let billing_webhook = Router::new().route("/v1/billing/webhook", post(billing::webhook));
     let esgi_files = Router::new()
         .route("/v1/esgi/courses/{slug}/pdf", get(esgi::course_pdf))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
@@ -453,6 +461,7 @@ pub fn router(state: AppState) -> Router {
 
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(billing_webhook)
         .merge(esgi_json)
         .merge(esgi_files)
         .merge(esgi_upload)
