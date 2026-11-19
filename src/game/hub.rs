@@ -393,7 +393,9 @@ impl Hub {
         let name = match lang {
             Lang::Fr => format!("Invité {digits}"),
             Lang::En => format!("Guest {digits}"),
+            Lang::Es => format!("Invitado {digits}"),
             Lang::Ru => format!("Гость {digits}"),
+            Lang::Zh => format!("访客 {digits}"),
         };
         Player {
             id: PlayerId::Guest(number),

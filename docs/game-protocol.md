@@ -38,9 +38,9 @@ pub use hasard::Hasard;          // PHP Random\Randomizer(Mt19937) port
 pub enum Lang { Fr, En, Ru }
 impl Lang {
     pub const ALL: [Lang; 3];
-    /// `en*` → En, `ru*` → Ru (case-insensitive), anything else or none → Fr.
+    /// `en*` → En, `es*` → Es, `ru*` → Ru, `zh*` → Zh (case-insensitive), anything else or none → Fr.
     pub fn from_locale(locale: Option<&str>) -> Lang;
-    pub fn code(self) -> &'static str; // "fr" | "en" | "ru"
+    pub fn code(self) -> &'static str; // "fr" | "en" | "es" | "ru" | "zh"
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -61,7 +61,7 @@ pub trait Generator: Send + Sync {
 pub fn catalogue() -> &'static [&'static dyn Generator];
 
 pub struct Localized { pub question: String, pub series: String, pub choices: [String; 4] }
-pub struct DuelQuestion { pub generator: &'static str, pub fr: Localized, pub en: Localized, pub ru: Localized, pub correct: usize }
+pub struct DuelQuestion { pub generator: &'static str, pub fr: Localized, pub en: Localized, pub es: Localized, pub ru: Localized, pub zh: Localized, pub correct: usize }
 impl DuelQuestion { pub fn text(&self, lang: Lang) -> &Localized; }
 
 /// `None` = every subject. Same algorithm as the "défi" (pick a generator
@@ -99,10 +99,10 @@ ignored. A client sends at most 20 frames per second (else close `4029`).
   bytes base64url) valid while the guest has a live match. Guests never play
   ranked and earn no XP. The client sends its language with `{"type": "auth",
   "guest": true, "locale": "en"}`.
-- **Languages**: `fr`, `en`, `ru`. A locale starting with `en` is English,
-  one starting with `ru` is Russian (`ru`, `ru-RU`), anything else or none is
+- **Languages**: `fr`, `en`, `es`, `ru`, `zh`. A locale starting with `en` is English,
+  one starting with `es` is Spanish, one starting with `zh` is Chinese, one starting with `ru` is Russian (`ru`, `ru-RU`), anything else or none is
   French. `auth.ok` returns the language retained as `player.locale`
-  (`"fr"`, `"en"` or `"ru"`); questions, series titles and choices are sent
+  (`"fr"`, `"en"`, `"es"`, `"ru"` or `"zh"`); questions, series titles and choices are sent
   in it.
 
 ```json

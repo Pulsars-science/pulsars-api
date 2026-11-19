@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapshot of the Podman containers for the Pulsars admin dashboard
+Documentation=https://github.com/Pulsars-science/pulsars-api/tree/main/deploy/podman
+After=podman.socket
+
+[Service]
+Type=oneshot
+# As root: the containers are root's (rootful Podman).
+ExecStart=/usr/local/sbin/pulsars-podman-releve
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=50s

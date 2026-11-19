@@ -11,7 +11,6 @@ use sqlx::PgPool;
 pub const PUBLIC: &str = "public";
 pub const PRIVATE: &str = "prive";
 pub const OWNER: &str = "proprietaire";
-pub const MEMBER: &str = "membre";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Room {

@@ -237,13 +237,16 @@ pub async fn published_id(pool: &PgPool, slug: &str) -> Result<Option<i64>, sqlx
     .await
 }
 
-/// One more view, as `CompteurVues::compter` (the caller dedups).
+/// One more view, as `CompteurVues::compter` (the caller dedups), and in
+/// today's views of the dashboard.
 pub async fn add_view(pool: &PgPool, exam_id: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
     sqlx::query("UPDATE contenu.exams SET vues = vues + 1 WHERE id = $1")
         .bind(exam_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(())
+    super::admin_stats::record_view(&mut tx, super::admin_stats::ViewKind::Exam, exam_id).await?;
+    tx.commit().await
 }
 
 /// One more download, and the visitor among the distinct downloaders

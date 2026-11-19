@@ -8,6 +8,7 @@ use axum::extract::{OriginalUri, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::auth::{
     AccountUser, Caller, Data, NewSession, account_of, current, empty, new_session, no_store,
@@ -17,6 +18,7 @@ use crate::db::accounts::{self, AccountRow, CreateError};
 use crate::db::social;
 use crate::error::{ApiError, ParameterError};
 use crate::extract::Json;
+use crate::journal::{self, Security};
 use crate::state::AppState;
 
 /// The providers the site knows. Only Google is offered today; Discord's
@@ -93,7 +95,7 @@ pub async fn resolve(
 
     if let Some(user_id) = &body.current_user_id {
         let account = account_of(&state, user_id, uri.path()).await?;
-        return attach(&state, account, provider, subject, email).await;
+        return attach(&state, account, provider, subject, email, &caller).await;
     }
 
     for _ in 0..ATTEMPTS {
@@ -145,6 +147,7 @@ pub async fn resolve(
 /// session's account, unless it is the last way to log in.
 pub async fn unlink(
     State(state): State<AppState>,
+    caller: Caller,
     headers: HeaderMap,
     Path(provider): Path<String>,
 ) -> Result<Response, ApiError> {
@@ -160,6 +163,14 @@ pub async fn unlink(
         });
     }
     social::unlink(&state.db, account.id, &provider).await?;
+    journal::security(
+        &state.db,
+        Some(account.id),
+        Security::OauthUnlinked,
+        &caller,
+        json!({"provider": provider}),
+    )
+    .await;
     Ok(empty())
 }
 
@@ -170,6 +181,7 @@ async fn attach(
     provider: &str,
     subject: &str,
     email: Option<&str>,
+    caller: &Caller,
 ) -> Result<Response, ApiError> {
     if let Some(owner) = social::owner(&state.db, provider, subject).await?
         && owner != account.id
@@ -182,6 +194,14 @@ async fn attach(
         Err(error) if is_unique(&error) => return Err(taken(provider)),
         Err(error) => return Err(error.into()),
     }
+    journal::security(
+        &state.db,
+        Some(account.id),
+        Security::OauthLinked,
+        caller,
+        json!({"provider": provider}),
+    )
+    .await;
     Ok(no_store(
         StatusCode::OK,
         &Data {
@@ -240,6 +260,35 @@ async fn opened(
     created: bool,
     linked: bool,
 ) -> Result<Response, ApiError> {
+    let provider = json!({"provider": body.provider});
+    if created {
+        journal::security(
+            &state.db,
+            Some(account.id),
+            Security::Signup,
+            caller,
+            provider.clone(),
+        )
+        .await;
+    }
+    if linked {
+        journal::security(
+            &state.db,
+            Some(account.id),
+            Security::OauthLinked,
+            caller,
+            provider.clone(),
+        )
+        .await;
+    }
+    journal::security(
+        &state.db,
+        Some(account.id),
+        Security::OauthLogin,
+        caller,
+        provider,
+    )
+    .await;
     let session = new_session(state, account.id, body.remember, caller).await?;
     Ok(no_store(
         if created {

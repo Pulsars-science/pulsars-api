@@ -91,6 +91,12 @@ pub struct Dashboard {
     pub pending: stats::Pending,
     /// The raw amounts, to fill the form.
     pub donation_goal: DonationGoal,
+    /// The API's requests, 5xx and p95 latency, kept by day.
+    pub http: stats::Http,
+    /// Published content by subject, with the period's downloads.
+    pub catalog: Vec<stats::CatalogSubject>,
+    /// The most viewed courses and exams of the period.
+    pub top_content: Vec<stats::TopContent>,
 }
 
 fn days_param(query: Option<&str>) -> u32 {
@@ -167,6 +173,9 @@ pub async fn dashboard(
         to_process: stats::to_do(db).await?,
         pending: stats::pending(db).await?,
         donation_goal: stats::donation_goal(db).await?,
+        http: stats::http(db, &bounds).await?,
+        catalog: stats::catalog(db, &bounds).await?,
+        top_content: stats::top_content(db, &bounds).await?,
     }))
 }
 
@@ -364,6 +373,21 @@ pub async fn game_stats(
         reason: None,
         stats: Some(stats),
     }))
+}
+
+/// `GET /v1/admin/game/leaderboard?subject=&limit=`: the body of
+/// `GET /v1/game/leaderboard`, for an admin's session (the site's relay
+/// refuses `/v1/game*`). `no-store`, not the public cache.
+pub async fn game_leaderboard(
+    State(state): State<AppState>,
+    _admin: AdminMember,
+    RawQuery(query): RawQuery,
+) -> Result<Response, ApiError> {
+    let body = crate::routes::game::leaderboard_body(&state, query.as_deref()).await?;
+    Ok(crate::routes::auth::no_store(
+        axum::http::StatusCode::OK,
+        &body,
+    ))
 }
 
 /// `GET /v1/admin/languages/stats?days=7|30|90`: what

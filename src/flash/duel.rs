@@ -27,7 +27,9 @@ pub struct DuelQuestion {
     pub generator: &'static str,
     pub fr: Localized,
     pub en: Localized,
+    pub es: Localized,
     pub ru: Localized,
+    pub zh: Localized,
     pub correct: usize,
 }
 
@@ -36,7 +38,9 @@ impl DuelQuestion {
         match lang {
             Lang::Fr => &self.fr,
             Lang::En => &self.en,
+            Lang::Es => &self.es,
             Lang::Ru => &self.ru,
+            Lang::Zh => &self.zh,
         }
     }
 }
@@ -47,7 +51,7 @@ impl DuelQuestion {
 /// subject instead of maths only: `Some(Subject::Maths)` reproduces the
 /// TypeScript `defi()` exactly, in both languages.
 ///
-/// Each question is drawn in French, then again in English and in Russian,
+/// Each question is drawn in French, then again in English, Spanish, Russian and Chinese,
 /// each from a copy of the generator taken before it. All runs consume the
 /// same draws (checked for every subject in the tests), so the right answer
 /// lands at the same index. Should a translation ever make a run diverge,
@@ -80,7 +84,9 @@ pub fn duel_questions(subject: Option<Subject>, seed: u32, count: usize) -> Vec<
             DuelQuestion {
                 generator: fr.generator,
                 en: translate(Lang::En),
+                es: translate(Lang::Es),
                 ru: translate(Lang::Ru),
+                zh: translate(Lang::Zh),
                 fr: fr.text,
                 correct: fr.correct,
             }
@@ -260,7 +266,7 @@ mod tests {
                 for _ in 0..240 {
                     let start = rng.clone();
                     let fr = question(&mut rng, &candidates, Lang::Fr, None);
-                    for lang in [Lang::En, Lang::Ru] {
+                    for lang in [Lang::En, Lang::Es, Lang::Ru, Lang::Zh] {
                         let mut lang_rng = start.clone();
                         let other = question(&mut lang_rng, &candidates, lang, None);
                         let what = format!("{lang:?} {subject:?} seed {seed} {}", fr.generator);
@@ -281,7 +287,7 @@ mod tests {
         for _ in 0..100 {
             let start = rng.clone();
             let fr = question(&mut rng, &candidates, Lang::Fr, None);
-            for lang in [Lang::En, Lang::Ru] {
+            for lang in [Lang::En, Lang::Es, Lang::Ru, Lang::Zh] {
                 let mut copy = start.clone();
                 let other = question(&mut copy, &candidates, lang, Some(&fr.accepted));
                 assert_eq!(copy, rng);

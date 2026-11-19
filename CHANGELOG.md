@@ -6,6 +6,92 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-19
+
+The ESGI space, the Pulsars+ subscription through Stripe, Spanish and
+Mandarin Chinese, and the admin journal and dashboard series.
+
+### Upgrading
+
+- Still a **fresh install** for a server coming from the Laravel site
+  (`docs/deployment.md`). From 0.6.0, `deploy-api` runs the new migrations
+  (`esgi`, `esgi_access`, `subscriptions`, `spanish`, `chinese`); they only
+  add tables, rows and roles.
+- Then load the content translations, kept outside the repository:
+  `psql -f contenu-espagnol.sql` and `psql -f contenu-chinois.sql`, as
+  `pulsars_migrate`, after `import-content`.
+- Deploy this release **before** a `pulsars-web` that offers Spanish or
+  Chinese: the site asks for `?lang=es|zh` without a fallback.
+- Optional: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+  `STRIPE_PRICE_MONTHLY` (all three or none), `STRIPE_PRICE_YEARLY`,
+  `STRIPE_RETURN_URL`. Unset, `/v1/billing/*` answers 503 and the site says
+  the subscription is coming soon. The Stripe webhook endpoint is
+  `https://api.pulsars.science/v1/billing/webhook`.
+- `DEEPL_LANGUAGES` now defaults to `fr=FR,en=EN-GB,es=ES,ru=RU,zh=ZH-HANS`.
+
+### Added
+
+- The subscription, paid through Stripe (`/v1/billing/*`,
+  `GET /v1/me/subscription`): Checkout for a verified member who waived the
+  withdrawal period (kept in `site.checkout_sessions`), Stripe's billing
+  portal for cancellation, and a signed webhook that copies each
+  subscription into `site.subscriptions` and gives or takes the new
+  `abonne` role. `STRIPE_*` variables; unset, the routes answer 503.
+- The ESGI space (`/v1/esgi/*`): subjects, courses with quizzes,
+  flashcards and PDF handouts, readable by verified @myskolae.fr accounts,
+  site admins and members given the new `esgi` role (category `acces`, which
+  any admin can grant); imports and deletions need the isolated `admin_esgi`
+  role or a super admin.
+- Spanish (`es`): `?lang=es` reads the Spanish translations of the content
+  (falling back to French per object and per field, as English and Russian
+  do), `es` is accepted as an account locale, for mails, for forum
+  translations and in `content translate --lang es`
+  (`DEEPL_LANGUAGES` gains `es=ES`). The flash questions and the game server
+  speak Spanish too: `src/flash/es.json` (copy of the game's
+  `src/i18n/es.json`), `DuelQuestion::es`, Spanish numbers (U+00A0
+  thousands separator, decimal comma), guests named « Invitado ».
+- Mandarin Chinese in simplified characters (`zh`), everywhere Spanish is:
+  content (`?lang=zh`), account locale, mails, forum translations,
+  `content translate --lang zh` (`zh=ZH-HANS` for DeepL), the flash
+  questions (`src/flash/zh.json`, numbers grouped like English) and the game
+  server (guests named « 访客 »).
+- The admin dashboard (`GET /v1/admin/stats`) also gives `series.duels`,
+  `series.pdf_downloads`, the API's own traffic by day (`http`: requests,
+  5xx and p95 latency, kept in `site.http_daily` by every instance),
+  the published content by subject (`catalog`) and the most viewed courses
+  and exams (`top_content`, from `site.content_views`).
+- `POST /v1/courses/{slug}/view`: the course page counts its views
+  (`contenu.courses.vues` was never incremented).
+- `GET /v1/admin/containers`: the containers' state, health, restarts, CPU
+  and memory, read from the snapshot a root timer writes every minute
+  (`deploy/podman/`, `PODMAN_SNAPSHOT_PATH`); the API never gets the
+  Podman socket.
+- `GET /v1/admin/game/leaderboard`: the game leaderboard for an admin's
+  session (the site's relay refuses `/v1/game*`).
+- The admin journal (`docs/privacy.md`): `POST /v1/telemetry/page-view`
+  (only after consent, with a member or the `Pulsars-Visitor` id) and
+  `POST /v1/consent` (proofs); security events written by the auth routes;
+  a visitor's page views linked to the member when a session opens;
+  `GET /v1/admin/people`, `/v1/admin/people/members/{id}`,
+  `/v1/admin/people/visitors/{id}`, their `/events` timelines and
+  `GET /v1/admin/activity`. New tables `site.page_views`,
+  `site.security_events` and `site.consents`, purged daily past 13, 12 and
+  25 months.
+
+### Removed
+
+- `POST /v1/auth/sessions` and `POST /v1/auth/password/reset` (service
+  key): the Laravel site opened sessions and reset passwords itself;
+  pulsars-web uses `oauth/resolve` and `reset-with-token`, and its relay
+  refuses both.
+
+### Security
+
+- lettre 0.11.24: fixes RUSTSEC-2026-0560 (STARTTLS response injection) and
+  the missing dot-stuffing after a bare LF or CR. The chrono "unmaintained"
+  advisory (RUSTSEC-2026-0543, no safe upgrade) is ignored in `deny.toml`
+  until a move to jiff or time.
+
 ## [0.6.0] - 2026-10-29
 
 The API owns the database and every feature of the site: the Laravel site

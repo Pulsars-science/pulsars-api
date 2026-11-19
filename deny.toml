@@ -14,7 +14,12 @@ all-features = false
 [advisories]
 # Known vulnerabilities and unmaintained crates (RustSec) fail the build.
 yanked = "deny"
-ignore = []
+ignore = [
+    # chrono is flagged unmaintained, with no safe upgrade: it is not a
+    # vulnerability, and replacing it (dates in every row, sqlx, serde) is a
+    # project of its own. Revisit when moving to jiff or time.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained, no safe upgrade; replacement planned separately" },
+]
 
 [licenses]
 confidence-threshold = 0.9

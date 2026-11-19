@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Pulsars API
-  version: 0.6.0
+  version: 0.7.0
   summary: The back end of pulsars.science and its game server.
   description: |
     The API of https://pulsars.science. It owns the database and serves
@@ -93,6 +93,11 @@ tags:
     description: The member's dashboard, brains (`brains.md`) and the XP leaderboards.
   - name: profile
     description: The member's settings, welcome steps, language and avatar.
+  - name: billing
+    description: |
+      The subscription, paid through Stripe. Stripe is the source of truth;
+      the `abonne` role is what the rest of the site reads (paid, or given
+      by an admin).
   - name: feedback
     description: Reports (with their captcha), suggestions, proposed resources, the donations goal.
   - name: game
@@ -344,7 +349,7 @@ paths:
                   chapter_count: 2
                   lesson_count: 4
                   exercise_count: 5
-                  available_langs: [fr, en, ru]
+                  available_langs: [fr, en, es, ru, zh]
                   published_at: '2026-08-17T09:27:34Z'
                   updated_at: '2026-08-17T09:27:34Z'
                   web_url: https://pulsars.science/cours/les-bases-du-calcul
@@ -998,7 +1003,7 @@ paths:
                 email: { type: string, maxLength: 255 }
                 password: { type: string, minLength: 8, maxLength: 255 }
                 password_confirmation: { type: string }
-                locale: { type: [string, 'null'], enum: [fr, en, ru, null] }
+                locale: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null] }
       responses:
         '201': { $ref: '#/components/responses/Opened' }
         '400': { $ref: '#/components/responses/InvalidBody' }
@@ -1040,31 +1045,6 @@ paths:
         '204':
           description: Revoked, or already invalid.
 
-  /v1/auth/sessions:
-    post:
-      tags: [auth]
-      operationId: openSession
-      summary: Open a session for an account the site authenticated (service key)
-      description: After Google, a reset link, or for the seeder's administrator.
-      parameters:
-        - $ref: '#/components/parameters/ServiceKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [user_id]
-              additionalProperties: false
-              properties:
-                user_id: { type: string, example: '42' }
-                remember: { type: boolean, default: false }
-      responses:
-        '201': { $ref: '#/components/responses/Opened' }
-        '403': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '422': { $ref: '#/components/responses/InvalidFields' }
-
   /v1/auth/password:
     put:
       tags: [auth]
@@ -1092,33 +1072,6 @@ paths:
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '422': { $ref: '#/components/responses/InvalidFields' }
 
-  /v1/auth/password/reset:
-    post:
-      tags: [auth]
-      operationId: resetPassword
-      summary: Set a password after a reset link the site checked (service key)
-      description: Every session of the account is revoked.
-      parameters:
-        - $ref: '#/components/parameters/ServiceKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [user_id]
-              additionalProperties: false
-              properties:
-                user_id: { type: string }
-                password: { type: string, minLength: 8, maxLength: 255 }
-                password_confirmation: { type: string }
-      responses:
-        '204':
-          description: Changed.
-        '403': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '422': { $ref: '#/components/responses/InvalidFields' }
-
   /v1/auth/email/verification:
     post:
       tags: [auth]
@@ -1135,7 +1088,7 @@ paths:
               type: object
               additionalProperties: false
               properties:
-                lang: { type: [string, 'null'], enum: [fr, en, ru, null], description: The mail's language when the account has none. }
+                lang: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null], description: The mail's language when the account has none. }
       responses:
         '204':
           description: Sent, or nothing to send.
@@ -1191,7 +1144,7 @@ paths:
               additionalProperties: false
               properties:
                 email: { type: string }
-                lang: { type: [string, 'null'], enum: [fr, en, ru, null] }
+                lang: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null] }
       responses:
         '204':
           description: Done (sent or not).
@@ -3144,6 +3097,19 @@ paths:
         (lesson completed, exercise attempt, match, forum question or
         answer), `accounts.active_7d` is its `wau` and
         `audience.connected_24h` its `dau`.
+
+        `http` is the API's own traffic, kept by UTC day in
+        `site.http_daily` by every instance (flushed every minute and at
+        shutdown; WebSocket upgrades, `/healthz` and `/metrics` excluded):
+        `p95_ms` is read from summed latency buckets (5, 10, 25, 50, 75,
+        100, 150, 200, 300, 500, 750, 1000, 2000, 5000, 10000 ms and over),
+        interpolated inside the bucket that crosses 95 %, null without a
+        request. `catalog` is the published content by subject (a course's
+        theme subject, an exam's `matiere`, slugified so they meet), with
+        the period's PDF downloads. `top_content` is the ten courses and
+        exams most viewed over the period (`site.content_views`: exam views
+        from `GET /v1/exams/{slug}/corrections`, course views from
+        `POST /v1/courses/{slug}/view`), still published.
       parameters:
         - $ref: '#/components/parameters/SessionToken'
         - name: days
@@ -3184,6 +3150,256 @@ paths:
                   data: { $ref: '#/components/schemas/AdminPending' }
               example:
                 data: { resource_requests: 1, reports: 2, suggestions: 0, total: 3 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/containers:
+    get:
+      tags: [admin]
+      operationId: getAdminContainers
+      summary: The health of the server's containers
+      description: |
+        Read from the snapshot that `pulsars-podman-releve` writes every
+        minute (`deploy/podman/README.md`), at `PODMAN_SNAPSHOT_PATH`: the
+        API never talks to Podman. Always 200: `available` is false with
+        `reason` `not_configured` (no path), `missing` (no file) or
+        `unreadable` (not JSON, over 2 MB, no `taken_at`, or `podman ps`
+        failed). `stale` when the snapshot is more than 3 minutes old.
+        Containers not running or unhealthy come first, then by name;
+        `cpu_percent` and the memory are null for a container that is not
+        running. Podman 4 and 5 outputs are both read.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The containers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AdminContainers' }
+              example:
+                data:
+                  available: true
+                  reason: null
+                  taken_at: '2026-10-29T12:00:00Z'
+                  stale: false
+                  containers:
+                    - { name: pulsars-web, image: 'ghcr.io/pulsars-science/pulsars-web:0.1.0', state: running, health: unhealthy, started_at: '2026-10-29T09:15:50Z', restarts: 1, cpu_percent: 12.5, memory_bytes: 157286400, memory_limit_bytes: 536870912 }
+                    - { name: pulsars-db, image: 'docker.io/library/postgres:17-alpine', state: running, health: healthy, started_at: '2026-10-29T09:15:00Z', restarts: 0, cpu_percent: 2.1, memory_bytes: 61200000, memory_limit_bytes: 2100000000 }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/people:
+    get:
+      tags: [admin]
+      operationId: searchAdminPeople
+      summary: Find a member or a visitor
+      description: |
+        `q` (2 to 100 characters) is matched case-insensitively in the
+        e-mail and the pseudo (those that start with it first), 20 members
+        at most; an exact visitor id (UUID) finds that visitor. A member's
+        `last_seen_at` is the latest of their page views and of their
+        sessions' use. See `docs/privacy.md`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 2, maxLength: 100 } }
+      responses:
+        '200':
+          description: The people found
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [members, visitors]
+                    properties:
+                      members:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: integer }
+                            pseudo: { type: string }
+                            email: { type: string }
+                            created_at: { type: [string, 'null'], format: date-time }
+                            last_seen_at: { type: [string, 'null'], format: date-time }
+                            verified: { type: boolean }
+                            roles: { type: array, items: { type: string } }
+                      visitors:
+                        type: array
+                        items: { $ref: '#/components/schemas/JournalVisitor' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/people/members/{id}:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonMember
+      summary: A member's summary
+      description: |
+        The account, its XP and brains, the visitor ids linked to it (the
+        latest first, 20 at most), counts of what it did ever (`logins`
+        counts `login` and `oauth_login` events), and its latest consent
+        answer (null without one). 404 for an unknown member.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: The summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      member:
+                        type: object
+                        properties:
+                          id: { type: integer }
+                          pseudo: { type: string }
+                          email: { type: string }
+                          created_at: { type: [string, 'null'], format: date-time }
+                          verified: { type: boolean }
+                          onboarded: { type: boolean }
+                          roles: { type: array, items: { type: string } }
+                          xp: { type: integer }
+                          brains: { type: integer }
+                          last_seen_at: { type: [string, 'null'], format: date-time }
+                          visitor_ids: { type: array, items: { type: string, format: uuid } }
+                      counts:
+                        type: object
+                        properties:
+                          page_views: { type: integer }
+                          lessons_completed: { type: integer }
+                          exercise_attempts: { type: integer }
+                          games: { type: integer }
+                          forum_posts: { type: integer }
+                          room_messages: { type: integer }
+                          downloads: { type: integer }
+                          logins: { type: integer }
+                      consent: { oneOf: [{ $ref: '#/components/schemas/JournalConsent' }, { type: 'null' }] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/people/members/{id}/events:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonMemberEvents
+      summary: A member's timeline
+      description: |
+        Everything the member did, newest first, from every kind of
+        `JournalItem` (their visitor's page views once linked included).
+        404 for an unknown member.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - name: kinds
+          in: query
+          description: Comma-separated kinds to keep; an unknown one is a 400 on `kinds`.
+          schema: { type: string, example: 'page_view,security' }
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: A page of the timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JournalPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/people/visitors/{id}:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonVisitor
+      summary: A visitor's summary
+      description: |
+        A visitor id seen in page views or consents: when, how many page
+        views, the member it was linked to (null while anonymous), its
+        latest consent answer. 404 when never seen.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      visitor:
+                        type: object
+                        properties:
+                          visitor_id: { type: string, format: uuid }
+                          first_seen_at: { type: string, format: date-time }
+                          last_seen_at: { type: string, format: date-time }
+                          member_id: { type: [integer, 'null'] }
+                      counts: { type: object, properties: { page_views: { type: integer } } }
+                      consent: { oneOf: [{ $ref: '#/components/schemas/JournalConsent' }, { type: 'null' }] }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /v1/admin/people/visitors/{id}/events:
+    get:
+      tags: [admin]
+      operationId: getAdminPersonVisitorEvents
+      summary: A visitor's timeline
+      description: Its page views and consent answers, newest first.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - name: kinds
+          in: query
+          description: Comma-separated kinds to keep; an unknown one is a 400 on `kinds`.
+          schema: { type: string, example: 'page_view,security' }
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: A page of the timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JournalPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
+  /v1/admin/activity:
+    get:
+      tags: [admin]
+      operationId: getAdminActivity
+      summary: Everybody's timeline
+      description: |
+        Every `JournalItem` of every member and visitor, newest first, each
+        with `who`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: cursor, in: query, schema: { type: string } }
+        - name: kinds
+          in: query
+          description: Comma-separated kinds to keep; an unknown one is a 400 on `kinds`.
+          schema: { type: string, example: 'page_view,security' }
+      responses:
+        '200':
+          description: A page of the timeline
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JournalPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/AdminOnly' }
   /v1/admin/settings/donation-goal:
@@ -3234,6 +3450,40 @@ paths:
         '401': { $ref: '#/components/responses/SessionInvalid' }
         '403': { $ref: '#/components/responses/AdminOnly' }
         '422': { $ref: '#/components/responses/InvalidFields' }
+  /v1/admin/game/leaderboard:
+    get:
+      tags: [admin]
+      operationId: getAdminGameLeaderboard
+      summary: The game leaderboard, for an admin's session
+      description: |
+        The same parameters and body as `GET /v1/game/leaderboard`, for an
+        admin's session through the site's relay (which refuses every
+        `/v1/game*` path). `Cache-Control: no-store`, not the public cache.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - name: subject
+          in: query
+          schema: { $ref: '#/components/schemas/GameSubject' }
+          description: Absent → `all`.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: The leaderboard
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject, data]
+                properties:
+                  subject: { $ref: '#/components/schemas/GameSubject' }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/GameLeader' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '403': { $ref: '#/components/responses/AdminOnly' }
   /v1/admin/game/stats:
     get:
       tags: [admin]
@@ -4513,7 +4763,7 @@ paths:
               required: [locale]
               additionalProperties: false
               properties:
-                locale: { type: string, enum: [fr, en, ru] }
+                locale: { type: string, enum: [fr, en, es, ru, zh] }
       responses:
         '204': { description: Saved. }
         '401': { $ref: '#/components/responses/SessionInvalid' }
@@ -4698,7 +4948,7 @@ paths:
         `DemandeRessourceController`, `multipart/form-data`: `title` and
         `author_name` (at most 200), `license` (a key of `/v1/licenses`;
         `autre` needs `license_custom`, at most 200, ignored otherwise),
-        `description` (4000), `category` (120), `lang` (`fr`, `en`, `ru`),
+        `description` (4000), `category` (120), `lang` (`fr`, `en`, `es`, `ru`, `zh`),
         and `file`: a PDF (by content) of at most 20 MiB, stored on the
         private disk (`demandes-ressources/<random>.pdf`) with its original
         name and size. Pending (`en_attente`) until an admin decides. At most
@@ -4720,7 +4970,7 @@ paths:
                 license_custom: { type: string }
                 description: { type: string }
                 category: { type: string }
-                lang: { type: string, enum: [fr, en, ru] }
+                lang: { type: string, enum: [fr, en, es, ru, zh] }
                 file: { type: string, format: binary }
       responses:
         '201':
@@ -4763,6 +5013,131 @@ paths:
               example:
                 data: { percent: 24, raised: 120.5, goal: 500.0, currency: EUR }
 
+  /v1/billing/plans:
+    get:
+      tags: [billing]
+      operationId: listBillingPlans
+      summary: The subscription prices on offer
+      description: |
+        Read from Stripe (`STRIPE_PRICE_MONTHLY`, `STRIPE_PRICE_YEARLY`),
+        kept an hour in Redis. `amount` is in the currency's smallest unit.
+      responses:
+        '200':
+          description: The plans, monthly first
+          content:
+            application/json:
+              example:
+                data:
+                  - { plan: monthly, amount: 399, currency: eur, interval: month }
+                  - { plan: yearly, amount: 3900, currency: eur, interval: year }
+        '503':
+          description: '`not_configured` (no Stripe) or `upstream_failed`'
+
+  /v1/me/subscription:
+    get:
+      tags: [billing]
+      operationId: getMySubscription
+      summary: The member's subscription
+      description: |
+        `subscriber` is the `abonne` role (paid or offered); `subscription`
+        the most recent Stripe subscription as Stripe last described it;
+        `can_manage` whether the billing portal can open.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: The subscription
+          content:
+            application/json:
+              example:
+                data:
+                  subscriber: true
+                  subscription:
+                    status: active
+                    plan: monthly
+                    current_period_end: '2026-12-20T10:00:00Z'
+                    cancel_at_period_end: false
+                  can_manage: true
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+
+  /v1/billing/checkout:
+    post:
+      tags: [billing]
+      operationId: createCheckout
+      summary: Opens a Stripe Checkout session
+      description: |
+        For a verified member. `waive_withdrawal` must be `true`: the member
+        asks for immediate access and waives the 14-day withdrawal period
+        (art. L221-28 of the Code de la consommation); the moment is kept in
+        `site.checkout_sessions`. Answers the URL to send the member to.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            example: { plan: monthly, waive_withdrawal: true }
+      responses:
+        '200':
+          description: Where to send the member
+          content:
+            application/json:
+              example:
+                data: { url: 'https://checkout.stripe.com/c/pay/cs_test_…' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '409':
+          description: '`already_subscribed`: the account has a subscription; manage it from the portal'
+        '422':
+          description: '`plan` invalid or unavailable, `waive_withdrawal` required'
+        '503':
+          description: '`not_configured` or `upstream_failed`'
+
+  /v1/billing/portal:
+    post:
+      tags: [billing]
+      operationId: openBillingPortal
+      summary: Opens Stripe's billing portal
+      description: |
+        Card, invoices and cancellation in a few clicks (French law of
+        16 August 2022). `409 no_customer` for an account that never
+        subscribed.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+      responses:
+        '200':
+          description: Where to send the member
+          content:
+            application/json:
+              example:
+                data: { url: 'https://billing.stripe.com/p/session/…' }
+        '401': { $ref: '#/components/responses/SessionInvalid' }
+        '409':
+          description: '`no_customer`'
+
+  /v1/billing/webhook:
+    post:
+      tags: [billing]
+      operationId: stripeWebhook
+      summary: Stripe's calls
+      description: |
+        Authenticated by `Stripe-Signature` (HMAC-SHA256 under
+        `STRIPE_WEBHOOK_SECRET`, five minutes of tolerance). Followed:
+        `checkout.session.completed`, `customer.subscription.*` and
+        `invoice.paid` / `invoice.payment_failed`: each reads the
+        subscription again from Stripe, updates `site.subscriptions` and
+        gives or takes the `abonne` role. Other events are acknowledged.
+        A 503 (Stripe down, unknown subscription) asks Stripe to retry.
+      responses:
+        '200':
+          description: Received
+          content:
+            application/json:
+              example: { received: true }
+        '400':
+          description: Missing or invalid signature
+        '503':
+          description: '`not_configured` or `upstream_failed`'
+
   /v1/exams/{slug}/corrections:
     get:
       tags: [exams]
@@ -4793,6 +5168,91 @@ paths:
                   downloads: 45
                   downloaders: 31
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/telemetry/page-view:
+    post:
+      tags: [feedback]
+      operationId: postPageView
+      summary: Record a page view, after consent
+      description: |
+        Sent by the site's pages only when the visitor accepted the
+        "mesure" cookies (`docs/privacy.md`). Recorded for the member of
+        the session and/or the visitor id of `Pulsars-Visitor`; with
+        neither, nothing is written (still 204). `path` must be a path of
+        the site (starting with one `/`, at most 512 characters once its
+        query and fragment are dropped: 422 `invalid` or `too_long`);
+        `referrer` keeps only the origin of an external address, null for
+        the site itself. Robots are ignored. Kept 13 months. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/VisitorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [path]
+              properties:
+                path: { type: string, example: '/cours/les-bases-du-calcul?onglet=2' }
+                referrer: { type: [string, 'null'], example: 'https://www.qwant.com/?q=pulsars' }
+      responses:
+        '204': { description: Received (recorded or not). }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/consent:
+    post:
+      tags: [feedback]
+      operationId: postConsent
+      summary: Keep the proof of a consent banner answer
+      description: |
+        `measure`: whether the visitor accepted the "mesure" cookies;
+        `version`: the banner's version (1 to 1 000 000, else 422
+        `invalid`). Kept 25 months with the member and/or the visitor id
+        (both may be null, for a refusal) and the visitor fingerprint,
+        never the address. Robots are ignored. `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - $ref: '#/components/parameters/VisitorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [measure, version]
+              properties:
+                measure: { type: boolean }
+                version: { type: integer, minimum: 1, maximum: 1000000 }
+      responses:
+        '204': { description: Recorded. }
+        '422': { $ref: '#/components/responses/InvalidFields' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/courses/{slug}/view:
+    post:
+      tags: [courses]
+      operationId: postCourseView
+      summary: Count a view of a course page
+      description: |
+        Called once from the browser by the course page, through the site's
+        relay (`GET /v1/courses/{slug}` counts nothing: lesson and exercise
+        pages read it too). No body. Counted in `contenu.courses.vues` and
+        in the dashboard's views by day (`top_content` of
+        `GET /v1/admin/stats`), not again for the same member or visitor
+        fingerprint within 20 seconds (as an exam's corrections), and never
+        for a robot (`User-Agent`). Always 204 for a published course,
+        counted or not; `no-store`.
+      parameters:
+        - $ref: '#/components/parameters/SessionToken'
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Received. }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /v1/exams/{slug}/correction-pdf:
     get:
@@ -4863,6 +5323,17 @@ components:
       required: true
       description: A session token from `/v1/auth/login`, `/register` or `/sessions`.
       schema: { type: string, minLength: 43, maxLength: 43 }
+    VisitorId:
+      name: Pulsars-Visitor
+      in: header
+      required: false
+      description: |
+        The anonymous visitor id the site keeps in its `pulsars_vid`
+        cookie once the visitor accepted the "mesure" cookies, relayed on
+        every request (`docs/privacy.md`). A UUID v4; anything else is
+        ignored. When a session opens with it, the visitor's page views
+        become the member's.
+      schema: { type: string, format: uuid }
     ServiceKey:
       name: Pulsars-Service-Key
       in: header
@@ -4983,7 +5454,7 @@ components:
             type: object
             additionalProperties: false
             properties:
-              lang: { type: string, enum: [en, fr, ru] }
+              lang: { type: string, enum: [en, es, fr, ru, zh] }
     ForumHide:
       required: true
       content:
@@ -5299,7 +5770,7 @@ components:
             chapter_count: 2
             lesson_count: 4
             exercise_count: 5
-            available_langs: [fr, en, ru]
+            available_langs: [fr, en, es, ru, zh]
             published_at: '2026-08-17T09:27:34Z'
             updated_at: '2026-08-17T09:27:34Z'
             web_url: https://pulsars.science/cours/les-bases-du-calcul
@@ -5433,7 +5904,7 @@ components:
   schemas:
     LangCode:
       type: string
-      enum: [fr, en, ru]
+      enum: [fr, en, es, ru, zh]
     Difficulty:
       type: string
       enum: [debutant, intermediaire, avance]
@@ -5480,7 +5951,7 @@ components:
         email: { type: string }
         email_verified: { type: boolean }
         onboarded: { type: boolean }
-        locale: { type: [string, 'null'], enum: [fr, en, ru, null] }
+        locale: { type: [string, 'null'], enum: [fr, en, es, ru, zh, null] }
     Session:
       type: object
       required: [token, expires_at, remember]
@@ -6261,7 +6732,7 @@ components:
         title: { type: [string, 'null'], description: Null for an answer. }
         body_md: { type: string }
         source_lang: { type: [string, 'null'], description: What DeepL detected, lower case., example: en }
-        target_lang: { type: string, enum: [en, fr, ru] }
+        target_lang: { type: string, enum: [en, es, fr, ru, zh] }
         cached: { type: boolean, description: Served from the stored translation of the same text. }
     MemberRole:
       allOf:
@@ -6525,7 +6996,10 @@ components:
             `signups, visitors (null without Umami), lessons, attempts,
             attempts_solved, attempts_graded, course_enrollments,
             courses_completed, questions, answers, room_messages, brains,
-            games`.
+            games, duels, pdf_downloads`. `duels`: duels played to the end
+            (not void), guests' included, by the day they started;
+            `pdf_downloads`: first downloads of an exam PDF by a visitor
+            (`contenu.telechargements`).
           additionalProperties:
             oneOf: [{ $ref: '#/components/schemas/Series' }, { type: 'null' }]
         active_members:
@@ -6594,6 +7068,133 @@ components:
             unverified_accounts: { type: integer }
         pending: { $ref: '#/components/schemas/AdminPending' }
         donation_goal: { $ref: '#/components/schemas/DonationGoal' }
+        http:
+          type: object
+          required: [available, since, requests, errors_5xx, p95_ms]
+          properties:
+            available: { type: boolean, description: False when nothing was recorded over the period nor the one before. }
+            since: { type: [string, 'null'], format: date, description: The first day recorded. }
+            requests: { $ref: '#/components/schemas/Series' }
+            errors_5xx: { $ref: '#/components/schemas/Series' }
+            p95_ms:
+              type: object
+              required: [values, total, previous]
+              properties:
+                values: { type: array, items: { type: [integer, 'null'] }, description: One per day of the period, oldest first. }
+                total: { type: [integer, 'null'], description: Over the whole period. }
+                previous: { type: [integer, 'null'], description: Over the N days before. }
+        catalog:
+          type: array
+          description: By downloads (most first), then name; subjects with nothing are left out.
+          items:
+            type: object
+            required: [subject_slug, subject_name, courses, exercises, pdfs, downloads]
+            properties:
+              subject_slug: { type: string }
+              subject_name: { type: string, description: The courses' name of the subject, else the exams'. }
+              courses: { type: integer }
+              exercises: { type: integer, description: Of those courses. }
+              pdfs: { type: integer, description: Published exams with a statement PDF. }
+              downloads: { type: integer, description: Downloads of those exams over the period. }
+        top_content:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            required: [kind, slug, title, subject_name, views, previous]
+            properties:
+              kind: { type: string, enum: [course, exam] }
+              slug: { type: string }
+              title: { type: string }
+              subject_name: { type: [string, 'null'] }
+              views: { type: integer }
+              previous: { type: integer, description: Views over the N days before. }
+    AdminContainers:
+      type: object
+      required: [available, reason, taken_at, stale, containers]
+      properties:
+        available: { type: boolean }
+        reason: { type: [string, 'null'], enum: [not_configured, missing, unreadable, null] }
+        taken_at: { type: [string, 'null'], format: date-time }
+        stale: { type: boolean, description: The snapshot is more than 3 minutes old. }
+        containers:
+          type: array
+          items:
+            type: object
+            required: [name, image, state, health, started_at, restarts, cpu_percent, memory_bytes, memory_limit_bytes]
+            properties:
+              name: { type: string }
+              image: { type: string }
+              state: { type: string, description: 'Podman''s state, lowercased: running, exited, created, paused, restarting…' }
+              health: { type: [string, 'null'], enum: [healthy, unhealthy, starting, null], description: Null without a health check. }
+              started_at: { type: [string, 'null'], format: date-time }
+              restarts: { type: integer }
+              cpu_percent: { type: [number, 'null'] }
+              memory_bytes: { type: [integer, 'null'] }
+              memory_limit_bytes: { type: [integer, 'null'], description: Null without a limit. }
+    JournalConsent:
+      type: object
+      required: [measure, at]
+      properties:
+        measure: { type: boolean }
+        at: { type: string, format: date-time }
+    JournalVisitor:
+      type: object
+      properties:
+        visitor_id: { type: string, format: uuid }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        page_views: { type: integer }
+        member_id: { type: [integer, 'null'] }
+    JournalItem:
+      type: object
+      required: [id, at, kind, data, link]
+      description: |
+        `data` by `kind`:
+        `page_view` {path, referrer} (link: the path);
+        `security` {event, ip, user_agent, detail}, `event` one of `signup`,
+        `login`, `login_failed`, `logout`, `password_changed`,
+        `password_reset_requested`, `password_reset`, `email_verified`,
+        `oauth_login`, `oauth_linked`, `oauth_unlinked`;
+        `consent` {measure, version};
+        `signup` {};
+        `lesson_completed` {course_title, lesson_title} (link
+        `/cours/{course}/lecon/{lesson}`);
+        `exercise_attempt` {course_title, exercise_title, correct} (link
+        `/cours/{course}/exercice/{id}`);
+        `course_enrolled` {course_title} (link `/cours/{course}`);
+        `game` {mode, subject, outcome, ranked};
+        `forum_question` {title}, `forum_answer` {question_title} (link
+        `/forum/q/{slug}`);
+        `room_message` {room_name} (link `/salons/{slug}`; never the
+        message);
+        `brains` {amount, reason};
+        `download` {exam_title} (link `/examens/{slug}`).
+      properties:
+        id: { type: string, example: 'page_view:1234', description: '`<kind>:<row id>`.' }
+        at: { type: string, format: date-time }
+        kind:
+          type: string
+          enum: [page_view, security, consent, signup, lesson_completed, exercise_attempt,
+                 course_enrolled, game, forum_question, forum_answer, room_message, brains, download]
+        who:
+          description: |
+            On `/v1/admin/activity` only: `{member_id, pseudo}`, `{visitor_id}`,
+            or null (a failed login on an unknown account).
+          oneOf:
+            - type: object
+              properties: { member_id: { type: integer }, pseudo: { type: [string, 'null'] } }
+            - type: object
+              properties: { visitor_id: { type: string, format: uuid } }
+            - type: 'null'
+        data: { type: object }
+        link: { type: [string, 'null'], description: A path of the site. }
+    JournalPage:
+      type: object
+      required: [data, next_cursor]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/JournalItem' } }
+        next_cursor: { type: [string, 'null'] }
     AdminListing:
       type: object
       required: [data, page, per_page, total, counters]

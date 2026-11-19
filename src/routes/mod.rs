@@ -3,10 +3,12 @@
 pub mod account;
 pub mod admin;
 pub mod auth;
+pub mod billing;
 pub mod corrections;
 pub mod courses;
 pub mod cursor;
 pub mod dashboard;
+pub mod esgi;
 pub mod exams;
 pub mod exercises;
 pub mod feedback;
@@ -27,8 +29,10 @@ pub mod public;
 pub mod resources;
 pub mod site;
 pub mod social;
+pub mod telemetry;
 pub mod token;
 pub mod upload;
+pub mod views;
 
 use axum::Router;
 use axum::error_handling::HandleErrorLayer;
@@ -167,9 +171,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/register", post(auth::register))
         .route("/v1/auth/session", get(auth::session))
         .route("/v1/auth/logout", post(auth::logout))
-        .route("/v1/auth/sessions", post(auth::open_for))
         .route("/v1/auth/password", put(auth::change_password))
-        .route("/v1/auth/password/reset", post(auth::reset_password))
         .route("/v1/auth/password/forgot", post(account::forgot))
         .route(
             "/v1/auth/password/reset-with-token",
@@ -279,6 +281,13 @@ pub fn router(state: AppState) -> Router {
             "/v1/exams/{slug}/corrections",
             get(corrections::corrections),
         )
+        .route("/v1/courses/{slug}/view", post(views::course))
+        .route("/v1/telemetry/page-view", post(telemetry::page_view))
+        .route("/v1/consent", post(telemetry::consent))
+        .route("/v1/billing/plans", get(billing::plans))
+        .route("/v1/me/subscription", get(billing::mine))
+        .route("/v1/billing/checkout", post(billing::checkout))
+        .route("/v1/billing/portal", post(billing::portal))
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
@@ -313,11 +322,31 @@ pub fn router(state: AppState) -> Router {
     let admin_json = Router::new()
         .route("/v1/admin/stats", get(admin::dashboard::dashboard))
         .route("/v1/admin/pending", get(admin::dashboard::pending))
+        .route("/v1/admin/containers", get(admin::containers::containers))
+        .route("/v1/admin/people", get(admin::people::search))
+        .route("/v1/admin/people/members/{id}", get(admin::people::member))
+        .route(
+            "/v1/admin/people/members/{id}/events",
+            get(admin::people::member_events),
+        )
+        .route(
+            "/v1/admin/people/visitors/{id}",
+            get(admin::people::visitor),
+        )
+        .route(
+            "/v1/admin/people/visitors/{id}/events",
+            get(admin::people::visitor_events),
+        )
+        .route("/v1/admin/activity", get(admin::people::activity))
         .route(
             "/v1/admin/settings/donation-goal",
             get(admin::dashboard::donation_goal).put(admin::dashboard::set_donation_goal),
         )
         .route("/v1/admin/game/stats", get(admin::dashboard::game_stats))
+        .route(
+            "/v1/admin/game/leaderboard",
+            get(admin::dashboard::game_leaderboard),
+        )
         .route(
             "/v1/admin/languages/stats",
             get(admin::dashboard::language_stats),
@@ -406,8 +435,34 @@ pub fn router(state: AppState) -> Router {
         .merge(admin_files)
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // Private school area. Every handler checks the session's verified
+    // @myskolae.fr address, or the isolated admin_esgi role for imports.
+    let esgi_json = Router::new()
+        .route("/v1/esgi/subjects", get(esgi::list_subjects))
+        .route("/v1/esgi/subjects/{slug}", get(esgi::show_subject))
+        .route("/v1/esgi/courses/{slug}", get(esgi::show_course))
+        .route("/v1/esgi/admin/courses", get(esgi::admin_list))
+        .route("/v1/esgi/admin/courses/{slug}", delete(esgi::delete_course))
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+    // Stripe's calls: no session, no JSON negotiation, no rate limit (Stripe
+    // retries what fails); the signature authenticates them.
+    let billing_webhook = Router::new().route("/v1/billing/webhook", post(billing::webhook));
+    let esgi_files = Router::new()
+        .route("/v1/esgi/courses/{slug}/pdf", get(esgi::course_pdf))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+    let esgi_upload = Router::new()
+        .route("/v1/esgi/admin/courses", post(esgi::import_course))
+        .layer(from_fn(public::require_json))
+        .layer(DefaultBodyLimit::disable())
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(billing_webhook)
+        .merge(esgi_json)
+        .merge(esgi_files)
+        .merge(esgi_upload)
         .merge(admin)
         .merge(auth)
         .merge(forum)
@@ -426,7 +481,10 @@ pub fn router(state: AppState) -> Router {
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         // Per-route layer: sees the matched route template.
-        .layer(from_fn(mw::record_metrics));
+        .layer(from_fn_with_state(
+            state.http_daily.clone(),
+            mw::record_metrics,
+        ));
 
     routes
         .layer(

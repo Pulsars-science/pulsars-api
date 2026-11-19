@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use axum::body::Body;
-use axum::extract::{ConnectInfo, MatchedPath, Request};
+use axum::extract::{ConnectInfo, MatchedPath, Request, State};
 use axum::http::header::{CONTENT_TYPE, HeaderName};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -15,6 +15,7 @@ use tower::BoxError;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::error::{ApiError, PROBLEM_CONTENT_TYPE};
+use crate::http_daily::{self, HttpDaily};
 use crate::telemetry::{self, CURRENT_TRACE, TraceContext, names};
 
 pub const TRACEPARENT: HeaderName = HeaderName::from_static("traceparent");
@@ -36,8 +37,13 @@ pub async fn trace_context(mut request: Request, next: Next) -> Response {
 }
 
 /// Counts requests and records their latency, labelled by route template
-/// (never the raw path, which would explode the label cardinality).
-pub async fn record_metrics(request: Request, next: Next) -> Response {
+/// (never the raw path, which would explode the label cardinality); also
+/// into the day by day counts of the dashboard ([`crate::http_daily`]).
+pub async fn record_metrics(
+    State(daily): State<HttpDaily>,
+    request: Request,
+    next: Next,
+) -> Response {
     let started = Instant::now();
     let method = request.method().as_str().to_owned();
     let route = request
@@ -47,13 +53,17 @@ pub async fn record_metrics(request: Request, next: Next) -> Response {
 
     let response = next.run(request).await;
 
+    let elapsed = started.elapsed();
+    if http_daily::counted(&route, response.status()) {
+        daily.record(response.status(), elapsed);
+    }
     let status = response.status().as_u16().to_string();
     metrics::counter!(names::HTTP_REQUESTS_TOTAL,
         "method" => method.clone(), "route" => route.clone(), "status" => status)
     .increment(1);
     metrics::histogram!(names::HTTP_REQUEST_DURATION_SECONDS,
         "method" => method, "route" => route)
-    .record(started.elapsed().as_secs_f64());
+    .record(elapsed.as_secs_f64());
     response
 }
 

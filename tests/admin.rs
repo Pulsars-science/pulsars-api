@@ -124,6 +124,7 @@ async fn server(database_url: &str, redis_url: &str) -> Server {
     config.token_signer = Some(keys.signer.clone());
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
+        http_daily: Default::default(),
         mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), fast_settings()),
         db,

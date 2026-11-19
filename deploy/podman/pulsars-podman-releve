@@ -1,0 +1,64 @@
+#!/bin/sh
+# pulsars-podman-releve: a snapshot of the containers for the API's admin
+# dashboard (GET /v1/admin/containers), so the API never needs the Podman
+# socket. Writes, atomically, one JSON document:
+#
+#   {"taken_at": "<RFC 3339, UTC>",
+#    "ps":      <podman ps --all --format json>,
+#    "inspect": <podman inspect of every container, [] without any>,
+#    "stats":   <podman stats --all --no-stream --format json, [] without any>}
+#
+# A podman command that fails gives null for its key; the API reads the
+# shapes of podman 4 and 5. Run as root by pulsars-podman-releve.timer,
+# every minute. See README.md.
+
+set -u
+
+dir="${PULSARS_PODMAN_DIR:-/var/lib/pulsars-podman}"
+target="$dir/releve.json"
+
+umask 022
+mkdir -p "$dir" || exit 1
+chmod 0755 "$dir" || exit 1
+
+# The output of a command when it succeeded with JSON, else null. An empty
+# output is $1 (podman prints nothing for an empty list at times).
+json_of() {
+    empty="$1"
+    shift
+    if output="$("$@" 2>/dev/null)"; then
+        case "$output" in
+            '') printf '%s' "$empty" ;;
+            '['* | '{'*) printf '%s' "$output" ;;
+            *) printf 'null' ;;
+        esac
+    else
+        printf 'null'
+    fi
+}
+
+taken_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ps="$(json_of '[]' podman ps --all --format json)"
+
+if ids="$(podman ps --all --quiet --no-trunc 2>/dev/null)"; then
+    if [ -z "$ids" ]; then
+        inspect='[]'
+        stats='[]'
+    else
+        # Word splitting on purpose: one argument per id.
+        # shellcheck disable=SC2086
+        inspect="$(json_of '[]' podman inspect $ids)"
+        stats="$(json_of '[]' podman stats --all --no-stream --format json)"
+    fi
+else
+    inspect='null'
+    stats='null'
+fi
+
+tmp="$(mktemp "$dir/.releve.XXXXXX")" || exit 1
+trap 'rm -f "$tmp"' EXIT
+printf '{"taken_at": "%s",\n"ps": %s,\n"inspect": %s,\n"stats": %s}\n' \
+    "$taken_at" "$ps" "$inspect" "$stats" >"$tmp" || exit 1
+chmod 0644 "$tmp" || exit 1
+mv -f "$tmp" "$target" || exit 1
+trap - EXIT

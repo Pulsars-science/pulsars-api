@@ -97,6 +97,7 @@ async fn languages_app_with_keys() -> Option<(Router, Keys, sqlx::PgPool)> {
     config.token_signer = Some(keys.signer.clone());
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
+        http_daily: Default::default(),
         mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), GameSettings::default()),
         db,

@@ -72,6 +72,7 @@ fn config(database_url: &str, redis_url: &str, extra: &[(&str, &str)]) -> Config
 async fn app(config: Config) -> (Router, AppState) {
     let db = db::connect_lazy(&config).unwrap();
     let state = AppState {
+        http_daily: Default::default(),
         mailer: pulsars_api::mail::Mailer::recording(),
         game: Game::start(db.clone(), GameSettings::default()),
         db,
@@ -1836,7 +1837,7 @@ async fn invalid_parameters_are_all_reported() {
             "status": 400,
             "detail": "One or more query parameters are invalid.",
             "errors": [
-                {"parameter": "lang", "detail": "must be one of: fr, en, ru"},
+                {"parameter": "lang", "detail": "must be one of: fr, en, es, ru, zh"},
                 {"parameter": "limit", "detail": "must be between 1 and 100"},
                 {"parameter": "topic", "detail": "requires `subject`"},
                 {"parameter": "q", "detail": "must be between 2 and 100 characters"},

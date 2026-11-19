@@ -47,7 +47,7 @@ const REPORT_LIMIT: u32 = 20;
 /// Translations per minute per reader (`throttle:10,1`).
 const TRANSLATE_LIMIT: u32 = 10;
 /// The languages a post can be translated into (`config/localisation.php`).
-const TRANSLATION_LANGS: &[&str] = &["en", "fr", "ru"];
+const TRANSLATION_LANGS: &[&str] = &["en", "es", "fr", "ru", "zh"];
 /// Why a forum message is reported (`TypeSignalement::pourForum`).
 pub const REPORT_TYPES: &[&str] = &["spam", "abus", "hors_sujet"];
 const SORTS: &[&str] = &["recent", "popular", "unanswered"];

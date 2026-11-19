@@ -9,20 +9,16 @@
 
 use axum::extract::{OriginalUri, Path, RawQuery, State};
 use axum::response::Response;
-use fred::prelude::{ClientLike as _, KeysInterface as _};
-use fred::types::{Expiration, SetOptions};
 use serde::Serialize;
 
 use super::auth::Caller;
 use super::public::{served, translated};
 use super::site::{self, not_found, ok};
+use super::views;
 use crate::auth::member::MaybeMember;
 use crate::db::exams;
 use crate::error::ApiError;
 use crate::state::AppState;
-
-/// The same reader again within this delay is the same view (a reload).
-const VIEW_DEDUP_SECS: i64 = 20;
 
 #[derive(Debug, Serialize)]
 pub struct Corrections {
@@ -59,14 +55,8 @@ pub async fn corrections(
             uri.path(),
         )
     })?;
-    let who = match &member {
-        Some(m) => format!("membre:{}", m.id()),
-        None => format!(
-            "invite:{}",
-            site::visitor_hash(&state, caller.ip.as_deref(), caller.user_agent.as_deref()).await?
-        ),
-    };
-    if first_view(&state, counters.id, &who).await {
+    let who = views::reader(&state, member.as_ref().map(|m| m.id()), &caller).await?;
+    if views::first_view(&state, "exams", counters.id, &who).await {
         exams::add_view(&state.db, counters.id).await?;
         counters.views += 1;
     }
@@ -89,26 +79,6 @@ pub async fn corrections(
         downloads: counters.downloads,
         downloaders: counters.downloaders,
     }))
-}
-
-/// Whether this is the first view of `who` in the delay (`SET NX EX`). Redis
-/// down: counted, as Laravel's cache would have.
-async fn first_view(state: &AppState, exam_id: i64, who: &str) -> bool {
-    if !state.redis.is_connected() {
-        return true;
-    }
-    let key = format!("pulsars-api:views:exams:{exam_id}:{who}");
-    let set: Result<Option<String>, _> = state
-        .redis
-        .set(
-            key,
-            "1",
-            Some(Expiration::EX(VIEW_DEDUP_SECS)),
-            Some(SetOptions::NX),
-            false,
-        )
-        .await;
-    !matches!(set, Ok(None))
 }
 
 /// Counts a download of the published exam `slug` (statement or

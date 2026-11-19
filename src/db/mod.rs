@@ -21,6 +21,7 @@ pub mod exercises;
 pub mod files;
 pub mod forum;
 pub mod friends;
+pub mod journal;
 pub mod language_stats;
 pub mod languages;
 pub mod learning;

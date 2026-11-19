@@ -33,14 +33,6 @@ impl Friendship {
     pub fn concerns(&self, user_id: i64) -> bool {
         self.user_one_id == user_id || self.user_two_id == user_id
     }
-
-    pub fn other_than(&self, user_id: i64) -> i64 {
-        if self.user_one_id == user_id {
-            self.user_two_id
-        } else {
-            self.user_one_id
-        }
-    }
 }
 
 const COLUMNS: &str = "id, user_one_id, user_two_id, requested_by_id,

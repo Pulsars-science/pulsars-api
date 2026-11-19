@@ -23,18 +23,22 @@ use serde::{Deserialize, Serialize};
 pub enum Lang {
     Fr,
     En,
+    Es,
     Ru,
+    Zh,
 }
 
 impl Lang {
-    pub const ALL: [Lang; 3] = [Lang::Fr, Lang::En, Lang::Ru];
+    pub const ALL: [Lang; 5] = [Lang::Fr, Lang::En, Lang::Es, Lang::Ru, Lang::Zh];
 
     /// English for a locale starting with `en` (`en`, `en-GB`, `en_US`),
-    /// Russian for one starting with `ru`, French otherwise, as on the site.
+    /// Spanish for `es`, Russian for one starting with `ru`, Chinese for `zh`, French otherwise, as on the site.
     pub fn from_locale(locale: Option<&str>) -> Lang {
         match locale.and_then(|l| l.get(..2)) {
             Some(p) if p.eq_ignore_ascii_case("en") => Lang::En,
+            Some(p) if p.eq_ignore_ascii_case("es") => Lang::Es,
             Some(p) if p.eq_ignore_ascii_case("ru") => Lang::Ru,
+            Some(p) if p.eq_ignore_ascii_case("zh") => Lang::Zh,
             _ => Lang::Fr,
         }
     }
@@ -43,7 +47,9 @@ impl Lang {
         match self {
             Lang::Fr => "fr",
             Lang::En => "en",
+            Lang::Es => "es",
             Lang::Ru => "ru",
+            Lang::Zh => "zh",
         }
     }
 }

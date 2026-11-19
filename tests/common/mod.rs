@@ -91,6 +91,7 @@ impl Env {
                 .expect("redis connects");
         }
         let state = AppState {
+            http_daily: Default::default(),
             mailer: pulsars_api::mail::Mailer::recording(),
             game: Game::start(db.clone(), GameSettings::default()),
             db: db.clone(),
@@ -103,20 +104,6 @@ impl Env {
             db,
             owner,
         })
-    }
-
-    /// A game token for `member`, signed with the app's key, with `roles`
-    /// (`POST /v1/auth/token` reads them from the database).
-    pub fn game_token(&self, member: &TestMember, roles: &[&str]) -> String {
-        let signer = self.state.config.token_signer.as_ref().unwrap();
-        let mut claims = testing::claims(&member.id.to_string(), chrono::Utc::now().timestamp());
-        claims["name"] = Value::from(member.pseudo.as_str());
-        claims["roles"] = Value::from(roles.to_vec());
-        testing::sign(
-            &signer.key,
-            &serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": signer.kid}),
-            &claims,
-        )
     }
 
     /// A new member, to shape before `create()`.
@@ -265,6 +252,8 @@ pub struct Call {
     service: bool,
     origin: Option<String>,
     ip: Option<String>,
+    visitor: Option<String>,
+    headers: Vec<(String, String)>,
 }
 
 impl Call {
@@ -279,6 +268,8 @@ impl Call {
             service: false,
             origin: None,
             ip: None,
+            visitor: None,
+            headers: Vec::new(),
         }
     }
     pub fn get(path: impl Into<String>) -> Self {
@@ -328,6 +319,16 @@ impl Call {
         self.origin = Some(origin.to_owned());
         self
     }
+    /// The site's anonymous visitor id (`Pulsars-Visitor`).
+    pub fn visitor(mut self, id: &str) -> Self {
+        self.visitor = Some(id.to_owned());
+        self
+    }
+    /// Any other header (a webhook's signature).
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
     pub fn ip(mut self, ip: &str) -> Self {
         self.ip = Some(ip.to_owned());
         self
@@ -353,8 +354,14 @@ impl Call {
         if self.service {
             request = request.header("pulsars-service-key", SERVICE_KEY);
         }
+        if let Some(visitor) = &self.visitor {
+            request = request.header("pulsars-visitor", visitor);
+        }
         if let Some(origin) = &self.origin {
             request = request.header(header::ORIGIN, origin);
+        }
+        for (name, value) in &self.headers {
+            request = request.header(name.as_str(), value.as_str());
         }
         let request = match (self.body, self.multipart) {
             (_, Some(parts)) => {

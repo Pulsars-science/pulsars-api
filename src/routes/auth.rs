@@ -6,13 +6,14 @@
 //! token, given back in `Pulsars-Session`; only its SHA-256 is stored.
 //! Passwords are argon2id (`crate::auth::password`).
 
-use axum::extract::{FromRequestParts, OriginalUri, State};
+use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::courses::timestamp;
@@ -21,11 +22,13 @@ use crate::db::accounts::{self, AccountRow, CreateError};
 use crate::db::sessions::{self, SessionRow};
 use crate::error::{ApiError, ParameterError};
 use crate::extract::Json;
+use crate::journal::{self, Security};
 use crate::middleware as mw;
 use crate::rate_limit;
 use crate::state::AppState;
 
 pub const SESSION_HEADER: HeaderName = HeaderName::from_static("pulsars-session");
+pub const VISITOR_HEADER: HeaderName = HeaderName::from_static("pulsars-visitor");
 
 /// Login attempts per minute for one login from one address.
 const LOGIN_LIMIT: u32 = 5;
@@ -36,8 +39,10 @@ const REGISTER_WINDOW_SECS: i64 = 3600;
 /// Length of a token: 32 random bytes in base64url, without padding.
 const TOKEN_CHARS: usize = 43;
 
-const LOCALES: &[&str] = &["fr", "en", "ru"];
+const LOCALES: &[&str] = &["fr", "en", "es", "ru", "zh"];
 const USER_AGENT_MAX_CHARS: usize = 500;
+/// The longest identifier kept for a failed login on an unknown account.
+const IDENTIFIER_MAX_CHARS: usize = 255;
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -116,23 +121,8 @@ pub struct RegisterBody {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct OpenBody {
-    user_id: String,
-    remember: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
 pub struct PasswordBody {
     current_password: Option<String>,
-    password: String,
-    password_confirmation: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ResetBody {
-    user_id: String,
     password: String,
     password_confirmation: String,
 }
@@ -142,6 +132,9 @@ pub struct ResetBody {
 pub struct Caller {
     pub(crate) ip: Option<String>,
     pub(crate) user_agent: Option<String>,
+    /// The anonymous visitor id the site relays (`Pulsars-Visitor`, set
+    /// only after consent; `crate::journal`): a UUID v4, else none.
+    pub(crate) visitor: Option<uuid::Uuid>,
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for Caller {
@@ -153,9 +146,16 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
             .get(header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .map(|v| v.chars().take(USER_AGENT_MAX_CHARS).collect());
+        let visitor = crate::journal::visitor_id(
+            parts
+                .headers
+                .get(VISITOR_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        );
         Ok(Self {
             ip: mw::client_ip(parts).map(|ip| ip.to_string()),
             user_agent,
+            visitor,
         })
     }
 }
@@ -184,8 +184,43 @@ pub async fn login(
     let matches = password::verify(body.password, hash).await;
     let account = match account {
         Some(account) if matches && account.password.is_some() => account,
-        _ => return Err(ApiError::InvalidCredentials),
+        Some(account) => {
+            journal::security(
+                &state.db,
+                Some(account.id),
+                Security::LoginFailed,
+                &caller,
+                json!({}),
+            )
+            .await;
+            return Err(ApiError::InvalidCredentials);
+        }
+        None => {
+            let identifier: String = body
+                .login
+                .trim()
+                .chars()
+                .take(IDENTIFIER_MAX_CHARS)
+                .collect();
+            journal::security(
+                &state.db,
+                None,
+                Security::LoginFailed,
+                &caller,
+                json!({"identifier": identifier}),
+            )
+            .await;
+            return Err(ApiError::InvalidCredentials);
+        }
     };
+    journal::security(
+        &state.db,
+        Some(account.id),
+        Security::Login,
+        &caller,
+        json!({}),
+    )
+    .await;
     open(&state, account, body.remember, &caller, StatusCode::OK).await
 }
 
@@ -248,6 +283,14 @@ pub async fn register(
         CreateError::EmailTaken => ApiError::InvalidFields(vec![taken("email")]),
         CreateError::Database(error) => error.into(),
     })?;
+    journal::security(
+        &state.db,
+        Some(account.id),
+        Security::Signup,
+        &caller,
+        json!({}),
+    )
+    .await;
     super::account::send_verification(&state, &account, body.locale.as_deref()).await?;
     open(&state, account, false, &caller, StatusCode::CREATED).await
 }
@@ -275,32 +318,29 @@ pub async fn session(
 /// `POST /v1/auth/logout`: always 204.
 pub async fn logout(
     State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    if let Some(token) = session_token(&headers) {
-        sessions::revoke(&state.db, &digest(token)).await?;
-    }
-    Ok(empty())
-}
-
-/// `POST /v1/auth/sessions`: the site opens a session for an account it
-/// authenticated otherwise (Google, a reset link). Service key only.
-pub async fn open_for(
-    State(state): State<AppState>,
     caller: Caller,
     headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
-    Json(body): Json<OpenBody>,
 ) -> Result<Response, ApiError> {
-    require_service(&state, &headers, uri.path())?;
-    let account = account_of(&state, &body.user_id, uri.path()).await?;
-    open(&state, account, body.remember, &caller, StatusCode::CREATED).await
+    if let Some(token) = session_token(&headers)
+        && let Some(user_id) = sessions::revoke(&state.db, &digest(token)).await?
+    {
+        journal::security(
+            &state.db,
+            Some(user_id),
+            Security::Logout,
+            &caller,
+            json!({}),
+        )
+        .await;
+    }
+    Ok(empty())
 }
 
 /// `PUT /v1/auth/password`: the member changes their password. Every other
 /// session of the account is revoked.
 pub async fn change_password(
     State(state): State<AppState>,
+    caller: Caller,
     headers: HeaderMap,
     Json(body): Json<PasswordBody>,
 ) -> Result<Response, ApiError> {
@@ -331,28 +371,15 @@ pub async fn change_password(
     }
     let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
     accounts::set_password(&state.db, account.id, &hash).await?;
-    sessions::revoke_others(&state.db, account.id, Some(session.id)).await?;
-    Ok(empty())
-}
-
-/// `POST /v1/auth/password/reset`: the site checked a reset link. Every
-/// session of the account is revoked. Service key only.
-pub async fn reset_password(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
-    Json(body): Json<ResetBody>,
-) -> Result<Response, ApiError> {
-    require_service(&state, &headers, uri.path())?;
-    let mut errors = Vec::new();
-    check_password(&body.password, &body.password_confirmation, &mut errors);
-    if !errors.is_empty() {
-        return Err(ApiError::InvalidFields(errors));
-    }
-    let account = account_of(&state, &body.user_id, uri.path()).await?;
-    let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
-    accounts::set_password(&state.db, account.id, &hash).await?;
-    sessions::revoke_others(&state.db, account.id, None).await?;
+    let revoked = sessions::revoke_others(&state.db, account.id, Some(session.id)).await?;
+    journal::security(
+        &state.db,
+        Some(account.id),
+        Security::PasswordChanged,
+        &caller,
+        json!({"sessions_revoked": revoked}),
+    )
+    .await;
     Ok(empty())
 }
 
@@ -385,6 +412,8 @@ pub(crate) async fn new_session(
     caller: &Caller,
 ) -> Result<NewSession, ApiError> {
     let token = new_token()?;
+    // The visitor's anonymous page views are the member's from now on.
+    journal::link_visitor(&state.db, user_id, caller.visitor).await;
     let row = sessions::create(
         &state.db,
         user_id,
