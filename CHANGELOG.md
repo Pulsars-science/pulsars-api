@@ -42,6 +42,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `site.security_events` and `site.consents`, purged daily past 13, 12 and
   25 months.
 
+### Removed
+
+- `POST /v1/auth/sessions` and `POST /v1/auth/password/reset` (service
+  key): the Laravel site opened sessions and reset passwords itself;
+  pulsars-web uses `oauth/resolve` and `reset-with-token`, and its relay
+  refuses both.
+
 ### Security
 
 - lettre 0.11.24: fixes RUSTSEC-2026-0560 (STARTTLS response injection) and

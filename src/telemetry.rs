@@ -99,17 +99,6 @@ impl TraceContext {
             sampled: false,
         }
     }
-
-    /// The `traceparent` value to send on outgoing requests made while
-    /// handling this one: same trace, this service's span as parent.
-    pub fn to_traceparent(&self) -> String {
-        format!(
-            "00-{}-{}-{}",
-            self.trace_id,
-            self.span_id,
-            if self.sampled { "01" } else { "00" }
-        )
-    }
 }
 
 tokio::task_local! {
@@ -256,15 +245,6 @@ mod tests {
         assert!(ctx.sampled);
         assert_ne!(ctx.span_id, "00f067aa0ba902b7");
         assert_eq!(ctx.span_id.len(), 16);
-    }
-
-    #[test]
-    fn outgoing_header_keeps_the_trace_and_uses_our_span() {
-        let ctx = TraceContext::from_header(Some(VALID));
-        let out = ctx.to_traceparent();
-        assert!(out.starts_with("00-4bf92f3577b34da6a3ce929d0e0e4736-"));
-        assert!(out.ends_with("-01"));
-        assert!(out.contains(&ctx.span_id));
     }
 
     #[test]

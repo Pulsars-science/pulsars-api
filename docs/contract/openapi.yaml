@@ -1045,31 +1045,6 @@ paths:
         '204':
           description: Revoked, or already invalid.
 
-  /v1/auth/sessions:
-    post:
-      tags: [auth]
-      operationId: openSession
-      summary: Open a session for an account the site authenticated (service key)
-      description: After Google, a reset link, or for the seeder's administrator.
-      parameters:
-        - $ref: '#/components/parameters/ServiceKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [user_id]
-              additionalProperties: false
-              properties:
-                user_id: { type: string, example: '42' }
-                remember: { type: boolean, default: false }
-      responses:
-        '201': { $ref: '#/components/responses/Opened' }
-        '403': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '422': { $ref: '#/components/responses/InvalidFields' }
-
   /v1/auth/password:
     put:
       tags: [auth]
@@ -1095,33 +1070,6 @@ paths:
         '204':
           description: Changed.
         '401': { $ref: '#/components/responses/SessionInvalid' }
-        '422': { $ref: '#/components/responses/InvalidFields' }
-
-  /v1/auth/password/reset:
-    post:
-      tags: [auth]
-      operationId: resetPassword
-      summary: Set a password after a reset link the site checked (service key)
-      description: Every session of the account is revoked.
-      parameters:
-        - $ref: '#/components/parameters/ServiceKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [user_id]
-              additionalProperties: false
-              properties:
-                user_id: { type: string }
-                password: { type: string, minLength: 8, maxLength: 255 }
-                password_confirmation: { type: string }
-      responses:
-        '204':
-          description: Changed.
-        '403': { $ref: '#/components/responses/Problem' }
-        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/InvalidFields' }
 
   /v1/auth/email/verification:

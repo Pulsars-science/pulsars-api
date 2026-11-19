@@ -6,7 +6,7 @@
 //! token, given back in `Pulsars-Session`; only its SHA-256 is stored.
 //! Passwords are argon2id (`crate::auth::password`).
 
-use axum::extract::{FromRequestParts, OriginalUri, State};
+use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -121,23 +121,8 @@ pub struct RegisterBody {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct OpenBody {
-    user_id: String,
-    remember: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
 pub struct PasswordBody {
     current_password: Option<String>,
-    password: String,
-    password_confirmation: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ResetBody {
-    user_id: String,
     password: String,
     password_confirmation: String,
 }
@@ -351,28 +336,6 @@ pub async fn logout(
     Ok(empty())
 }
 
-/// `POST /v1/auth/sessions`: the site opens a session for an account it
-/// authenticated otherwise (Google, a reset link). Service key only.
-pub async fn open_for(
-    State(state): State<AppState>,
-    caller: Caller,
-    headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
-    Json(body): Json<OpenBody>,
-) -> Result<Response, ApiError> {
-    require_service(&state, &headers, uri.path())?;
-    let account = account_of(&state, &body.user_id, uri.path()).await?;
-    journal::security(
-        &state.db,
-        Some(account.id),
-        Security::Login,
-        &caller,
-        json!({"via": "site"}),
-    )
-    .await;
-    open(&state, account, body.remember, &caller, StatusCode::CREATED).await
-}
-
 /// `PUT /v1/auth/password`: the member changes their password. Every other
 /// session of the account is revoked.
 pub async fn change_password(
@@ -415,36 +378,6 @@ pub async fn change_password(
         Security::PasswordChanged,
         &caller,
         json!({"sessions_revoked": revoked}),
-    )
-    .await;
-    Ok(empty())
-}
-
-/// `POST /v1/auth/password/reset`: the site checked a reset link. Every
-/// session of the account is revoked. Service key only.
-pub async fn reset_password(
-    State(state): State<AppState>,
-    caller: Caller,
-    headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
-    Json(body): Json<ResetBody>,
-) -> Result<Response, ApiError> {
-    require_service(&state, &headers, uri.path())?;
-    let mut errors = Vec::new();
-    check_password(&body.password, &body.password_confirmation, &mut errors);
-    if !errors.is_empty() {
-        return Err(ApiError::InvalidFields(errors));
-    }
-    let account = account_of(&state, &body.user_id, uri.path()).await?;
-    let hash = password::hash(state.config.argon2_memory_kib, body.password).await?;
-    accounts::set_password(&state.db, account.id, &hash).await?;
-    let revoked = sessions::revoke_others(&state.db, account.id, None).await?;
-    journal::security(
-        &state.db,
-        Some(account.id),
-        Security::PasswordReset,
-        &caller,
-        json!({"via": "site", "sessions_revoked": revoked}),
     )
     .await;
     Ok(empty())

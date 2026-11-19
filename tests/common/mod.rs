@@ -106,20 +106,6 @@ impl Env {
         })
     }
 
-    /// A game token for `member`, signed with the app's key, with `roles`
-    /// (`POST /v1/auth/token` reads them from the database).
-    pub fn game_token(&self, member: &TestMember, roles: &[&str]) -> String {
-        let signer = self.state.config.token_signer.as_ref().unwrap();
-        let mut claims = testing::claims(&member.id.to_string(), chrono::Utc::now().timestamp());
-        claims["name"] = Value::from(member.pseudo.as_str());
-        claims["roles"] = Value::from(roles.to_vec());
-        testing::sign(
-            &signer.key,
-            &serde_json::json!({"alg": "EdDSA", "typ": "JWT", "kid": signer.kid}),
-            &claims,
-        )
-    }
-
     /// A new member, to shape before `create()`.
     pub fn member(&self) -> MemberBuilder<'_> {
         MemberBuilder {

@@ -196,8 +196,7 @@ pub struct MailConfig {
     pub from: String,
 }
 
-/// Sender of account mails when `MAIL_FROM` is not set, as in the site's
-/// `docs/EMAIL.md`.
+/// Sender of account mails when `MAIL_FROM` is not set.
 pub const MAIL_FROM: &str = "Pulsars <noreply@blackenium.com>";
 
 /// The AES-256-GCM key of private messages (`src/crypto.rs`): 32 random
@@ -1263,17 +1262,6 @@ mod tests {
                 .token_signer
                 .is_none()
         );
-    }
-
-    #[test]
-    fn the_old_site_token_settings_are_gone() {
-        // Ignored if still set: nothing reads them any more.
-        let config = with(&[
-            ("JWKS_URL", "http://pulsars.test/.well-known/jwks.json"),
-            ("JWT_ISSUER", "https://pulsars.science"),
-        ])
-        .expect("valid");
-        assert!(config.token_signer.is_some());
     }
 
     #[test]
