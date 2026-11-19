@@ -337,7 +337,7 @@ fn to_summary(row: CourseRow, lang: Lang) -> CourseSummary {
     let (title, is_tr) = translated(row.title, row.tr_title);
     let (description, _) = translated(row.description, row.tr_description);
     let mut available_langs = vec!["fr"];
-    for code in ["en", "ru"] {
+    for code in ["en", "es", "ru", "zh"] {
         if row.translation_langs.iter().any(|l| l == code) {
             available_langs.push(code);
         }

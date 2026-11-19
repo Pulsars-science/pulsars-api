@@ -39,7 +39,7 @@ const REGISTER_WINDOW_SECS: i64 = 3600;
 /// Length of a token: 32 random bytes in base64url, without padding.
 const TOKEN_CHARS: usize = 43;
 
-const LOCALES: &[&str] = &["fr", "en", "ru"];
+const LOCALES: &[&str] = &["fr", "en", "es", "ru", "zh"];
 const USER_AGENT_MAX_CHARS: usize = 500;
 /// The longest identifier kept for a failed login on an unknown account.
 const IDENTIFIER_MAX_CHARS: usize = 255;

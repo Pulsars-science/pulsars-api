@@ -4,9 +4,10 @@
 //
 // - tests/fixtures/flash/duels.json: the "défi" algorithm of
 //   questionsFlash.ts, run on every subject and on all generators, in
-//   French, English and Russian;
-// - tests/fixtures/flash/generators-ru.json: every generator's walls
-//   (`serie()`) in Russian, which the site's PHP fixtures do not cover.
+//   French, English, Spanish, Russian and Chinese;
+// - tests/fixtures/flash/generators-{es,ru,zh}.json: every generator's walls
+//   (`serie()`) in Spanish, Russian and Chinese, which the site's PHP fixtures do not
+//   cover.
 //
 // Nothing is installed: Node (>= 23, type stripping) loads the game's
 // TypeScript sources through the small loader below.
@@ -96,7 +97,7 @@ for (const subject of [null, ...Object.values(SUBJECTS)]) {
   const candidats = GENERATEURS.filter((g) => subject === null || subjectOf.get(g) === subject)
   for (const graine of [1, 42, 31337, 999999]) {
     const duel = { subject, graine }
-    for (const langue of ['fr', 'en', 'ru']) {
+    for (const langue of ['fr', 'en', 'es', 'ru', 'zh']) {
       changerLangue(langue)
       duel[langue] = defi(candidats, graine, 60)
     }
@@ -108,18 +109,20 @@ const out = new URL('../tests/fixtures/flash/duels.json', import.meta.url)
 writeFileSync(out, JSON.stringify(duels) + '\n')
 console.log(`${duels.length} duels written to ${out.pathname}`)
 
-// The walls of every generator in Russian, as the PHP fixtures give them in
-// French and English (same seeds and card count).
-changerLangue('ru')
-const walls = GENERATEURS.map((g) => ({
-  cle: g.cle(),
-  titre: g.titre(),
-  titreCourt: g.titreCourt(),
-  description: g.description(),
-  matiere: g.matiere(),
-  niveau: g.niveau(),
-  series: [1, 7, 42, 2024, 31337, 123456, 777777, 999999].map((graine) => ({ graine, cartes: serie(g, graine, 40) })),
-}))
-const outRu = new URL('../tests/fixtures/flash/generators-ru.json', import.meta.url)
-writeFileSync(outRu, JSON.stringify(walls) + '\n')
-console.log(`${walls.length} generators written to ${outRu.pathname}`)
+// The walls of every generator in Spanish and Russian, as the PHP fixtures
+// give them in French and English (same seeds and card count).
+for (const langue of ['es', 'ru', 'zh']) {
+  changerLangue(langue)
+  const walls = GENERATEURS.map((g) => ({
+    cle: g.cle(),
+    titre: g.titre(),
+    titreCourt: g.titreCourt(),
+    description: g.description(),
+    matiere: g.matiere(),
+    niveau: g.niveau(),
+    series: [1, 7, 42, 2024, 31337, 123456, 777777, 999999].map((graine) => ({ graine, cartes: serie(g, graine, 40) })),
+  }))
+  const outWalls = new URL(`../tests/fixtures/flash/generators-${langue}.json`, import.meta.url)
+  writeFileSync(outWalls, JSON.stringify(walls) + '\n')
+  console.log(`${walls.length} generators written to ${outWalls.pathname}`)
+}

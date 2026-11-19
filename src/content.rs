@@ -32,7 +32,7 @@ macro_rules! sql {
 /// The language the content is written in.
 pub const SOURCE_LANG: &str = "fr";
 /// The languages content may be translated into.
-pub const TARGET_LANGS: &[&str] = &["en", "ru"];
+pub const TARGET_LANGS: &[&str] = &["en", "es", "ru", "zh"];
 
 /// The subjects a course theme may start with (`App\Support\Matieres::COURS`).
 pub const COURSE_SUBJECTS: &[&str] = &[

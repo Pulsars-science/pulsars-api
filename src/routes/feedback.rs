@@ -529,7 +529,7 @@ pub async fn resource_request(
         errors.push(ParameterError::field(
             "lang",
             "invalid",
-            "must be fr, en or ru",
+            "must be fr, en, es, ru or zh",
         ));
     }
     let file = form.files.get("file");

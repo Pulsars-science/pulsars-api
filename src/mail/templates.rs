@@ -1,14 +1,16 @@
 //! The two account mails, in the words of Laravel's stock `VerifyEmail` and
 //! `ResetPassword` notifications as the site translates them
-//! (`lang/{fr,en,ru}.json` of the site): same subject, same lines, same
+//! (`lang/{fr,en,es,ru,zh}.json` of the site): same subject, same lines, same
 //! button, same « trouble clicking » footer.
 
-/// A mail's language: `fr`, `en` or `ru`. Anything else reads French.
+/// A mail's language: `fr`, `en`, `es`, `ru` or `zh`. Anything else reads French.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
     Fr,
     En,
+    Es,
     Ru,
+    Zh,
 }
 
 impl Lang {
@@ -20,7 +22,9 @@ impl Lang {
             .find_map(|code| match code.get(..2) {
                 Some("fr") => Some(Self::Fr),
                 Some("en") => Some(Self::En),
+                Some("es") => Some(Self::Es),
                 Some("ru") => Some(Self::Ru),
+                Some("zh") => Some(Self::Zh),
                 _ => None,
             })
             .unwrap_or(Self::Fr)
@@ -61,10 +65,20 @@ fn common(lang: Lang) -> Common {
             regards: "Regards,",
             trouble: "If you're having trouble clicking the \":actionText\" button, copy and paste the URL below\ninto your web browser:",
         },
+        Lang::Es => Common {
+            hello: "¡Hola!",
+            regards: "Saludos,",
+            trouble: "Si el botón «:actionText» no funciona, copia el enlace de abajo\ny pégalo en tu navegador:",
+        },
         Lang::Ru => Common {
             hello: "Привет!",
             regards: "С уважением,",
             trouble: "Если кнопка «:actionText» не срабатывает, скопируй ссылку ниже и вставь её в адресную строку браузера:",
+        },
+        Lang::Zh => Common {
+            hello: "你好！",
+            regards: "此致，",
+            trouble: "如果“:actionText”按钮无法点击，请复制下面的链接\n并粘贴到浏览器的地址栏中：",
         },
     }
 }
@@ -84,11 +98,23 @@ pub fn verification(lang: Lang, url: &str) -> Content {
             action: "Verify Email Address",
             outro: "If you did not create an account, no further action is required.".to_owned(),
         },
+        Lang::Es => Words {
+            subject: "Verifica tu dirección de correo",
+            intro: "Haz clic en el botón de abajo para verificar tu dirección de correo.",
+            action: "Verificar mi dirección de correo",
+            outro: "Si no has creado ninguna cuenta, no tienes que hacer nada.".to_owned(),
+        },
         Lang::Ru => Words {
             subject: "Подтверди свой e-mail",
             intro: "Нажми кнопку ниже, чтобы подтвердить свой e-mail.",
             action: "Подтвердить e-mail",
             outro: "Если ты не создавал аккаунт, просто проигнорируй это письмо.".to_owned(),
+        },
+        Lang::Zh => Words {
+            subject: "验证你的邮箱地址",
+            intro: "请点击下面的按钮，验证你的邮箱地址。",
+            action: "验证邮箱地址",
+            outro: "如果你没有注册账号，无需进行任何操作。".to_owned(),
         },
     };
     render(lang, &words, &[], url)
@@ -117,6 +143,16 @@ pub fn reset(lang: Lang, url: &str, minutes: i64) -> Content {
                     .to_owned(),
             },
         ),
+        Lang::Es => (
+            "Este enlace para restablecer la contraseña caduca en :count minutos.",
+            Words {
+                subject: "Restablece tu contraseña",
+                intro: "Recibes este correo porque se ha solicitado restablecer la contraseña de tu cuenta.",
+                action: "Restablecer la contraseña",
+                outro: "Si no has solicitado restablecer la contraseña, no tienes que hacer nada."
+                    .to_owned(),
+            },
+        ),
         Lang::Ru => (
             "Ссылка для сброса пароля действительна :count мин.",
             Words {
@@ -125,6 +161,15 @@ pub fn reset(lang: Lang, url: &str, minutes: i64) -> Content {
                 action: "Сбросить пароль",
                 outro: "Если ты не запрашивал сброс пароля, просто проигнорируй это письмо."
                     .to_owned(),
+            },
+        ),
+        Lang::Zh => (
+            "此重置密码链接将在 :count 分钟后失效。",
+            Words {
+                subject: "重置你的密码",
+                intro: "你收到这封邮件，是因为有人为你的账号申请了重置密码。",
+                action: "重置密码",
+                outro: "如果你没有申请重置密码，无需进行任何操作。".to_owned(),
             },
         ),
     };
@@ -159,7 +204,9 @@ fn render(lang: Lang, words: &Words, after_action: &[String], url: &str) -> Cont
         lang = match lang {
             Lang::Fr => "fr",
             Lang::En => "en",
+            Lang::Es => "es",
             Lang::Ru => "ru",
+            Lang::Zh => "zh",
         },
         hello = escape(common.hello),
         intro = escape(words.intro),

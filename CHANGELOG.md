@@ -19,6 +19,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   site admins and members given the new `esgi` role (category `acces`, which
   any admin can grant); imports and deletions need the isolated `admin_esgi`
   role or a super admin.
+- Spanish (`es`): `?lang=es` reads the Spanish translations of the content
+  (falling back to French per object and per field, as English and Russian
+  do), `es` is accepted as an account locale, for mails, for forum
+  translations and in `content translate --lang es`
+  (`DEEPL_LANGUAGES` gains `es=ES`). The flash questions and the game server
+  speak Spanish too: `src/flash/es.json` (copy of the game's
+  `src/i18n/es.json`), `DuelQuestion::es`, Spanish numbers (U+00A0
+  thousands separator, decimal comma), guests named « Invitado ».
+- Mandarin Chinese in simplified characters (`zh`), everywhere Spanish is:
+  content (`?lang=zh`), account locale, mails, forum translations,
+  `content translate --lang zh` (`zh=ZH-HANS` for DeepL), the flash
+  questions (`src/flash/zh.json`, numbers grouped like English) and the game
+  server (guests named « 访客 »).
 - The admin dashboard (`GET /v1/admin/stats`) also gives `series.duels`,
   `series.pdf_downloads`, the API's own traffic by day (`http`: requests,
   5xx and p95 latency, kept in `site.http_daily` by every instance),
