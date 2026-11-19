@@ -26,5 +26,6 @@ pub mod rate_limit;
 pub mod redis;
 pub mod routes;
 pub mod state;
+pub mod stripe;
 pub mod telemetry;
 pub mod umami;

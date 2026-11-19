@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The subscription, paid through Stripe (`/v1/billing/*`,
+  `GET /v1/me/subscription`): Checkout for a verified member who waived the
+  withdrawal period (kept in `site.checkout_sessions`), Stripe's billing
+  portal for cancellation, and a signed webhook that copies each
+  subscription into `site.subscriptions` and gives or takes the new
+  `abonne` role. `STRIPE_*` variables; unset, the routes answer 503.
 - The ESGI space (`/v1/esgi/*`): subjects, courses with quizzes,
   flashcards and PDF handouts, readable by verified @myskolae.fr accounts,
   site admins and members given the new `esgi` role (category `acces`, which

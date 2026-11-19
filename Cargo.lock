@@ -1798,6 +1798,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "pulsars-api",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

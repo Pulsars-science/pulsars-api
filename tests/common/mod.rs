@@ -267,6 +267,7 @@ pub struct Call {
     origin: Option<String>,
     ip: Option<String>,
     visitor: Option<String>,
+    headers: Vec<(String, String)>,
 }
 
 impl Call {
@@ -282,6 +283,7 @@ impl Call {
             origin: None,
             ip: None,
             visitor: None,
+            headers: Vec::new(),
         }
     }
     pub fn get(path: impl Into<String>) -> Self {
@@ -336,6 +338,11 @@ impl Call {
         self.visitor = Some(id.to_owned());
         self
     }
+    /// Any other header (a webhook's signature).
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
     pub fn ip(mut self, ip: &str) -> Self {
         self.ip = Some(ip.to_owned());
         self
@@ -366,6 +373,9 @@ impl Call {
         }
         if let Some(origin) = &self.origin {
             request = request.header(header::ORIGIN, origin);
+        }
+        for (name, value) in &self.headers {
+            request = request.header(name.as_str(), value.as_str());
         }
         let request = match (self.body, self.multipart) {
             (_, Some(parts)) => {

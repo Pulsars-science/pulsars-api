@@ -426,6 +426,10 @@ once, and the service then exits with status 78 (no restart loop).
 | `DEEPL_API_KEY` | optional | unset | unset: the translation routes answer 503 `not_configured` and `content translate` refuses to run; secret |
 | `DEEPL_API_URL` | optional | `https://api-free.deepl.com` | `https://api.deepl.com` for a paid plan |
 | `DEEPL_LANGUAGES` | optional | `fr=FR,en=EN-GB,ru=RU` | the site's languages and DeepL's `target_lang` for each |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_MONTHLY` | optional | unset | all three or none; unset: `/v1/billing/*` answer 503 `not_configured`; the key and the webhook secret are secrets; a live key (`sk_live_…`) is refused in development |
+| `STRIPE_PRICE_YEARLY` | optional | unset | the yearly price (`price_…`); unset: monthly only |
+| `STRIPE_RETURN_URL` | optional | `https://pulsars.science` (`http://localhost:3000` in development) | where Checkout and the billing portal send the member back |
+| `STRIPE_API_URL` | optional | `https://api.stripe.com` | http only in development (the tests' fake Stripe) |
 | `UMAMI_URL`, `UMAMI_WEBSITE_ID`, `UMAMI_USERNAME`, `UMAMI_PASSWORD` | optional | unset | all four or none; unset: the admin dashboard says the audience is not configured; http accepted (usually the same machine) |
 | `JWT_TOKEN_TTL_SECS` | optional | `300` | lifetime of game tokens, 60 to 3600 |
 | `PUBLIC_STORAGE_URL` | optional | `https://pulsars.science/storage` | base of avatar and image URLs; the site relays it to `/v1/storage/` |
