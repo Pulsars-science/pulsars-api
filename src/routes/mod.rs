@@ -7,6 +7,7 @@ pub mod corrections;
 pub mod courses;
 pub mod cursor;
 pub mod dashboard;
+pub mod esgi;
 pub mod exams;
 pub mod exercises;
 pub mod feedback;
@@ -431,8 +432,30 @@ pub fn router(state: AppState) -> Router {
         .merge(admin_files)
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
 
+    // Private school area. Every handler checks the session's verified
+    // @myskolae.fr address, or the isolated admin_esgi role for imports.
+    let esgi_json = Router::new()
+        .route("/v1/esgi/subjects", get(esgi::list_subjects))
+        .route("/v1/esgi/subjects/{slug}", get(esgi::show_subject))
+        .route("/v1/esgi/courses/{slug}", get(esgi::show_course))
+        .route("/v1/esgi/admin/courses", get(esgi::admin_list))
+        .route("/v1/esgi/admin/courses/{slug}", delete(esgi::delete_course))
+        .layer(from_fn(public::require_json))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+    let esgi_files = Router::new()
+        .route("/v1/esgi/courses/{slug}/pdf", get(esgi::course_pdf))
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+    let esgi_upload = Router::new()
+        .route("/v1/esgi/admin/courses", post(esgi::import_course))
+        .layer(from_fn(public::require_json))
+        .layer(DefaultBodyLimit::disable())
+        .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit));
+
     let routes = Router::new()
         .route("/healthz", get(health::healthz))
+        .merge(esgi_json)
+        .merge(esgi_files)
+        .merge(esgi_upload)
         .merge(admin)
         .merge(auth)
         .merge(forum)

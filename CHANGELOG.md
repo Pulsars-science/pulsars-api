@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The ESGI space (`/v1/esgi/*`): subjects, courses with quizzes,
+  flashcards and PDF handouts, readable by verified @myskolae.fr accounts,
+  site admins and members given the new `esgi` role (category `acces`, which
+  any admin can grant); imports and deletions need the isolated `admin_esgi`
+  role or a super admin.
 - The admin dashboard (`GET /v1/admin/stats`) also gives `series.duels`,
   `series.pdf_downloads`, the API's own traffic by day (`http`: requests,
   5xx and p95 latency, kept in `site.http_daily` by every instance),
