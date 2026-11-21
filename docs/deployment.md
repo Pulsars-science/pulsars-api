@@ -177,7 +177,7 @@ sudo install -d -m 0700 -o pulsars-api -g pulsars-api /etc/pulsars-api/keys
 *Operator's machine*, logged in to `gh`:
 
 ```bash
-V=v0.7.0
+V=v0.7.1
 gh release download "$V" -R Pulsars-science/pulsars-api \
     -p "pulsars-api-$V-x86_64-unknown-linux-gnu.tar.gz*"
 scp pulsars-api-$V-x86_64-unknown-linux-gnu.tar.gz* <admin>@<server>:/tmp/
@@ -187,7 +187,7 @@ On the server:
 
 ```bash
 cd /tmp
-V=v0.7.0
+V=v0.7.1
 sha256sum -c "pulsars-api-$V-x86_64-unknown-linux-gnu.tar.gz.sha256"   # OK
 tar xzf "pulsars-api-$V-x86_64-unknown-linux-gnu.tar.gz"
 R="/tmp/pulsars-api-$V-x86_64-unknown-linux-gnu"
