@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Account mails carry a `Message-ID` on the sender's domain; spam filters
+  scored them down without one.
+
 ## [0.7.0] - 2026-11-19
 
 The ESGI space, the Pulsars+ subscription through Stripe, Spanish and
