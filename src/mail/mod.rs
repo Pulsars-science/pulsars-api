@@ -148,6 +148,13 @@ impl Mailer {
 pub fn message(from: &Mailbox, mail: &Mail) -> Result<Message, String> {
     let to: Mailbox = mail.to.parse().map_err(|e| format!("recipient: {e}"))?;
     Message::builder()
+        // On the sender's domain: spam filters penalise a mail without one,
+        // and lettre's default would use the container's host name.
+        .message_id(Some(format!(
+            "<{}@{}>",
+            uuid::Uuid::new_v4(),
+            from.email.domain()
+        )))
         .from(from.clone())
         .to(to)
         .subject(mail.content.subject.clone())
@@ -177,6 +184,8 @@ mod tests {
             "{raw}"
         );
         assert!(raw.contains("To: ada@example.invalid"));
+        assert!(raw.contains("Message-ID: <"), "{raw}");
+        assert!(raw.contains("@blackenium.com>"), "{raw}");
         // Non-ASCII subjects are encoded (RFC 2047).
         assert!(raw.contains("Subject: =?utf-8?"), "{raw}");
         assert!(raw.contains("multipart/alternative"));

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Pulsars API
-  version: 0.7.0
+  version: 0.7.1
   summary: The back end of pulsars.science and its game server.
   description: |
     The API of https://pulsars.science. It owns the database and serves
