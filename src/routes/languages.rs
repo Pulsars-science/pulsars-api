@@ -1,7 +1,9 @@
 //! `GET /v1/languages`, `/v1/languages/{code}` and
-//! `/v1/languages/{code}/levels/{level}` (`openapi.yaml`, tag `languages`):
+//! `/v1/languages/{code}/levels/{level}` and
+//! `/v1/languages/{code}/topics/{topic}` (`openapi.yaml`, tag `languages`):
 //! the languages taught on pulsars.science/langues, their levels and the
-//! words of a level. Public content, like the courses.
+//! words of a level, their grammar topics with a lesson and sentences to
+//! fill in. Public content, like the courses.
 //!
 //! And their statistics (`docs/languages.md` §Statistics):
 //! `POST /v1/languages/events`, what learners do, sent anonymously by the
@@ -19,7 +21,7 @@ use super::params::{Lang, Params};
 use super::public::{self, Data, PublicError, PublicResult, served, translated};
 use crate::auth::Admin;
 use crate::db::language_stats;
-use crate::db::languages::{self, Event, LanguageRow, LevelRow};
+use crate::db::languages::{self, Event, LanguageRow, LessonSection, LevelRow, TopicRow};
 use crate::error::{ApiError, ParameterError};
 use crate::state::AppState;
 
@@ -35,6 +37,7 @@ pub struct Language {
     pub countries: Vec<String>,
     pub level_count: i64,
     pub word_count: i64,
+    pub topic_count: i64,
 }
 
 impl Language {
@@ -50,6 +53,7 @@ impl Language {
             countries: row.countries,
             level_count: row.level_count,
             word_count: row.word_count,
+            topic_count: row.topic_count,
         }
     }
 }
@@ -59,6 +63,62 @@ pub struct LanguageDetail {
     #[serde(flatten)]
     pub language: Language,
     pub levels: Vec<Level>,
+    pub topics: Vec<Topic>,
+}
+
+/// A grammar topic, without its lesson and sentences.
+#[derive(Debug, Serialize)]
+pub struct Topic {
+    pub slug: String,
+    pub position: i32,
+    pub title: String,
+    pub description: String,
+    pub lang: &'static str,
+    /// The words a blank can take, in display order.
+    pub choices: Vec<String>,
+    pub exercise_count: i64,
+}
+
+impl Topic {
+    fn new(row: &TopicRow, lang: Lang) -> Self {
+        let (title, title_tr) = translated(row.title.clone(), row.tr_title.clone());
+        let (description, description_tr) =
+            translated(row.description.clone(), row.tr_description.clone());
+        Self {
+            slug: row.slug.clone(),
+            position: row.position,
+            title,
+            description,
+            lang: served(lang, title_tr && description_tr),
+            choices: row.choices.clone(),
+            exercise_count: row.exercise_count,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TopicDetail {
+    pub language: LanguageRef,
+    #[serde(flatten)]
+    pub topic: Topic,
+    /// The lesson, in `lesson_lang`: French when it is not translated.
+    pub lesson: Vec<LessonSection>,
+    pub lesson_lang: &'static str,
+    pub previous: Option<LevelRef>,
+    pub next: Option<LevelRef>,
+    pub exercises: Vec<Exercise>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Exercise {
+    pub id: i64,
+    /// With one blank, `___`.
+    pub sentence: String,
+    pub answer: String,
+    /// The group the answer belongs to: `on holiday`.
+    pub phrase: String,
+    pub explanation: String,
+    pub lang: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,6 +217,7 @@ pub async fn show(
         .await?
         .ok_or_else(|| language_not_found(&code, uri.path()))?;
     let levels = languages::levels(&state.db, tr, &code).await?;
+    let topics = languages::topics(&state.db, tr, &code).await?;
     let body = Data {
         data: LanguageDetail {
             language: Language::new(language, lang),
@@ -164,6 +225,7 @@ pub async fn show(
                 .into_iter()
                 .map(|row| Level::new(row, lang))
                 .collect(),
+            topics: topics.iter().map(|row| Topic::new(row, lang)).collect(),
         },
     };
     public::json(&headers, lang, &body)
@@ -231,6 +293,78 @@ pub async fn level(
                         text: w.text,
                         reading: w.reading,
                         meaning,
+                        lang: served(lang, is_tr),
+                    }
+                })
+                .collect(),
+        },
+    };
+    public::json(&headers, lang, &body)
+}
+
+/// `GET /v1/languages/{code}/topics/{topic}`: a grammar topic, its lesson
+/// and all its sentences.
+pub async fn topic(
+    State(state): State<AppState>,
+    Path((code, slug)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> PublicResult {
+    let mut params = Params::parse(query.as_deref());
+    let lang = params.lang();
+    params.finish()?;
+    let tr = lang.translation();
+
+    let language = languages::find(&state.db, tr, &code)
+        .await?
+        .ok_or_else(|| language_not_found(&code, uri.path()))?;
+    let topics = languages::topics(&state.db, tr, &code).await?;
+    let index = topics.iter().position(|t| t.slug == slug).ok_or_else(|| {
+        public::not_found(
+            format!("No topic `{slug}` exists in language `{code}`."),
+            uri.path(),
+        )
+    })?;
+    let row = &topics[index];
+    let exercises = languages::exercises(&state.db, tr, row.id).await?;
+
+    let reference = |row: &TopicRow| LevelRef {
+        slug: row.slug.clone(),
+        title: translated(row.title.clone(), row.tr_title.clone()).0,
+    };
+    let (lesson, lesson_lang) = match &row.tr_lesson {
+        Some(sections) if !sections.0.is_empty() => (sections.0.clone(), served(lang, true)),
+        _ => (row.lesson.0.clone(), "fr"),
+    };
+
+    let body = Data {
+        data: TopicDetail {
+            language: LanguageRef {
+                code: language.code,
+                name: translated(language.name, language.tr_name).0,
+                native_name: language.native_name,
+                script: language.script,
+                reading_system: language.reading_system,
+            },
+            topic: Topic::new(row, lang),
+            lesson,
+            lesson_lang,
+            previous: index
+                .checked_sub(1)
+                .and_then(|i| topics.get(i))
+                .map(reference),
+            next: topics.get(index + 1).map(reference),
+            exercises: exercises
+                .into_iter()
+                .map(|e| {
+                    let (explanation, is_tr) = translated(e.explanation, e.tr_explanation);
+                    Exercise {
+                        id: e.id,
+                        sentence: e.sentence,
+                        answer: e.answer,
+                        phrase: e.phrase,
+                        explanation,
                         lang: served(lang, is_tr),
                     }
                 })

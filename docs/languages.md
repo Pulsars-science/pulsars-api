@@ -1,6 +1,7 @@
 # Languages section
 
-`pulsars.science/langues` teaches foreign languages, starting with Mandarin.
+`pulsars.science/langues` teaches foreign languages: Mandarin (vocabulary
+by HSK level, writing) and English (grammar topics).
 The front end is the `pulsars-langues` repository (Vue 3 + Vite, static,
 served by nginx under `/langues/`, like the games under `/jeux/`). This API
 serves its content.
@@ -15,8 +16,11 @@ Schema `langues`, written by this API only, created with the others by
 | `languages` | One row per language taught: BCP 47 `code` (`zh`), `native_name` (`中文`), ISO 15924 `script` (`Hans`), `reading_system` (`pinyin`, or null), `countries` (ISO 3166-1 codes where it is spoken, `{CN,TW,SG}`), `position`, `published`. |
 | `levels` | The levels of a language, in `position` order: `slug` (`hsk-1`), `framework` (`HSK`, `CECRL`…). |
 | `words` | The words of a level, in `position` order: `text` (`你`), `reading` (`nǐ`), `meaning`. |
+| `topics` | The grammar topics of a language, in `position` order: `slug` (`on-in`), `title`, `description`, `choices` (the words a blank takes, `{on,in}`), `lesson` (per interface language, a list of sections `{title, text, examples: [{text, note}]}`). |
+| `topic_exercises` | The sentences of a topic, in `position` order: `sentence` with one blank `___`, `answer` (one of the choices), `phrase` (`on holiday`), `explanation`. |
 
-Interface texts (`name`, `title`, `description`, `meaning`) are JSON objects
+Interface texts (`name`, `title`, `description`, `meaning`, `lesson`,
+`explanation`) are JSON objects
 keyed by interface language, French required (`{"fr": "…", "en": "…"}`).
 Adding an interface language needs no schema change: only the `?lang=`
 values of the API (today `fr` and `en`; Russian readers get French).
@@ -32,9 +36,12 @@ origin, ETags, `Cache-Control: public, max-age=300`, `?lang=fr|en` with
 per-field fallback to French. See `contract/openapi.yaml`, tag `languages`.
 
 - `GET /v1/languages`: published languages, with level and word counts.
-- `GET /v1/languages/{code}`: one language and its levels.
+- `GET /v1/languages/{code}`: one language, its levels and its topics.
 - `GET /v1/languages/{code}/levels/{level}`: one level, all its words, and
   the previous and next levels.
+- `GET /v1/languages/{code}/topics/{topic}`: one grammar topic, its lesson
+  and all its sentences (200 for `en/on-in`), and the previous and next
+  topics. The front end draws the game's questions from them.
 
 ## Statistics
 

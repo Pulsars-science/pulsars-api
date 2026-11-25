@@ -97,6 +97,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/languages/{code}/levels/{level}",
             get(languages::level).options(preflight),
         )
+        .route(
+            "/v1/languages/{code}/topics/{topic}",
+            get(languages::topic).options(preflight),
+        )
         .layer(from_fn(public::require_json))
         .layer(from_fn_with_state(state.clone(), rate_limit::rate_limit))
         .layer(mw::cors_public());

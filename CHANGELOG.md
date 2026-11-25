@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- English in the languages section. Grammar first: tables
+  `langues.topics` and `langues.topic_exercises`, the topic « On ou in ? »
+  (a lesson in ten sections and 200 sentences to fill in, explained in
+  French and English), `topics` and `topic_count` in `GET /v1/languages…`,
+  and `GET /v1/languages/{code}/topics/{topic}`.
+- English vocabulary: the 3000 most common words, translated into French,
+  in 17 CEFR levels (A1 to B2).
+
 ## [0.7.1] - 2026-11-21
 
 ### Upgrading

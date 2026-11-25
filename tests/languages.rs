@@ -175,6 +175,7 @@ async fn languages_list_mandarin() {
             "countries": ["CN", "TW", "SG"],
             "level_count": 2,
             "word_count": 38,
+            "topic_count": 0,
         })
     );
 
@@ -226,6 +227,121 @@ async fn a_level_serves_its_words_and_neighbours() {
     assert_eq!(body["data"]["previous"]["slug"], "hsk-1");
     assert_eq!(body["data"]["next"], Value::Null);
     assert_eq!(body["data"]["words"], json!([]));
+}
+
+#[tokio::test]
+async fn english_lists_its_grammar_topics() {
+    let Some(app) = languages_app().await else {
+        return;
+    };
+    let (status, _, body) = get(&app, "/v1/languages/en").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert_eq!(data["name"], "Anglais");
+    assert_eq!(data["native_name"], "English");
+    assert_eq!(data["script"], "Latn");
+    assert_eq!(data["topic_count"], 1);
+    // The 3000 most common words, in 17 CEFR levels (A1 to B2).
+    let levels = data["levels"].as_array().expect("levels");
+    assert_eq!(levels.len(), 17);
+    assert_eq!(levels[0]["slug"], "a1-1");
+    assert_eq!(levels[0]["framework"], "CECR");
+    assert_eq!(levels[16]["slug"], "b2-4");
+    let words: u64 = levels
+        .iter()
+        .map(|l| l["word_count"].as_u64().unwrap())
+        .sum();
+    assert_eq!(words, 3000);
+    assert_eq!(
+        data["topics"],
+        json!([{
+            "slug": "on-in",
+            "position": 1,
+            "title": "On ou in ?",
+            "description": "Sur ou dans : le lieu, le temps, les transports et les expressions toutes faites.",
+            "lang": "fr",
+            "choices": ["on", "in"],
+            "exercise_count": 200,
+        }])
+    );
+    let (_, _, body) = get(&app, "/v1/languages/zh").await;
+    assert_eq!(body["data"]["topics"], json!([]));
+}
+
+#[tokio::test]
+async fn a_topic_serves_its_lesson_and_sentences() {
+    let Some(app) = languages_app().await else {
+        return;
+    };
+    let (status, _, body) = get(&app, "/v1/languages/en/topics/on-in").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert_eq!(data["language"]["code"], "en");
+    assert_eq!(data["title"], "On ou in ?");
+    assert_eq!(data["lesson_lang"], "fr");
+    assert_eq!(data["previous"], Value::Null);
+    assert_eq!(data["next"], Value::Null);
+    let lesson = data["lesson"].as_array().unwrap();
+    assert_eq!(lesson[0]["title"], "In : dedans");
+    assert!(
+        lesson
+            .iter()
+            .all(|s| !s["examples"].as_array().unwrap().is_empty())
+    );
+
+    let exercises = data["exercises"].as_array().unwrap();
+    assert_eq!(exercises.len(), 200);
+    assert_eq!(
+        exercises[0],
+        json!({
+            "id": exercises[0]["id"],
+            "sentence": "I was born ___ 2001.",
+            "answer": "in",
+            "phrase": "in 2001",
+            "explanation": "On dit « in » pour une année, car c’est une longue période. → in 2001",
+            "lang": "fr",
+        })
+    );
+    for e in exercises {
+        let answer = e["answer"].as_str().unwrap();
+        assert!(answer == "on" || answer == "in", "{e}");
+        assert_eq!(
+            e["sentence"].as_str().unwrap().matches("___").count(),
+            1,
+            "{e}"
+        );
+        assert!(
+            e["phrase"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains(answer),
+            "{e}"
+        );
+    }
+
+    let (_, _, body) = get(&app, "/v1/languages/en/topics/on-in?lang=en").await;
+    let data = &body["data"];
+    assert_eq!(data["title"], "On or in?");
+    assert_eq!(data["lang"], "en");
+    assert_eq!(data["lesson_lang"], "en");
+    assert_eq!(data["lesson"][0]["title"], "In: inside");
+    assert_eq!(data["exercises"][0]["lang"], "en");
+}
+
+#[tokio::test]
+async fn unknown_topics_are_404() {
+    let Some(app) = languages_app().await else {
+        return;
+    };
+    for path in [
+        "/v1/languages/xx/topics/on-in",
+        "/v1/languages/en/topics/at-on",
+        "/v1/languages/zh/topics/on-in",
+    ] {
+        let (status, _, body) = get(&app, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+    }
 }
 
 #[tokio::test]
