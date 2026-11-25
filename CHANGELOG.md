@@ -15,6 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `GET /v1/languages/{code}/topics/{topic}`.
 - English vocabulary: the 3000 most common words, translated into French,
   in 17 CEFR levels (A1 to B2).
+- Mandarin: the HSK 1 to 6 vocabulary (4993 words) in 200 levels of about
+  25 words, with pinyin and French and English meanings.
 
 ## [0.7.1] - 2026-11-21
 
