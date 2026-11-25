@@ -173,8 +173,9 @@ async fn languages_list_mandarin() {
             "script": "Hans",
             "reading_system": "pinyin",
             "countries": ["CN", "TW", "SG"],
-            "level_count": 2,
-            "word_count": 38,
+            // hsk-1 and hsk-2, then the HSK 1 to 6 vocabulary in 200 levels.
+            "level_count": 202,
+            "word_count": 5031,
             "topic_count": 0,
         })
     );
@@ -197,10 +198,14 @@ async fn a_language_lists_its_levels_in_order() {
     assert_eq!(data["code"], "zh");
     let levels = data["levels"].as_array().unwrap();
     let slugs: Vec<&str> = levels.iter().map(|l| l["slug"].as_str().unwrap()).collect();
-    assert_eq!(slugs, ["hsk-1", "hsk-2"]);
+    assert_eq!(slugs.len(), 202);
+    assert_eq!(slugs[..4], ["hsk-1", "hsk-2", "hsk1-1", "hsk1-2"]);
+    assert_eq!(slugs[201], "hsk6-100");
     assert_eq!(levels[0]["framework"], "HSK");
     assert_eq!(levels[0]["word_count"], 38);
     assert_eq!(levels[1]["word_count"], 0);
+    assert_eq!(levels[2]["title"], "HSK 1 · 1");
+    assert_eq!(levels[2]["word_count"], 25);
 }
 
 #[tokio::test]
@@ -225,8 +230,13 @@ async fn a_level_serves_its_words_and_neighbours() {
 
     let (_, _, body) = get(&app, "/v1/languages/zh/levels/hsk-2").await;
     assert_eq!(body["data"]["previous"]["slug"], "hsk-1");
-    assert_eq!(body["data"]["next"], Value::Null);
+    assert_eq!(body["data"]["next"]["slug"], "hsk1-1");
     assert_eq!(body["data"]["words"], json!([]));
+
+    let (_, _, body) = get(&app, "/v1/languages/zh/levels/hsk6-100").await;
+    assert_eq!(body["data"]["previous"]["slug"], "hsk6-99");
+    assert_eq!(body["data"]["next"], Value::Null);
+    assert_eq!(body["data"]["words"].as_array().unwrap().len(), 25);
 }
 
 #[tokio::test]
