@@ -175,7 +175,8 @@ async fn languages_list_mandarin() {
             "countries": ["CN", "TW", "SG"],
             // hsk-1 and hsk-2, then the HSK 1 to 6 vocabulary in 200 levels.
             "level_count": 202,
-            "word_count": 5031,
+            // Distinct words: hsk-1 repeats some of the HSK 1 levels.
+            "word_count": 4994,
             "topic_count": 0,
         })
     );
@@ -251,17 +252,23 @@ async fn english_lists_its_grammar_topics() {
     assert_eq!(data["native_name"], "English");
     assert_eq!(data["script"], "Latn");
     assert_eq!(data["topic_count"], 1);
-    // The 3000 most common words, in 17 CEFR levels (A1 to B2).
+    // The review level repeats every word: still 3000 distinct words.
+    assert_eq!(data["word_count"], 3000);
+    // The 3000 most common words, in 17 CEFR levels (A1 to B2), then all
+    // of them at once in a review level.
     let levels = data["levels"].as_array().expect("levels");
-    assert_eq!(levels.len(), 17);
+    assert_eq!(levels.len(), 18);
     assert_eq!(levels[0]["slug"], "a1-1");
     assert_eq!(levels[0]["framework"], "CECR");
     assert_eq!(levels[16]["slug"], "b2-4");
-    let words: u64 = levels
+    let words: u64 = levels[..17]
         .iter()
         .map(|l| l["word_count"].as_u64().unwrap())
         .sum();
     assert_eq!(words, 3000);
+    assert_eq!(levels[17]["slug"], "les-3000-mots");
+    assert_eq!(levels[17]["title"], "Les 3000 mots");
+    assert_eq!(levels[17]["word_count"], 3000);
     assert_eq!(
         data["topics"],
         json!([{
