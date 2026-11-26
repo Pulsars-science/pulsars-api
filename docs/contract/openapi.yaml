@@ -6670,7 +6670,7 @@ components:
           items: { type: string, pattern: '^[A-Z]{2}$' }
           example: [CN, TW, SG]
         level_count: { type: integer, minimum: 0 }
-        word_count: { type: integer, minimum: 0 }
+        word_count: { type: integer, minimum: 0, description: 'Distinct words across the levels: a word repeated in a review level counts once.' }
         topic_count: { type: integer, minimum: 0, description: Grammar topics. }
     LanguageTopic:
       type: object

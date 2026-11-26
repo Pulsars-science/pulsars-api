@@ -30,7 +30,8 @@ macro_rules! language_select {
         "SELECT g.code, g.name->>'fr' AS name, g.name->>$1 AS tr_name,
                 g.native_name, g.script, g.reading_system, g.countries,
                 (SELECT count(*) FROM langues.levels l WHERE l.language_code = g.code) AS level_count,
-                (SELECT count(*) FROM langues.words w JOIN langues.levels l ON l.id = w.level_id
+                -- A word in several levels (a review level) counts once.
+                (SELECT count(DISTINCT w.text) FROM langues.words w JOIN langues.levels l ON l.id = w.level_id
                   WHERE l.language_code = g.code) AS word_count,
                 (SELECT count(*) FROM langues.topics t WHERE t.language_code = g.code) AS topic_count
            FROM langues.languages g
