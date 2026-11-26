@@ -17,6 +17,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in 17 CEFR levels (A1 to B2).
 - Mandarin: the HSK 1 to 6 vocabulary (4993 words) in 200 levels of about
   25 words, with pinyin and French and English meanings.
+- English: a review level, « Les 3000 mots », with every word at once.
+
+### Changed
+
+- `word_count` of a language counts distinct words, so a review level does
+  not count its words twice.
+- English: distinct French meanings for 22 near-synonyms (huge / enormous,
+  town / city…), so that no two words of a level share one.
 
 ## [0.7.1] - 2026-11-21
 
